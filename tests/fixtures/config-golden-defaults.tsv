@@ -41,11 +41,14 @@ agents.runner_args		empty	pipeline-agent.sh
 agents.runner_cmd		empty	pipeline-agent.sh
 agents.subagents	auto	table	pipeline-agent.sh
 base_branch		empty	pipeline-hooks.sh,pipeline-mergebase.sh,pipeline-status-file.sh,pipeline-vcs.sh,pipeline-worktree.sh
+board.azure_board		empty	pipeline-status.sh
+board.azure_columns.in_progress		empty	pipeline-status.sh
 board.azure_states.blocked		empty	pipeline-status.sh
 board.azure_states.done	Done	table	pipeline-status.sh,pipeline-vcs.sh
 board.azure_states.in_progress	Committed	table	pipeline-status.sh
 board.azure_states.in_review	Committed	table	pipeline-status.sh
 board.azure_states.ready	New	table	pipeline-status.sh
+board.azure_team		empty	pipeline-status.sh
 board.enabled	true	table	bootstrap-board.sh,pipeline-status.sh
 board.project_number		empty	bootstrap-board.sh,pipeline-status.sh
 board.status_field	Status	table	bootstrap-board.sh,pipeline-status.sh
