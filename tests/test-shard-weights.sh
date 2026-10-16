@@ -6,8 +6,8 @@
 # test file with no entry there falls back to DEFAULT_WEIGHT, so the partition
 # can look balanced while one shard runs for minutes longer than its siblings
 # (and passes the 600 s foreground cap on verify.timeout_ms). Two guards:
-#   AC1 every tests/test-*.sh has a numeric entry in tests/timings.txt;
-#   AC2 the heaviest shard, by summed weight, stays under SHARD_WEIGHT_BOUND for
+#   W1 every tests/test-*.sh has a numeric entry in tests/timings.txt;
+#   W2 the heaviest shard, by summed weight, stays under SHARD_WEIGHT_BOUND for
 #       the shard count that talos.pipeline.json verify.commands uses.
 # Refresh the table with `bash tests/update-timings.sh`; then set the bound to
 # the new heaviest shard rounded up by about 10%.
@@ -23,7 +23,7 @@ SHARD_WEIGHT_BOUND=1500
 TIMINGS="$TALOS_ROOT/tests/timings.txt"
 REAL_RUN_TESTS="$TALOS_ROOT/tests/run-tests.sh"
 
-# ── AC1: every test file has a numeric entry ─────────────────────────────────
+# ── W1: every test file has a numeric entry ──────────────────────────────────
 missing=""
 count=0
 for f in "$TALOS_ROOT"/tests/test-*.sh; do
@@ -35,9 +35,9 @@ for f in "$TALOS_ROOT"/tests/test-*.sh; do
   fi
 done
 if [ -z "$missing" ]; then
-  pass "AC1 every one of the $count tests/test-*.sh has a numeric entry in tests/timings.txt"
+  pass "W1 every one of the $count tests/test-*.sh has a numeric entry in tests/timings.txt"
 else
-  fail "AC1 every tests/test-*.sh has a numeric entry in tests/timings.txt" \
+  fail "W1 every tests/test-*.sh has a numeric entry in tests/timings.txt" \
     "missing (run bash tests/update-timings.sh):$(printf '%s' "$missing" | cut -c1-400)"
 fi
 
@@ -55,10 +55,10 @@ else
     "missing (run bash tests/update-timings.sh):$missing"
 fi
 
-# ── AC2: the heaviest shard stays under the bound ────────────────────────────
+# ── W2: the heaviest shard stays under the bound ─────────────────────────────
 n="$(grep -o -e '--shard [0-9]*/[0-9]*' "$TALOS_ROOT/talos.pipeline.json" | sed 's|.*/||' | sort -u)"
 case "$n" in
-  ''|*[!0-9]*) fail "AC2 talos.pipeline.json verify.commands names one shard count" "got: '$n'" ;;
+  ''|*[!0-9]*) fail "W2 talos.pipeline.json verify.commands names one shard count" "got: '$n'" ;;
   *)
     max=0
     i=1
@@ -75,9 +75,9 @@ case "$n" in
       i=$((i + 1))
     done
     if [ "$max" -lt "$SHARD_WEIGHT_BOUND" ]; then
-      pass "AC2 the heaviest of $n shards weighs ${max}s, under the ${SHARD_WEIGHT_BOUND}s bound"
+      pass "W2 the heaviest of $n shards weighs ${max}s, under the ${SHARD_WEIGHT_BOUND}s bound"
     else
-      fail "AC2 the heaviest of $n shards stays under ${SHARD_WEIGHT_BOUND}s" \
+      fail "W2 the heaviest of $n shards stays under ${SHARD_WEIGHT_BOUND}s" \
         "heaviest shard weighs ${max}s; refresh tests/timings.txt (bash tests/update-timings.sh) or raise the bound with the new table"
     fi
     ;;
