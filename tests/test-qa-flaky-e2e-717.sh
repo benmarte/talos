@@ -112,12 +112,12 @@ TALOS_q7m2x9k4dv81
   : > "$HEAD_LOG"
 }
 
-spec() {  # spec -- AC1 (test) and AC2 (prose)
+spec() {  # spec [TESTS_LINE] -- AC1 (test) and AC2 (prose)
   {
     printf '**PM spec:** greeting\n\n**Acceptance criteria**\n'
     printf -- '- [ ] AC1 `greet` prints hello (test)\n'
     printf -- '- [ ] AC2 the README names it (prose: doc wording)\n\n'
-    printf '%s\n' '**Tests:** `tests/test-greet.sh`'
+    printf '%s\n' "${1:-**Tests:** \`tests/test-greet.sh\`}"
   } > "$QA_SPEC_FILE"
 }
 cfg_file() { printf '%s' "$1" > "$BASE_DIR/talos.pipeline.json"; }
@@ -186,7 +186,7 @@ assert_eq "0" "$RC" "AC8 e2e exit 0: exit 0"
 assert_contains "$OUT" "qa-run: e2e ok" "AC8 e2e exit 0 prints qa-run: e2e ok"
 assert_contains "$OUT" "prose to hand-check) e2e ok" "AC8 ... and ' e2e ok' is appended to the PASS line"
 assert_eq "1" "$(e2e_runs)" "AC8 e2e ran once"
-assert_eq "$BASE_DIR|$(git rev-parse HEAD)|feature.txt" "$(cat "$E2E_LOG")" "AC8 e2e ran from the repo root at the PR head"
+assert_eq "$(cd "$BASE_DIR" && pwd -P)|$(git rev-parse HEAD)|feature.txt" "$(cat "$E2E_LOG")" "AC8 e2e ran from the repo root at the PR head"
 
 new_repo stable
 spec
@@ -224,8 +224,7 @@ assert_eq "0" "$(e2e_runs)" "AC8 e2e does not run when the spec has no tests to 
 assert_not_contains "$OUT" "e2e" "AC8 ... and prints no e2e line"
 
 new_repo stable
-spec
-printf '%s\n' '**Tests:** `tests/test-greet.sh`, `tests/test-absent.sh`' >> "$QA_SPEC_FILE"
+spec '**Tests:** `tests/test-greet.sh`, `tests/test-absent.sh`'
 cfg_file "$E2E_CFG"
 qa_run
 assert_eq "0" "$(e2e_runs)" "AC8 e2e does not run with a missing test file"
@@ -330,7 +329,7 @@ assert_eq "0" "$(devs)" "AC4 flaky only: no developer fix round"
 assert_contains "$(journal)" "vcs label-pr 12 --add pipeline:blocked" "AC4 flaky only: the PR is blocked"
 assert_contains "$(journal)" "vcs label-issue 9 --add pipeline:blocked" "AC4 flaky only: the issue is blocked"
 assert_not_contains "$(journal)" "gate " "AC4 flaky only: no gate, so no attempt is recorded"
-assert_contains "$OUT" "AC1 FAIL flaky" "AC4 flaky only: the flaky line is relayed"
+assert_contains "$(cat "$ERR")" "AC1 FAIL flaky" "AC4 flaky only: the flaky line is relayed"
 
 run_fixture "$FLAKY
 AC2 FAIL head=fail red=fail"
