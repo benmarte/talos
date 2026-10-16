@@ -66,6 +66,12 @@ cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "azure", "repo": "widget", "azure": {"org_url": "https://dev.azure.com/acme", "project": "proj"}}}
 EOF
 
+# A delete has item.path null and its name in originalPath (#742).
+_del='{"changeEntries":[{"item":{"path":"/a.txt"},"changeType":"edit"},{"item":{"originalObjectId":"C183B2","path":null},"originalPath":"/old/ModuleMode.cs","changeType":"delete"},{"item":{"path":"/z.txt"},"changeType":"add"}],"nextSkip":0}'
+out="$(STUB_AZURE_PR_ITERATIONS="$_iters" STUB_AZURE_PR_CHANGES="$_del" bash "$VCS" pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "AC1 pr-files: a PR with a delete entry exits 0"
+assert_eq "$(printf 'a.txt\nold/ModuleMode.cs\nz.txt')" "$out" "AC1 pr-files: the deleted path is listed with the rest"
+
 # ── check-pr-files (forbidden-files merge gate) ──────────────────────────────
 out="$(STUB_AZURE_PR_ITERATIONS="$_iters" \
   STUB_AZURE_PR_CHANGES='{"changeEntries":[{"item":{"path":"/src/app.py"}},{"item":{"path":"/config/.env"}}],"nextSkip":0}' \
@@ -79,6 +85,21 @@ out="$(STUB_AZURE_PR_ITERATIONS="$_iters" \
   bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
 assert_eq "0" "$rc" "check-pr-files: exits 0 when no forbidden file is touched"
 assert_contains "$out" "no forbidden files" "check-pr-files: prints the shared all-clear line"
+
+out="$(STUB_AZURE_PR_ITERATIONS="$_iters" \
+  STUB_AZURE_PR_CHANGES='{"changeEntries":[{"item":{"path":"/src/app.py"}},{"item":{"path":null},"originalPath":"/config/.env.local","changeType":"delete"}],"nextSkip":0}' \
+  bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "AC2 check-pr-files: exits 1 when the PR deletes a forbidden file"
+assert_contains "$out" "  config/.env.local" "AC2 check-pr-files: names the deleted forbidden path"
+
+# An entry with neither path nor originalPath fails closed (#742).
+_nopath='{"changeEntries":[{"item":{"path":"/a.txt"}},{"item":{"path":null},"changeType":"delete"}],"nextSkip":0}'
+out="$(STUB_AZURE_PR_ITERATIONS="$_iters" STUB_AZURE_PR_CHANGES="$_nopath" bash "$VCS" pr-files 9 2>/dev/null)"; rc=$?
+assert_eq "1" "$rc" "AC3 pr-files: an entry with neither path nor originalPath exits non-zero"
+assert_eq "" "$out" "AC3 pr-files: such an entry prints no partial list"
+out="$(STUB_AZURE_PR_ITERATIONS="$_iters" STUB_AZURE_PR_CHANGES="$_nopath" bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "AC3 check-pr-files: such an entry fails closed"
+assert_not_contains "$out" "no forbidden files" "AC3 check-pr-files: such an entry never reports all-clear"
 
 out="$(STUB_AZURE_PR_ITERATIONS="$_iters" STUB_AZURE_PR_CHANGES_FAIL=1 bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
 assert_eq "1" "$rc" "check-pr-files: a fetch failure fails closed"
