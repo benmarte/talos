@@ -94,6 +94,11 @@ case "$args" in
       echo "ERROR: 404 Not Found" >&2
       exit 1
     fi
+    # view-issue (#735): STUB_GITLAB_ISSUE_VIEW is the raw JSON to print.
+    if [ -n "${STUB_GITLAB_ISSUE_VIEW:-}" ]; then
+      printf '%s\n' "$STUB_GITLAB_ISSUE_VIEW"
+      exit 0
+    fi
     _as_cur=""
     _as_f="$(_as_path "${_iv_n:-42}")"
     [ -n "$_as_f" ] && [ -s "$_as_f" ] && _as_cur="$(cat "$_as_f")"
@@ -161,6 +166,16 @@ print('\n'.join(out))
       # the same moment, so both are on the issue at the read-back.
       [ -n "${STUB_ASSIGNEE_RACER:-}" ] && _as_add "$_as_f" "$STUB_ASSIGNEE_RACER"
     fi
+    exit 0 ;;
+  "api --paginate projects/"*"/issues/"*"/notes"*)
+    # view-issue's notes (#735): STUB_GITLAB_ISSUE_NOTES is the raw output,
+    # pages back-to-back as `glab api --paginate` prints them (unset = no
+    # notes). STUB_GITLAB_API_FAIL=1 fails it.
+    if [ "${STUB_GITLAB_API_FAIL:-}" = "1" ]; then
+      echo "ERROR: 500 Internal Server Error" >&2
+      exit 1
+    fi
+    printf '%s\n' "${STUB_GITLAB_ISSUE_NOTES:-[]}"
     exit 0 ;;
   "api --paginate projects/"*"/merge_requests?"*)
     # check-closing-keyword's sibling list (#319): STUB_GITLAB_MR_PAGES is
