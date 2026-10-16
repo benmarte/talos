@@ -16,6 +16,7 @@
 16 test-azure-approval-verbs.sh
 17 test-azure-attempt-verbs.sh
 10 test-azure-board-columns.sh
+10 test-azure-board-team-default.sh
 30 test-azure-gate-verbs.sh
 7 test-azure-normalised-shapes.sh
 6 test-azure-pr-checks-fallback.sh

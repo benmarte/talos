@@ -450,12 +450,13 @@ _az_column_names() {
   esac
 }
 
-# _az_board_base -- prints "<org>/<project>[/<team id>]" for the board REST calls:
-# board.azure_team (a team name or id) wins, else the team whose default area path
-# equals vcs.azure.area_path, else (no area path) the project's default team.
+# _az_board_base -- prints "<org>/<project>/<team>" for the board REST calls (the
+# backlogs API answers 404 without a team): board.azure_team (a team name or id)
+# wins, else the team whose default area path equals vcs.azure.area_path, else the
+# project's default team (warn board-team-unmatched when an area path matched none).
 # Exit 1 when the org, the project or the team cannot be had.
 _az_board_base() {
-  local _org _proj _team _area _teams _id _fv _def
+  local _org _proj _team _area _teams _id _fv _def _p
   _org="$(cfg vcs.azure.org_url)"; _org="${_org%/}"
   _proj="$(cfg vcs.azure.project)"
   [ -n "$_org" ] && [ -n "$_proj" ] || return 1
@@ -475,17 +476,25 @@ print(json.load(sys.stdin).get("defaultValue") or "")' 2>/dev/null)"
         _team="$_id"; break
       fi
     done
+    [ -n "$_team" ] || echo "warn reason=board-team-unmatched area=$_area (no team has this default area path; using the project's default team)" >&2
+  fi
+  if [ -z "$_team" ]; then
+    _p="$(_az_get "$_org/_apis/projects/$(_az_urlq "$_proj")?api-version=7.1")" || return 1
+    _team="$(printf '%s' "$_p" | python3 -I -c '
+import json, sys
+print((json.load(sys.stdin).get("defaultTeam") or {}).get("id") or "")' 2>/dev/null)"
     [ -n "$_team" ] || return 1
   fi
-  printf '%s/%s%s' "$_org" "$(_az_urlq "$_proj")" "${_team:+/$(_az_urlq "$_team")}"
+  printf '%s/%s/%s' "$_org" "$(_az_urlq "$_proj")" "$(_az_urlq "$_team")"
 }
 
 # _az_resolve_columns -- reads the board once and prints "<status><SEP><state>" for
 # each of the four statuses (state empty = no column matched, or none for the work
-# item type). Exit 1 when the board cannot be read.
+# item type). Exit 1 when the board cannot be read, printing "!<step>" (teams,
+# backlogs or columns) for the call that failed.
 _az_resolve_columns() {
   local _base _board _cols _s _n _args=() _names
-  _base="$(_az_board_base)" || return 1
+  _base="$(_az_board_base)" || { echo "!teams"; return 1; }
   _board="$(cfg board.azure_board)"
   if [ -z "$_board" ]; then
     _board="$(_az_get "$_base/_apis/work/backlogs?api-version=7.1" | python3 -I -c '
@@ -493,9 +502,9 @@ import json, sys
 for b in json.load(sys.stdin)["value"]:
     if b.get("type") == "requirement":
         print(b["name"]); break' 2>/dev/null)"
-    [ -n "$_board" ] || return 1
+    [ -n "$_board" ] || { echo "!backlogs"; return 1; }
   fi
-  _cols="$(_az_get "$_base/_apis/work/boards/$(_az_urlq "$_board")/columns?api-version=7.1")" || return 1
+  _cols="$(_az_get "$_base/_apis/work/boards/$(_az_urlq "$_board")/columns?api-version=7.1")" || { echo "!columns"; return 1; }
   for _s in $_AZ_STATUSES; do
     _names=""
     while IFS= read -r _n; do _names="${_names:+$_names$_AZ_SEP}$_n"; done < <(_az_column_names "$_s")
@@ -516,7 +525,7 @@ for arg in sys.argv[2:]:
             sm = c.get("stateMappings")
             state = sm.get(wit, "") if isinstance(sm, dict) else ""
             break
-    print(status + "\x1f" + str(state))' "$(cfg vcs.azure.work_item_type)" "${_args[@]}" 2>/dev/null
+    print(status + "\x1f" + str(state))' "$(cfg vcs.azure.work_item_type)" "${_args[@]}" 2>/dev/null || { echo "!columns"; return 1; }
 }
 
 # _az_board_load -- sets _AZB_AVAIL (1 when the board was read), _AZB_WARNED (1
@@ -544,7 +553,9 @@ _az_board_load() {
       return 0
     fi
   fi
-  if _raw="$(_az_resolve_columns)" && [ -n "$_raw" ]; then
+  _raw="$(_az_resolve_columns)" || true
+  _raw="${_raw:-!columns}"
+  if [ "${_raw#!}" = "$_raw" ]; then
     _AZB_AVAIL=1
     while IFS="$_AZ_SEP" read -r _a _b; do
       case " $_AZ_STATUSES " in *" $_a "*) printf -v "_AZB_STATE_$_a" '%s' "$_b" ;; esac
@@ -552,7 +563,7 @@ _az_board_load() {
 $_raw
 EOF
   else
-    echo "warn reason=board-columns-unavailable (could not read the team board columns; using board.azure_states and the table defaults)" >&2
+    echo "warn reason=board-columns-unavailable step=${_raw#!} (could not read the team board; set board.azure_team to a team you can read; using board.azure_states and the table defaults)" >&2
   fi
   if [ -n "$_file" ]; then
     install -d -m 700 "$_dir" 2>/dev/null || { mkdir -p "$_dir" 2>/dev/null; chmod 700 "$_dir" 2>/dev/null; } || true
