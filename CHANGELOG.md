@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- test(routing): `tests/test-routing-e2e-github.sh`, `-azure.sh` and `-gitlab.sh` drive `talos.sh next --issue` from `pipeline:ready` to the merge action over each provider's real `pipeline-vcs.sh` adapter and stubbed CLI, so a missing adapter verb or JSON key fails a routing step
 - feat(gitlab): `pr-checks-required` judges the MR's head pipeline (empty `merge.required_checks`) or its named jobs instead of always exiting 1, with github's exit codes and summary lines, so the merge gate can pass on gitlab; no head pipeline, or one for another commit, is pending
 - feat(gitlab): `pr-head`, `read-comments`, `read-attempt`, `record-attempt`, `check-attempt`, `check-approval-sha` and `post-approval` run on gitlab, and `has-spec` accepts it, with the azure output, exit codes and marker formats (MR and issue notes through `glab api`), so the code driver no longer gets `unknown verb`
 - feat(gitlab): `list-issues`, `list-prs` and `view-issue` print the GitHub-shaped JSON the router reads (`number`, `labels[{name}]`, `headRefName`, `baseRefName`, `isDraft`, `isCrossRepository`, raw `glab` keys kept), and `view-issue` adds the issue's notes and honours `--spec` and `--since-stage`
