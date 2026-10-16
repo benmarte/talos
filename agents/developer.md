@@ -85,6 +85,9 @@ Workflow (do ALL of it — the publish step is not optional):
      the files you changed — `tests/run-tests.sh --for <path> [--for
      <path> ...]`, or `tests/run-tests.sh --changed [<base-ref>]` to derive
      the paths from git automatically (default base ref `origin/main`).
+     If `scripts/pipeline-config.sh verify.targeted_commands` prints a JSON
+     list, run each file by its first entry whose `match` fits: its `run`
+     with `{file}`, `{class}`, `{dir}` filled in.
      Then run the full verify/lint suite exactly once, after the last code
      change, immediately before your final commit and push — this is the
      one full-suite run for this PR. Never run the full suite more than

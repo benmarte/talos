@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- feat(verify): a repo-only `verify.targeted_commands` list of `{match, run, pass, fail}` entries tells `qa-run` and the developer how to run one test file of another stack (dotnet, vitest, ...) and how to read its pass/fail lines, so red/green is proved without a hand-run override; `pipeline-criteria.sh map` takes `--pass-re` / `--fail-re`
 - feat(qa): `qa-run` also runs the red commit's version of each `Tests:` file the PR changed since, against the head code (the frozen run), and prints `frozen@head` or `AC<n> FAIL weakened (red-commit test fails at head)`, so a fix round cannot weaken a test after the red proof; `--ack-changed <reason>` records a change made on purpose as `weakened-ack`
 - fix(ci): the test workflow and the shipped `templates/ci/github-tests.yml` no longer install PyYAML on macOS; Talos config is JSON only and every remaining `yaml` import is optional, so the step only failed when the runner image changed
 - feat(criteria): a `(same: <why>)` criterion kind for behaviour that must not change; `qa-run` passes it when its tests are green at the red commit and at the head (`AC<n> PASS same red@<sha8> green@head`) instead of failing it as `vacuous`.
