@@ -187,6 +187,8 @@ cmd_map() {
 # _ack_reason_ok REASON (#714): non-empty, printable ASCII, at most 200 chars.
 _ack_reason_ok() {
   [ -n "$1" ] || return 1
+  # $(...) strips newlines, so refuse them before the character-class check.
+  case "$1" in *$'\n'*) return 1 ;; esac
   [ -z "$(printf '%s' "$1" | LC_ALL=C tr -d ' -~')" ] || return 1
   [ "${#1}" -le 200 ]
 }
