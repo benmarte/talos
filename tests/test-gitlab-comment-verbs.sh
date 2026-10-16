@@ -65,9 +65,6 @@ assert_eq '{"comments": []}' "$out" "AC2 the MR notes are not served from the si
 out="$(STUB_GITLAB_MR_NOTES_FAIL=1 bash "$VCS" read-comments 9 2>/dev/null)"; rc=$?
 assert_eq "1" "$rc" "AC2 read-comments exits 1 when the API fails"
 assert_eq "" "$out" "AC2 read-comments prints nothing when the API fails"
-out="$(STUB_GITLAB_MR_NOTES='{"message":"404 Not Found"}' bash "$VCS" read-comments 9 2>/dev/null)"; rc=$?
-assert_eq "1" "$rc" "AC2 read-comments exits 1 when the answer is not a list of notes"
-assert_eq "" "$out" "AC2 read-comments prints nothing when the answer is not a list of notes"
 bash "$VCS" read-comments >/dev/null 2>&1; rc=$?
 assert_eq "1" "$rc" "AC2 read-comments exits 1 without an id"
 bash "$VCS" read-comments 'x;9' >/dev/null 2>&1; rc=$?

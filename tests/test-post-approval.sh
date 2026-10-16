@@ -266,11 +266,11 @@ assert_not_contains "$out8b" "approval marker(s) found" \
 # ─────────────────────────────────────────────────────────────────────────────
 
 cat > talos.pipeline.json <<'EOF'
-{"vcs": {"provider": "gitlab"}}
+{"vcs": {"provider": "file"}}
 EOF
 out9="$(bash "$VCS" post-approval 9 qa 2>&1)"; rc9=$?
 assert_exit_code 1 "$rc9" "non-github provider: exits 1"
-assert_contains "$out9" "not implemented for provider 'gitlab'" \
+assert_contains "$out9" "not implemented for provider 'file'" \
   "non-github provider: error names the provider"
 rm -f talos.pipeline.json
 

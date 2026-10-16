@@ -20,6 +20,8 @@ cat > talos.pipeline.json <<'EOF'
 EOF
 git config user.email "test@talos.invalid"
 git config user.name "talos-test"
+git commit -q --allow-empty -m init   # a checkout HEAD that is not the MR's head
+LOCAL_HEAD="$(git rev-parse HEAD)"
 export STUB_CURRENT_USER="ci-user"
 
 HEAD_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -175,7 +177,7 @@ assert_eq "<!-- talos:approval sha=$HEAD_SHA role=qa -->" \
   "$(_last_line "$STUB_GITLAB_STATE_DIR/mr_notes_9")" "AC8 the note's last line is the marker at the MR's head sha"
 assert_eq "1" "$(_count 'mr update 9 --label qa:pass')" "AC8 adds the qa:pass label with glab mr update --label"
 assert_eq "qa:pass" "$(cat "$STUB_GITLAB_STATE_DIR/labels_9")" "AC8 the label lands on the MR"
-assert_not_contains "$(_last_line "$STUB_GITLAB_STATE_DIR/mr_notes_9")" "$(git rev-parse HEAD)" "AC8 the marker's sha is the MR head from pr-head, not the local checkout's"
+assert_not_contains "$(_last_line "$STUB_GITLAB_STATE_DIR/mr_notes_9")" "$LOCAL_HEAD" "AC8 the marker's sha is the MR head from pr-head, not the local checkout's"
 
 # ── AC9: second post-approval, --recover-only ────────────────────────────────
 : > "$GH_LOG"
