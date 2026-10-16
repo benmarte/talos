@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- feat(gitlab): `list-issues`, `list-prs` and `view-issue` print the GitHub-shaped JSON the router reads (`number`, `labels[{name}]`, `headRefName`, `baseRefName`, `isDraft`, `isCrossRepository`, raw `glab` keys kept), and `view-issue` adds the issue's notes and honours `--spec` and `--since-stage`
 - feat(azure): a board move takes the work-item State from the team board's column named like the status (`board.azure_team`, `board.azure_board`, `board.azure_columns.<status>`; an explicit `board.azure_states.<status>` still wins), warns `board-states-collide`, `board-column-unresolved` and `board-columns-unavailable`, and reports the `System.BoardColumn` read back after the update.
 - fix(tests): the verify shards are balanced on real durations again: `tests/timings.txt` is refreshed for every test file and `test-talos-run.sh` (about 400 s alone) is split into four files, so no shard passes the 600 s cap; `tests/test-shard-weights.sh` fails a test file with no timing entry and a shard heavier than its bound
 - fix(qa): a `(test)` criterion that is green at the red commit and at the head is a regression guard (`AC<n> guard green@head (green at red@<sha8>)`) when another criterion went red then green and no other FAIL line exists, so a mixed spec no longer ends `spec-unusable`; all criteria vacuous still does

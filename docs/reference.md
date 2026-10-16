@@ -762,7 +762,7 @@ Cost: the plan's cloud session credit applies to cloud sessions only; a run on y
 
 ### GitLab
 
-`list-issues` and `list-prs` stop at 100 items (`WARNING result capped at 100` on stderr). No board (`pipeline-status.sh` prints `board unsupported for gitlab`). `pr-checks-required` fails closed.
+`list-issues`, `view-issue` and `list-prs` print the raw `glab` objects (`--output json`) with the GitHub-shaped keys the router reads added: `number` (from `iid`), `title`, `state`, `body` (from `description`) and `labels` as `[{"name": ...}]` for issues; `number`, `headRefName`, `baseRefName`, `isDraft` and `isCrossRepository` for MRs (`false` only when `source_project_id` equals `target_project_id`, else `true`). Output that is not a JSON array (an object for `view-issue`) exits 1 with nothing on stdout. `view-issue` adds the issue's notes as `comments: [{id, body, author: {login}, createdAt}]` (every page, oldest first, GitLab system notes dropped), and `--spec` and `--since-stage` work as on GitHub; a failed issue or notes read exits 1 with nothing on stdout. `list-issues` and `list-prs` stop at 100 items (`WARNING result capped at 100` on stderr). No board (`pipeline-status.sh` prints `board unsupported for gitlab`). `pr-checks-required` fails closed.
 
 ### Azure DevOps
 

@@ -101,6 +101,7 @@
 82 test-github-transport-parity.sh
 2 test-gitlab-assignee-cli.sh
 45 test-gitlab-gate-verbs.sh
+7 test-gitlab-normalised-shapes.sh
 12 test-global-install-model-hint.sh
 22 test-global-install.sh
 7 test-has-spec.sh
