@@ -26,7 +26,8 @@
 #       another digit (`AC1` never matches `AC10`); a missing one is today's
 #       `ok AC<n>` / `FAIL AC<n>` line. Without --spec the ids tried are AC1..AC99.
 #   pipeline-criteria.sh report --spec <spec-file> --red <output> \
-#                               --head <output> --red-sha <sha8>
+#                               --head <output> --red-sha <sha8> [--frozen <output>] \
+#                               [--rerun <output>] [--ack-changed <reason>]
 #       (--red-sha must be 7-40 hex characters, else exit 2.)
 #       The QA verdict lines, one per id:
 #         AC<n> red@<sha8> green@head       red at the first commit, green at head
@@ -41,6 +42,9 @@
 #       Exit 1 when any line is FAIL.
 #       --frozen <output> (#714): the red commit's version of each Tests file the
 #       PR changed since, run against the head code (parsed like --red/--head).
+#       --rerun <output> (#717): the head files run a second time; a test or same
+#       criterion that is fail in --head and pass in --rerun prints
+#       `AC<n> FAIL flaky (failed at head, passed on re-run)`.
 #       A criterion with a frozen state adds a column or fails:
 #         AC<n> red@<sha8> green@head frozen@head   the red-commit test still passes
 #         AC<n> FAIL weakened (red-commit test fails at head)
@@ -67,6 +71,19 @@
 #       `note: frozen run: <file> differs from red commit <sha8>`; the report
 #       adds `frozen@head` or `FAIL weakened`; a frozen run that exits non-zero
 #       with no weakened line is `qa-run: verdict FAIL frozen run exited <rc>`.
+#       The flaky re-run (#717): a head run that exits non-zero is run once more,
+#       the same present Tests files at the head, before the red run; `report
+#       --rerun <output>` turns a test or same criterion that failed at the head
+#       and passed there into `AC<n> FAIL flaky (failed at head, passed on
+#       re-run)`, and the verdict names it: `FAIL <n> test criteria FAIL (<k>
+#       flaky)`. The driver sends a flaky-only verdict to the owner, not to a
+#       fix round.
+#       The e2e step (#717): verify.e2e (repo-only, default empty) is one command
+#       run once from the repo root through pipeline-verify.sh, at the head, only
+#       on an otherwise green verdict with tests to run. Exit 0 prints `qa-run:
+#       e2e ok` and appends ` e2e ok` to the PASS line; non-zero prints `e2e
+#       failure output (data):` and the last 24 lines (200 chars each) and the
+#       verdict is `FAIL e2e exited <rc>`.
 #       --ack-changed <reason> (QA, after reading the file's diff between the
 #       red commit and the head) turns FAIL weakened into `weakened-ack`: the
 #       frozen failure is still printed, the verdict can be PASS.
@@ -255,9 +272,9 @@ _ack_reason_ok() {
   [ "${#1}" -le 200 ]
 }
 
-# report --spec F --red F --head F --red-sha SHA8 [--frozen F] [--ack-changed WHY]
+# report --spec F --red F --head F --red-sha SHA8 [--frozen F] [--rerun F] [--ack-changed WHY]
 cmd_report() {
-  local spec="" red="" head="" sha="" frozen="" ack=""
+  local spec="" red="" head="" sha="" frozen="" rerun="" ack=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --spec) spec="${2:-}"; shift 2 || usage ;;
@@ -265,6 +282,7 @@ cmd_report() {
       --head) head="${2:-}"; shift 2 || usage ;;
       --red-sha) sha="${2:-}"; shift 2 || usage ;;
       --frozen) frozen="${2:-}"; shift 2 || usage ;;
+      --rerun) rerun="${2:-}"; shift 2 || usage ;;
       --ack-changed) ack="${2:-}"; _ack_reason_ok "$ack" || usage; shift 2 || usage ;;
       *) usage ;;
     esac
@@ -276,11 +294,12 @@ cmd_report() {
   if [ "${#sha}" -lt 7 ] || [ "${#sha}" -gt 40 ]; then
     echo "pipeline-criteria: report: --red-sha must be 7-40 hex characters" >&2; return 2
   fi
-  local table red_map head_map frozen_map="" id kind r h f fcol rc=0
+  local table red_map head_map frozen_map="" rerun_map="" id kind r h f rr fcol rc=0
   table="$(cmd_ids "$spec")" || return 1
   red_map="$(cmd_map "$red" --spec "$spec")" || return 1
   head_map="$(cmd_map "$head" --spec "$spec")" || return 1
   [ -z "$frozen" ] || frozen_map="$(cmd_map "$frozen" --spec "$spec")" || return 1
+  [ -z "$rerun" ] || rerun_map="$(cmd_map "$rerun" --spec "$spec")" || return 1
   while read -r id kind; do
     if [ "$kind" = "prose" ]; then
       printf '%s prose hand-checked\n' "$id"
@@ -292,7 +311,11 @@ cmd_report() {
     # (no frozen column) when its file did not change or there was no run.
     f="$(awk -v i="$id" '$1 == i { print $2 }' <<<"$frozen_map")"
     fcol=""; [ "$f" != "pass" ] || fcol=" frozen@head"
-    if [ "$kind" = "same" ]; then
+    # Failed at the head, passed on the one re-run (#717): flaky, not a finding on the PR.
+    rr="$(awk -v i="$id" '$1 == i { print $2 }' <<<"$rerun_map")"
+    if [ "$h" = "fail" ] && [ "$rr" = "pass" ]; then
+      printf '%s FAIL flaky (failed at head, passed on re-run)\n' "$id"; rc=1
+    elif [ "$kind" = "same" ]; then
       if [ "$h" != "pass" ]; then
         printf '%s FAIL same red=%s head=%s\n' "$id" "${r:-missing}" "${h:-missing}"; rc=1
       elif [ "$r" = "fail" ]; then
@@ -889,6 +912,15 @@ EOF
   if [ "${#present[@]}" -gt 0 ]; then
     _qa_exec "$tmp/head.out" "${present[@]}"; head_rc=$?
   fi
+  # A failing head run is run once more (#717): the same present Tests files, at
+  # the head, before the red run checks anything out. The combined head output
+  # has no id-to-file map, so it is the whole set, not one file.
+  local rerun_rc=0 rerun_ran=0
+  if [ "$head_rc" -ne 0 ] && [ "${#present[@]}" -gt 0 ]; then
+    : > "$tmp/rerun.out"
+    _qa_exec "$tmp/rerun.out" "${present[@]}"; rerun_rc=$?
+    rerun_ran=1
+  fi
 
   # 9. Red run: the first commit after the merge-base, when its own change is tests-only.
   local note="" mb red="" red8="" f bad_path="" frozen_files=() frozen_rc=0
@@ -970,6 +1002,7 @@ EOF
     printf 'note: frozen run: %s differs from red commit %s\n' "$p" "$red8"
   done
   [ "${#frozen_files[@]}" -eq 0 ] || rep_args+=(--frozen "$tmp/frozen.out")
+  [ "$rerun_ran" -eq 0 ] || rep_args+=(--rerun "$tmp/rerun.out")
   [ -z "$ack" ] || rep_args+=(--ack-changed "$ack")
   lines="$(cmd_report "${rep_args[@]}")"; rep_rc=$?
   printf '%s\n' "$lines"
@@ -987,19 +1020,39 @@ EOF
     echo "frozen run failures (test output, data):"
     grep -E -A2 '^FAIL' "$tmp/frozen.out" | cut -c1-200 | head -n 24 | sed 's/^/  /'
   fi
-  local why=""
+  local why="" n_flaky
+  n_flaky="$(printf '%s\n' "$lines" | grep -cE '^AC[0-9]+ FAIL flaky ')"
   [ "$n_fail" -eq 0 ] || why="$n_fail test criteria FAIL"
+  [ "$n_flaky" -eq 0 ] || why="$why ($n_flaky flaky)"
   # A frozen run that failed with no weakened line is a crash, not a verdict on a criterion.
   [ "${#frozen_files[@]}" -eq 0 ] || [ "$frozen_rc" -eq 0 ] || grep -q 'weakened' <<<"$lines" \
     || why="${why:+$why; }frozen run exited $frozen_rc"
   [ "${#missing[@]}" -eq 0 ] || why="${why:+$why; }${#missing[@]} test file(s) missing"
-  [ "$head_rc" -eq 0 ] || [ "${#present[@]}" -eq 0 ] || why="${why:+$why; }head run exited $head_rc"
+  # A head run that failed only by a flake (the re-run was clean) is already named.
+  [ "$head_rc" -eq 0 ] || [ "${#present[@]}" -eq 0 ] || { [ "$n_flaky" -gt 0 ] && [ "$rerun_rc" -eq 0 ]; } \
+    || why="${why:+$why; }head run exited $head_rc"
   [ "$rep_rc" -eq 0 ] || [ -n "$why" ] || why="report failed"
   if [ -n "$why" ]; then
     _qa_fail "$why"
     return $?
   fi
-  printf 'qa-run: verdict PASS (%s test criteria green,%s %s prose to hand-check)\n' "$n_test" "$([ "$n_same" -eq 0 ] || printf ' %s same,' "$n_same")" "$n_prose"
+  # The optional e2e step (#717): verify.e2e is repo config, run once at the
+  # head, only on an otherwise green verdict that had tests to run.
+  local e2e e2e_rc=0 e2e_s=""
+  e2e="$(cfg verify.e2e 2>/dev/null)"
+  if [ -n "$e2e" ] && [ "${#present[@]}" -gt 0 ]; then
+    bash "$SCRIPT_DIR/pipeline-verify.sh" --issue "$issue" --worktree "$top" -- \
+      bash -c "$e2e" > "$tmp/e2e.out" 2>&1; e2e_rc=$?
+    if [ "$e2e_rc" -ne 0 ]; then
+      echo "e2e failure output (data):"
+      tail -n 24 "$tmp/e2e.out" | cut -c1-200 | sed 's/^/  /'
+      _qa_fail "e2e exited $e2e_rc"
+      return $?
+    fi
+    echo "qa-run: e2e ok"
+    e2e_s=" e2e ok"
+  fi
+  printf 'qa-run: verdict PASS (%s test criteria green,%s %s prose to hand-check)%s\n' "$n_test" "$([ "$n_same" -eq 0 ] || printf ' %s same,' "$n_same")" "$n_prose" "$e2e_s"
   return 0
 }
 

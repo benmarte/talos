@@ -271,7 +271,10 @@
 #         FAIL lines are all `AC<n> FAIL vacuous ...` (no later commit can turn the
 #         first commit's red run red), and, at an unchanged spec, the second QA
 #         FAIL whose lines are all `vacuous`/`head=missing` (#648); the QA lines
-#         are relayed. Other FAIL shapes, or an edited spec, run the fix round. A QA stage that ends
+#         are relayed. So is a QA FAIL whose FAIL lines are all `AC<n> FAIL
+#         flaky` (failed at the head, passed on qa-run's one re-run): PR and
+#         issue blocked, `stop reason=qa-flaky issue=<N> pr=<M>`, exit 0, no
+#         attempt (#717). Other FAIL shapes, or an edited spec, run the fix round. A QA stage that ends
 #         `BLOCKED: spec: <why>` stops the same way (#645).
 #         A reviewer, security or adversarial
 #         finding gets its developer fix round in the same run: under PR_DRAFT the
@@ -306,13 +309,13 @@
 #         stage's final message never does (stderr has the `note` lines and the
 #         `dispatch-failed ... reason=<why>` line). The playbook's end-state
 #         table (skills/pipeline/SKILL.md) has one action for each end.
-# run-reasons: qa-comment-missing usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable map-failed worktree-unavailable same-verdict-same-head verify-timeout
+# run-reasons: qa-comment-missing usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable map-failed worktree-unavailable same-verdict-same-head verify-timeout qa-flaky
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         state-unavailable ready-pr-failed draft-unverified head-unresolved
 #         merge-failed provider-failed worktree-unavailable (exit 1; 2 for usage),
 #         and with exit 0 stop-requested iterations-exhausted stage-blocked
 #         qa-fail-unchanged-head spec-unusable fix-round-unchanged-head
-#         checkout-return-failed same-verdict-same-head; plus the stop reasons
+#         checkout-return-failed same-verdict-same-head qa-flaky; plus the stop reasons
 #         of `next`, passed through (exit 1)
 #   warn: qa-ci-red notify-failed board-failed spend-upsert-failed lease-release-failed
 #         map-failed (the run's first map failure only, then the map is off for the
@@ -4375,6 +4378,23 @@ _talos_run_qa_spec_fault() {
   _talos_flush; exit 0
 }
 
+# _talos_run_qa_flaky <pr> <issue> (#717): the `qa-run.<pr>` FAIL lines are all
+# `AC<n> FAIL flaky` -- a test failed at the head and passed on the one re-run.
+# A fix round cannot repair noise, so the owner decides: PR and issue are
+# blocked, the lines relayed, `stop reason=qa-flaky issue=<N> pr=<M>`, exit 0;
+# no attempt is recorded and no gate runs. A flaky line beside any other FAIL
+# line, or no flaky line, returns: the existing paths.
+_talos_run_qa_flaky() {
+  local _pr="$1" _n="$2" _fl
+  _fl="$(grep -E '^AC[0-9]+ FAIL ' "$_CFG_CACHE_DIR/qa-run.$_pr" 2>/dev/null | cut -c1-200)"
+  [ -n "$_fl" ] || return 0
+  if grep -qvE '^AC[0-9]+ FAIL flaky' <<<"$_fl"; then return 0; fi
+  _talos_block_labels "$_n" "$_pr"
+  _talos_relay qa-flaky "$(head -n 24 <<<"$_fl")"
+  _talos_emit stop "reason=qa-flaky issue=$_n pr=$_pr"
+  _talos_flush; exit 0
+}
+
 # _talos_run_qa_comment <pr> <issue> (#653): the fix round's developer reads QA's
 # verdict comment, so a QA FAIL whose comment never landed gets it posted from
 # the stage's final message (agent.out) here, or the run stops
@@ -4432,6 +4452,7 @@ _talos_run_qa_fail() {
       _talos_flush; exit 0 ;;
     *) _talos_stop state-unavailable ;;
   esac
+  _talos_run_qa_flaky "$_pr" "$_n"
   _talos_run_qa_spec_fault "$_pr" "$_n"
   _talos_run_qa_comment "$_pr" "$_n"
   _f="$_CFG_CACHE_DIR/qa-fail-head.$_pr"
