@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix(azure): `pr-files` lists a deleted file from the change's `originalPath` (ADO sends `item.path` null) and a rename under both names, so `check-pr-files` no longer fails closed on a PR that deletes a file; an entry with neither path is still a parse failure
 - fix: `talos.sh run` exports one `PIPELINE_RUN_ID` per run (kept across the exec after a merge, a caller's own value wins), so the Azure board column lookup and its `board-states-collide` warning happen once per run instead of on every status move
 - fix(azure): the board column lookup uses the project's default team when `board.azure_team` is unset (the backlogs API answers 404 without a team), warns `board-team-unmatched` when `vcs.azure.area_path` matches no team, and `board-columns-unavailable` names the failed `step` (teams, backlogs or columns)
 - test(routing): `tests/test-routing-e2e-github.sh`, `-azure.sh` and `-gitlab.sh` drive `talos.sh next --issue` from `pipeline:ready` to the merge action over each provider's real `pipeline-vcs.sh` adapter and stubbed CLI, so a missing adapter verb or JSON key fails a routing step

@@ -20,10 +20,10 @@ _git="https://dev.azure.com/acme/proj/_apis/git/repositories/widget"
 _iters='{"count":3,"value":[{"id":1},{"id":3},{"id":2}]}'
 : > "$GH_LOG"
 out="$(STUB_AZURE_PR_ITERATIONS="$_iters" \
-  STUB_AZURE_PR_CHANGES='{"changeEntries":[{"item":{"path":"/a.txt"},"changeType":"edit"},{"item":{"path":"/src","isFolder":true},"changeType":"edit"},{"item":{"path":"/new/b.sh","originalPath":"/old/b.sh"},"changeType":"rename"},{"item":{"path":"/gone.md"},"changeType":"delete"}],"nextSkip":0,"nextTop":0}' \
+  STUB_AZURE_PR_CHANGES='{"changeEntries":[{"item":{"path":"/a.txt"},"changeType":"edit"},{"item":{"path":"/src","isFolder":true},"changeType":"edit"},{"item":{"path":"/new/b.sh"},"originalPath":"/old/b.sh","changeType":"rename"},{"item":{"path":"/gone.md"},"changeType":"delete"}],"nextSkip":0,"nextTop":0}' \
   bash "$VCS" pr-files 9 2>&1)"; rc=$?
 assert_eq "0" "$rc" "pr-files: exits 0 on a successful fetch"
-assert_eq "$(printf 'a.txt\nnew/b.sh\ngone.md')" "$out" "pr-files: one path per line without the leading /, folders skipped"
+assert_eq "$(printf 'a.txt\nnew/b.sh\nold/b.sh\ngone.md')" "$out" "pr-files: one path per line without the leading /, folders skipped, a rename lists both names"
 assert_contains "$(cat "$GH_LOG")" "[$_git/pullRequests/9/iterations?api-version=7.1]" \
   "pr-files: lists the PR's iterations via the REST API"
 assert_contains "$(cat "$GH_LOG")" "[$_git/pullRequests/9/iterations/3/changes?\$top=2000&\$skip=0&api-version=7.1]" \

@@ -6485,8 +6485,13 @@ print(int(d.get("nextSkip") or 0))
 for c in d["changeEntries"]:
     item = c["item"]
     if not item.get("isFolder"):
-        p = item["path"]
-        print(p[1:] if p.startswith("/") else p)
+        # A delete has item.path null and its name in originalPath; a rename
+        # carries both, and both names are tested. Neither is a parse failure.
+        names = [n for n in (item.get("path"), c.get("originalPath")) if n]
+        if not names:
+            raise ValueError("change entry without a path")
+        for p in dict.fromkeys(names):
+            print(p[1:] if p.startswith("/") else p)
 ' 2>/dev/null)" || return 1
       _next="${_page%%$'\n'*}"
       [ "$_page" = "$_next" ] || _paths="$_paths${_page#*$'\n'}"$'\n'
