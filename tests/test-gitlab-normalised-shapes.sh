@@ -87,12 +87,17 @@ assert_not_contains "$err" "WARNING result capped" "AC5 list-prs does not warn u
 
 # ── AC6 pipeline-next.py collect routes gitlab work ──────────────────────────
 export STUB_GITLAB_ISSUE_LIST='[{"iid":5,"title":"Add login","state":"opened","labels":["pipeline:ready"]}]'
-export STUB_GITLAB_MR_LIST='[{"iid":9,"title":"fix: guard","state":"opened","source_branch":"fix/issue-6-x","target_branch":"main","source_project_id":1,"target_project_id":1}]'
+# Two MRs named fix/issue-6-x with no Talos label: one from another project into
+# main (collect counts it as ignored, which it only does after matching the head
+# name and base through headRefName / baseRefName / isCrossRepository), one into
+# another base (not counted). An eligible MR would need gitlab `pr-head`, a
+# separate verb (not part of this change).
+export STUB_GITLAB_MR_LIST='[{"iid":9,"title":"fix: guard","state":"opened","source_branch":"fix/issue-6-x","target_branch":"main","source_project_id":2,"target_project_id":1},{"iid":10,"title":"other base","state":"opened","source_branch":"fix/issue-6-y","target_branch":"dev","source_project_id":2,"target_project_id":1}]'
 state="$(python3 -I "$TALOS_ROOT/scripts/pipeline-next.py" collect --vcs "$VCS" --roles "" --me "" \
   --merge-auto "" --required-checks "" --pr-draft "" --ready-gate "" \
   --talos-labels "pipeline:ready,pipeline:dev,pipeline:confirmed" --base-branch main </dev/null 2>&1)"
 assert_eq "5" "$(_field "$state" 'd["queued"][0] if d.get("queued") else "empty"')" "AC6 collect queues the gitlab issue labelled pipeline:ready"
-assert_eq "9 6" "$(_field "$state" 'str(d["prs"][0]["n"]) + " " + str(d["prs"][0]["issue"]) if d.get("prs") else "empty"')" "AC6 collect sees the open MR fix/issue-6-x into the base branch"
+assert_eq "1" "$(_field "$state" 'd.get("ignored")')" "AC6 collect sees the open MR fix/issue-6-x into the base branch (and not the one into another base)"
 unset STUB_GITLAB_ISSUE_LIST STUB_GITLAB_MR_LIST
 
 # ── AC7 view-issue ───────────────────────────────────────────────────────────

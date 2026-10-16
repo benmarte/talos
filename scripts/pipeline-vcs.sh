@@ -57,9 +57,9 @@
 #                                             the spec is the contract, not the thread)
 #                                             is dropped. Reuses the paginated
 #                                             read-comments path -- no new fetches.
-#                                             GitHub only (github/github-api parity);
-#                                             gitlab, azure, and file mode fall back
-#                                             to plain view-issue with a stderr note.
+#                                             Runs on github, github-api, gitlab and
+#                                             azure; file mode falls back to plain
+#                                             view-issue with a stderr note.
 #             <n> --since-stage               Delta form for the PM and validator (#548):
 #                                             {title, body, labels, comments,
 #                                             earlier_comments}, where comments holds
@@ -5345,6 +5345,71 @@ json.dump([{"number": m.get("iid"),
             "body": m.get("description") or ""} for m in mrs], sys.stdout)
 '
   }
+  # `_gl_normalise <issues|issue|prs>` (#735): raw `glab ... --output json` on
+  # stdin -> the same JSON with the keys pipeline-next.py reads added next to
+  # the raw ones (which stay): number (from iid), title, state, body (from
+  # description), labels[{name}] (glab prints plain strings); for MRs also
+  # headRefName, baseRefName, isDraft and isCrossRepository (false only when
+  # both project ids are present and equal: pipeline-next.py trusts `is False`).
+  # Output that is not the expected array (issue: object) is an error with
+  # nothing on stdout.
+  _gl_normalise() {
+    python3 -I -c '
+import json, sys
+
+kind = sys.argv[1]
+
+def labels(raw):
+    return [l if isinstance(l, dict) else {"name": l} for l in (raw or [])]
+
+def item(i):
+    i["number"] = i.get("iid")
+    i["body"] = i.get("description") or ""
+    i["labels"] = labels(i.get("labels"))
+    return i
+
+def pr(m):
+    item(m)
+    src, dst = m.get("source_project_id"), m.get("target_project_id")
+    m["headRefName"] = m.get("source_branch") or m.get("sourceBranch") or ""
+    m["baseRefName"] = m.get("target_branch") or m.get("targetBranch") or ""
+    m["isDraft"] = bool(m.get("draft"))
+    m["isCrossRepository"] = not (src is not None and src == dst)
+    return m
+
+try:
+    d = json.loads(sys.stdin.read())
+    if kind == "issue":
+        assert isinstance(d, dict)
+        d = item(d)
+    else:
+        assert isinstance(d, list) and all(isinstance(x, dict) for x in d)
+        d = [(item if kind == "issues" else pr)(x) for x in d]
+except Exception:
+    sys.exit("pipeline-vcs: glab did not print the expected JSON " + ("object" if kind == "issue" else "array"))
+print(json.dumps(d))
+' "$1"
+  }
+  # The notes of issue <n> as {"comments": [...]} in the read-comments shape
+  # (#735): every page, system notes dropped, oldest first. Returns non-zero
+  # with no stdout on an API failure or output that is not notes.
+  _gl_issue_comments() {
+    local _raw
+    _raw="$(glab api --paginate "projects/$(_gl_api_project)/issues/$1/notes?per_page=100&order_by=created_at&sort=asc")" || return 1
+    printf '%s' "$_raw" | _gh_paginate_merge | python3 -I -c '
+import json, sys
+try:
+    notes = json.load(sys.stdin)
+    assert isinstance(notes, list)
+    out = [{"id": n.get("id"), "body": n.get("body") or "",
+            "author": {"login": (n.get("author") or {}).get("username", "")},
+            "createdAt": n.get("created_at", "")}
+           for n in notes if not n.get("system")]
+except Exception:
+    sys.exit(1)
+print(json.dumps({"comments": out}))
+'
+  }
   # MR <iid>'s changed paths, one per line (#303): new_path covers added,
   # modified and renamed files. GET /projects/:id/merge_requests/:iid/diffs,
   # every page. Returns non-zero with no stdout on an API failure or an
@@ -5396,23 +5461,59 @@ for p in paths:
       # truncation is never silent (#171).
       local _gli_cap=100
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] glab issue list --state opened --per-page $_gli_cap $RARG $*"
+        echo "[dry-run] glab issue list --state opened --per-page $_gli_cap --output json $RARG $*"
         return 0
       fi
       local _gli_out
-      _gli_out="$(glab issue list --state opened --per-page "$_gli_cap" $RARG "$@")" || exit 1
+      _gli_out="$(glab issue list --state opened --per-page "$_gli_cap" --output json $RARG "$@")" || exit 1
       local _gli_count
       _gli_count="$(printf '%s' "$_gli_out" | _json_array_count)"
       _list_cap_warn list-issues "$_gli_cap" "$_gli_count" "glab --per-page ceiling" issues
-      printf '%s\n' "$_gli_out"
+      printf '%s\n' "$_gli_out" | _gl_normalise issues || exit 1
       ;;
     view-issue)
-      # --spec (#201) is a GitHub-only compact form; fall back to the plain
-      # full view rather than silently ignoring the flag.
+      # The issue plus its notes (#735), normalised like the azure adapter's;
+      # --spec and --since-stage filter the comments as on github. Fail closed
+      # (nothing on stdout) when a read fails.
+      local _glvi_n="${1:-}" _glvi_spec=false _glvi_since=false _glvi_out _glvi_cm _glvi_meta
+      shift
       for _vi_a in "$@"; do
-        case "$_vi_a" in --spec|--since-stage) echo "pipeline-vcs: view-issue $_vi_a: not implemented for provider 'gitlab' -- falling back to full view-issue" >&2 ;; esac
+        case "$_vi_a" in
+          --spec) _glvi_spec=true ;;
+          --since-stage) _glvi_since=true ;;
+        esac
       done
-      _run glab issue view "$1" $RARG
+      case "$_glvi_n" in
+        ''|*[!0-9]*) echo "pipeline-vcs: view-issue: expected a numeric issue number, got '$_glvi_n'" >&2; exit 1 ;;
+      esac
+      if [ "$DRY_RUN" = "true" ]; then
+        _run glab issue view "$_glvi_n" --output json $RARG
+        echo "[dry-run] glab api --paginate projects/$(_gl_api_project)/issues/$_glvi_n/notes?per_page=100&order_by=created_at&sort=asc"
+        return 0
+      fi
+      _glvi_out="$(glab issue view "$_glvi_n" --output json $RARG)" || exit 1
+      _glvi_out="$(printf '%s\n' "$_glvi_out" | _gl_normalise issue)" || exit 1
+      _glvi_cm="$(_gl_issue_comments "$_glvi_n")" || { echo "pipeline-vcs: view-issue: could not fetch issue #$_glvi_n notes" >&2; exit 1; }
+      if [ "$_glvi_spec" = "true" ] || [ "$_glvi_since" = "true" ]; then
+        _glvi_meta="$(printf '%s' "$_glvi_out" | python3 -I -c "
+import json, sys
+d = json.load(sys.stdin)
+print(json.dumps({'title': d.get('title') or '', 'body': d.get('body') or '', 'labels': d.get('labels') or []}))
+")" || exit 1
+        if [ "$_glvi_spec" = "true" ]; then
+          _vi_spec_filter "$_glvi_meta" "$_glvi_cm"
+        else
+          _vi_delta_filter "$_glvi_meta" "$_glvi_cm"
+        fi
+        return
+      fi
+      printf '%s\n%s' "$_glvi_cm" "$_glvi_out" | python3 -I -c "
+import json, sys
+head, _, item = sys.stdin.read().partition('\n')
+d = json.loads(item)
+d['comments'] = json.loads(head)['comments']
+print(json.dumps(d))
+"
       ;;
     comment-issue)
       local n="$1" body="$2"
@@ -5510,15 +5611,15 @@ print(d.get('source_branch') or d.get('sourceBranch') or '')
       # loudly if a result lands exactly on the cap (#171).
       local _glp_cap=100
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] glab mr list --state opened --per-page $_glp_cap $RARG"
+        echo "[dry-run] glab mr list --state opened --per-page $_glp_cap --output json $RARG"
         return 0
       fi
       local _glp_out
-      _glp_out="$(glab mr list --state opened --per-page "$_glp_cap" $RARG)" || exit 1
+      _glp_out="$(glab mr list --state opened --per-page "$_glp_cap" --output json $RARG)" || exit 1
       local _glp_count
       _glp_count="$(printf '%s' "$_glp_out" | _json_array_count)"
       _list_cap_warn list-prs "$_glp_cap" "$_glp_count" "glab --per-page ceiling" PRs
-      printf '%s\n' "$_glp_out"
+      printf '%s\n' "$_glp_out" | _gl_normalise prs || exit 1
       ;;
     diff-pr)
       _run glab mr diff "$1" $RARG

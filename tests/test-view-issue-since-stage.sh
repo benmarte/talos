@@ -146,7 +146,7 @@ cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "gitlab", "repo": "acme/widget"}}
 EOF
 err="$(bash "$VCS" view-issue 548 --since-stage 2>&1 >/dev/null)"
-assert_contains "$err" "view-issue --since-stage: not implemented for provider 'gitlab'" "gitlab: --since-stage prints a stderr fallback note"
+assert_not_contains "$err" "not implemented" "gitlab: --since-stage runs (filters the issue's notes, #735)"
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "azure", "azure": {"org_url": "https://dev.azure.com/acme", "project": "widget"}}}
 EOF

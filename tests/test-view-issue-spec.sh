@@ -379,8 +379,8 @@ cat > talos.pipeline.json <<'EOF'
 EOF
 : > "$GH_LOG"
 err="$(bash "$VCS" view-issue 201 --spec 2>&1 >/dev/null)"
-assert_contains "$err" "not implemented for provider 'gitlab'" \
-  "gitlab: view-issue --spec prints a stderr fallback note"
+assert_not_contains "$err" "not implemented" \
+  "gitlab: view-issue --spec runs (filters the issue's notes, #735)"
 rm -f talos.pipeline.json
 
 cat > talos.pipeline.json <<'EOF'
