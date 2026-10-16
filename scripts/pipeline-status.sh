@@ -36,7 +36,8 @@
 #   PIPELINE_REPO             overrides repo (owner/name) for issue URL construction
 #   PIPELINE_RUN_ID           when set, scopes the per-run validation sentinel to
 #                             this value so multiple pipeline runs share the /tmp dir
-#                             without interfering with each other.
+#                             without interfering with each other. `talos.sh run`
+#                             sets it (<pid>-<start time>) unless the caller did.
 #   TALOS_BOARD_MAX_PAGES     overrides the items() pagination page cap (default 50,
 #                             i.e. 5000 items at 100/page). A non-positive-integer
 #                             value falls back to the default 50 with a warning.
