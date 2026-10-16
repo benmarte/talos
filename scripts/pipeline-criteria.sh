@@ -16,10 +16,15 @@
 #       uses them. A spec with none (no PM stage: the issue's own checklist)
 #       numbers its `- [ ]` / `- [x]` items 1-based; an unmarked item is test.
 #       `(same)` with or without a reason is `same`; `(prose` is checked first.
-#   pipeline-criteria.sh map <runner-output-file> [--spec <spec-file>]
+#   pipeline-criteria.sh map <runner-output-file> [--spec <spec-file>] \
+#                            [--pass-re <ERE>] [--fail-re <ERE>]
 #       `AC<n> pass|fail` for each id seen in the output (`fail` when any
 #       assertion for the id failed). With --spec: each (test) and (same) id of the spec,
 #       `missing` when the output has no line for it (a crash, a typo).
+#       --pass-re / --fail-re (#716): extended regexes matched against one output
+#       line, `{n}` replaced by the criterion number and not continuing into
+#       another digit (`AC1` never matches `AC10`); a missing one is today's
+#       `ok AC<n>` / `FAIL AC<n>` line. Without --spec the ids tried are AC1..AC99.
 #   pipeline-criteria.sh report --spec <spec-file> --red <output> \
 #                               --head <output> --red-sha <sha8>
 #       (--red-sha must be 7-40 hex characters, else exit 2.)
@@ -79,6 +84,17 @@
 #       falls back to the full suite); otherwise the first `verify:` command
 #       that mentions "test" runs with the paths and filters appended as
 #       separate quoted arguments. Exit 3: no usable runner.
+#       verify.targeted_commands (#716, repo-only): a list of
+#       {match, run, pass, fail} entries, first match wins. A Tests: file whose
+#       repo-relative path fits `match` (a glob: `*` any characters but `/`, `?`
+#       one, `**/` zero or more directories) runs as `run`, once per file, with
+#       {file}, {class} (file name without its last extension) and {dir}
+#       substituted, from the repo root through pipeline-verify.sh. `pass` and
+#       `fail` are EREs for one output line ({n} is the criterion number; map
+#       above); a missing one is today's `ok`/`FAIL` line. A file that fits no
+#       entry uses the runner above. A malformed entry is skipped with one
+#       stderr note naming its index. A path outside [A-Za-z0-9_./-] that an
+#       entry matches is `verdict BLOCKED spec`, exit 4; nothing runs.
 #   pipeline-criteria.sh spec-check <spec-file>
 #       Would qa-run accept this spec's `Tests:` line (#594)? Pure text, the
 #       parser qa-run uses; `talos.sh done pm` runs it on the spec the PM just
@@ -153,20 +169,66 @@ cmd_ids() {
   printf '%s\n' "$out"
 }
 
-# map FILE [--spec SPEC]: `AC<n> pass|fail|missing`.
+# _re_valid RE (#716): an extended regex grep accepts ({n} read as a digit).
+_re_valid() {
+  local rc=0
+  grep -E -e "${1//\{n\}/1}" </dev/null >/dev/null 2>&1 || rc=$?
+  [ "$rc" -le 1 ]
+}
+
+# _re_line_hit RE N FILE (#716): a line of FILE matches RE with {n} = N and does
+# not continue into another digit (the same RE with N followed by a digit is
+# what a longer id would match: `AC1` is not `AC10`).
+_re_line_hit() {
+  local exact="${1//\{n\}/$2}" longer="${1//\{n\}/$2[0-9]}"
+  case "$1" in
+    *'{n}'*) grep -E -e "$exact" "$3" 2>/dev/null | grep -Ev -e "$longer" >/dev/null 2>&1 ;;
+    *) grep -E -e "$exact" "$3" >/dev/null 2>&1 ;;
+  esac
+}
+
+# _map_patterns FILE WANT PASS_RE FAIL_RE (#716): cmd_map with a pass and a fail
+# pattern. WANT is the spec's ids (a missing one is listed); empty tries AC1..AC99.
+_map_patterns() {
+  local file="$1" want="$2" pre="$3" fre="$4" id n i
+  [ -n "$pre" ] || pre='^[[:space:]]*ok[[:space:]]+AC{n}'
+  [ -n "$fre" ] || fre='^[[:space:]]*FAIL[[:space:]]+AC{n}'
+  if ! _re_valid "$pre" || ! _re_valid "$fre"; then
+    echo "pipeline-criteria: map: not a valid extended regex" >&2
+    return 2
+  fi
+  if [ -z "$want" ]; then
+    for ((i = 1; i < 100; i++)); do want="$want AC$i"; done
+  fi
+  for id in $want; do
+    n="${id#AC}"
+    if _re_line_hit "$fre" "$n" "$file"; then echo "$id fail"
+    elif _re_line_hit "$pre" "$n" "$file"; then echo "$id pass"
+    elif [ "$5" = spec ]; then echo "$id missing"
+    fi
+  done
+}
+
+# map FILE [--spec SPEC] [--pass-re RE] [--fail-re RE]: `AC<n> pass|fail|missing`.
 cmd_map() {
-  local file="${1:-}" spec="" want=""
+  local file="${1:-}" spec="" want="" pass_re="" fail_re=""
   [ -n "$file" ] || usage
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
       --spec) spec="${2:-}"; shift 2 || usage ;;
+      --pass-re) pass_re="${2:-}"; shift 2 || usage ;;
+      --fail-re) fail_re="${2:-}"; shift 2 || usage ;;
       *) usage ;;
     esac
   done
   [ -f "$file" ] || { echo "pipeline-criteria: map: no such file: $file" >&2; return 1; }
   if [ -n "$spec" ]; then
     want="$(cmd_ids "$spec" | awk '$2 == "test" || $2 == "same" { printf "%s ", $1 }')" || return 1
+  fi
+  if [ -n "$pass_re$fail_re" ]; then
+    _map_patterns "$file" "$want" "$pass_re" "$fail_re" "$([ -n "$spec" ] && echo spec || echo seen)"
+    return $?
   fi
   awk -v want="$want" '
     match($0, /^[ \t]*(ok|FAIL)[ \t]+AC[0-9]+([^0-9]|$)/) {
@@ -549,6 +611,95 @@ _qa_fail() {
   return 1
 }
 
+# verify.targeted_commands (#716) -> the entries as data: JSON on stdin, one
+# record per line, `E idx ere run =pass =fail` for a usable entry (ere is the
+# `match` glob as an anchored ERE; `=` guards an empty field) and `S idx reason`
+# for a skipped one, `W reason` for a value that is not a list. Nothing here runs.
+_TC_PY='
+import json, re, sys
+try:
+    d = json.loads(sys.stdin.read())
+except ValueError:
+    print("W\tnot valid JSON")
+    sys.exit(0)
+if not isinstance(d, list):
+    print("W\tnot a list")
+    sys.exit(0)
+CTRL = re.compile(r"[\x00-\x1f\x7f]")
+
+def glob_ere(g):
+    out, i = "", 0
+    while i < len(g):
+        if g.startswith("**/", i):
+            out += "(.*/)?"; i += 3
+        elif g[i] == "*":
+            while i < len(g) and g[i] == "*":
+                i += 1
+            out += "[^/]*"
+        elif g[i] == "?":
+            out += "[^/]"; i += 1
+        else:
+            out += ("\\" if g[i] in ".^$+(){}[]|\\" else "") + g[i]; i += 1
+    return "^" + out + "$"
+
+for i, e in enumerate(d):
+    if not isinstance(e, dict):
+        print("S\t%d\tnot an object" % i); continue
+    m, r = e.get("match"), e.get("run")
+    if not (isinstance(m, str) and m and isinstance(r, str) and r):
+        print("S\t%d\tneeds a match and a run string" % i); continue
+    opt = []
+    for k in ("pass", "fail"):
+        v = e.get(k)
+        if v is not None and not (isinstance(v, str) and v):
+            print("S\t%d\t%s is not a non-empty string" % (i, k)); break
+        opt.append(v or "")
+    else:
+        if any(CTRL.search(x) for x in (m, r, opt[0], opt[1])):
+            print("S\t%d\ta control character in a field" % i)
+        else:
+            print("E\t%d\t%s\t%s\t=%s\t=%s" % (i, glob_ere(m), r, opt[0], opt[1]))
+'
+
+# _tc_load: sets the TC_* arrays (idx, glob ERE, run, pass, fail) from the config,
+# and prints one stderr note per skipped entry. Absent key: no entries.
+TC_IDX=(); TC_ERE=(); TC_RUN=(); TC_PASS=(); TC_FAIL=()
+_tc_load() {
+  local raw tag a b c d e
+  TC_IDX=(); TC_ERE=(); TC_RUN=(); TC_PASS=(); TC_FAIL=()
+  raw="$(cfg verify.targeted_commands 2>/dev/null)"
+  [ -n "$raw" ] || return 0
+  while IFS=$'\t' read -r tag a b c d e; do
+    case "$tag" in
+      W) printf 'qa-run: verify.targeted_commands ignored: %s\n' "$a" >&2 ;;
+      S) printf 'qa-run: verify.targeted_commands entry %s skipped: %s\n' "$a" "$b" >&2 ;;
+      E)
+        c="${c#=}"; d="${d#=}"; e="${e#=}"
+        if { [ -z "$d" ] || _re_valid "$d"; } && { [ -z "$e" ] || _re_valid "$e"; }; then
+          TC_IDX+=("$a"); TC_ERE+=("$b"); TC_RUN+=("$c"); TC_PASS+=("$d"); TC_FAIL+=("$e")
+        else
+          printf 'qa-run: verify.targeted_commands entry %s skipped: pass or fail is not a valid regex\n' "$a" >&2
+        fi ;;
+    esac
+  done <<EOF
+$(python3 -I -c "$_TC_PY" <<<"$raw")
+EOF
+}
+# The tab-split above reads `E idx ere run pass fail`: with `=` on pass and fail
+# no field is empty, so the tab (whitespace to read) cannot collapse one.
+
+# _tc_pick PATH: sets TC_SEL to the index of the first entry whose glob fits, else -1.
+TC_SEL=-1
+_tc_pick() {
+  local i=0 n="${#TC_ERE[@]}"
+  TC_SEL=-1
+  while [ "$i" -lt "$n" ]; do
+    if [[ "$1" =~ ${TC_ERE[$i]} ]]; then TC_SEL="$i"; return 0; fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
 cmd_qa_run() {
   local issue="${1:-}" pr="${2:-}" base="" ack="" top
   [ $# -ge 2 ] || usage
@@ -657,31 +808,79 @@ cmd_qa_run() {
   done
   for p in ${missing[@]+"${missing[@]}"}; do echo "qa-run: missing test file: $p"; done
 
-  # 7. The runner.
-  local runner="" vline=""
+  # 7. The runner. A Tests file that fits a verify.targeted_commands entry (#716)
+  #    runs as that entry; the runner below is for the files that fit none.
+  local runner="" vline="" label n_entry=0 e_sel
+  _tc_load
+  for p in ${paths[@]+"${paths[@]}"}; do
+    _tc_pick "$p" || continue
+    case "$p" in
+      *[!A-Za-z0-9_./-]*)
+        printf 'qa-run: verdict BLOCKED spec: Tests: path outside [A-Za-z0-9_./-] fits verify.targeted_commands entry %s: %s\n' \
+          "${TC_IDX[$TC_SEL]}" "$(printf '%s' "$p" | tr -cd '[:print:]' | head -c 60)"
+        return 4 ;;
+    esac
+  done
+  for p in ${present[@]+"${present[@]}"}; do _tc_pick "$p" && n_entry=$((n_entry + 1)); done
   if [ -f tests/run-tests.sh ]; then
     runner=talos
   else
     vline="$(cfg verify 2>/dev/null | grep -i 'test' | head -n 1)"
     [ -z "$vline" ] || runner=verify
   fi
-  if [ -z "$runner" ]; then
+  if [ -z "$runner" ] && { [ "$n_entry" -eq 0 ] || [ "$n_entry" -lt "${#present[@]}" ]; }; then
     echo "qa-run: no tests/run-tests.sh and no test command in verify:"
     printf 'qa-run: verdict FAIL no usable test runner; hand-check the criteria and say so\n'
     return 3
   fi
+  label="${runner:-targeted}"
+  # _tc_exec OUTFILE SEL FILE -- one run of an entry; its lines are appended to OUTFILE.
+  _tc_exec() {
+    local out="$1" sel="$2" f="$3" cmd base cls dir raw rc id st
+    base="${f##*/}"; cls="${base%.*}"; [ -n "$cls" ] || cls="$base"
+    dir="${f%/*}"; [ "$dir" != "$f" ] || dir="."
+    cmd="${TC_RUN[$sel]}"
+    cmd="${cmd//\{file\}/$f}"; cmd="${cmd//\{class\}/$cls}"; cmd="${cmd//\{dir\}/$dir}"
+    raw="$tmp/entry.out"
+    bash "$SCRIPT_DIR/pipeline-verify.sh" --issue "$issue" --worktree "$top" -- \
+      bash -c "$cmd" > "$raw" 2>&1; rc=$?
+    cat "$raw" >> "$out"
+    if [ -n "${TC_PASS[$sel]}${TC_FAIL[$sel]}" ]; then
+      while read -r id st; do
+        case "$st" in
+          pass) printf '  ok  %s (verify.targeted_commands entry %s)\n' "$id" "${TC_IDX[$sel]}" >> "$out" ;;
+          fail) printf 'FAIL  %s (verify.targeted_commands entry %s)\n' "$id" "${TC_IDX[$sel]}" >> "$out" ;;
+        esac
+      done <<EOF
+$(cmd_map "$raw" --spec "$spec" --pass-re "${TC_PASS[$sel]}" --fail-re "${TC_FAIL[$sel]}")
+EOF
+    fi
+    return "$rc"
+  }
   # _qa_exec OUTFILE PATH... -- one run; output (stdout+stderr) to OUTFILE.
   _qa_exec() {
-    local out="$1" a=() q
+    local out="$1" a=() rest=() q rc=0 r
     shift
+    : > "$out"
+    for q in "$@"; do
+      if _tc_pick "$q"; then
+        _tc_exec "$out" "$TC_SEL" "$q"; r=$?
+        [ "$rc" -ne 0 ] || rc="$r"
+      else
+        rest+=("$q")
+      fi
+    done
+    [ "${#rest[@]}" -gt 0 ] || return "$rc"
     if [ "$runner" = talos ]; then
-      for q in "$@"; do a+=(--for "$q"); done
+      for q in "${rest[@]}"; do a+=(--for "$q"); done
       bash "$SCRIPT_DIR/pipeline-verify.sh" --issue "$issue" --worktree "$top" -- \
-        bash tests/run-tests.sh "${a[@]}" --strict --no-cache > "$out" 2>&1
+        bash tests/run-tests.sh "${a[@]}" --strict --no-cache >> "$out" 2>&1; r=$?
     else
       bash "$SCRIPT_DIR/pipeline-verify.sh" --issue "$issue" --worktree "$top" -- \
-        bash -c "$vline \"\$@\"" talos-qa "$@" ${filters[@]+"${filters[@]}"} > "$out" 2>&1
+        bash -c "$vline \"\$@\"" talos-qa "${rest[@]}" ${filters[@]+"${filters[@]}"} >> "$out" 2>&1; r=$?
     fi
+    [ "$rc" -ne 0 ] || rc="$r"
+    return "$rc"
   }
 
   # 8. Head run.
@@ -764,7 +963,7 @@ EOF
   local lines rep_rc=0 n_fail
   local tests_s=""
   for p in ${present[@]+"${present[@]}"}; do tests_s="${tests_s:+$tests_s }$p"; done
-  echo "qa-run: issue #$issue PR #$pr head $head8 red ${red8:-none} runner $runner tests ${tests_s:-none}"
+  echo "qa-run: issue #$issue PR #$pr head $head8 red ${red8:-none} runner $label tests ${tests_s:-none}"
   [ -z "$note" ] || echo "note: $note"
   local rep_args=(--spec "$spec" --red "$tmp/red.out" --head "$tmp/head.out" --red-sha "${red8:-$head8}")
   for p in ${frozen_files[@]+"${frozen_files[@]}"}; do

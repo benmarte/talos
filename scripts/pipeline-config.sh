@@ -1350,6 +1350,10 @@ def _lookup(key, default, no_default):
         # Python True/False to "true"/"false", so callers can do
         # [ "$(pipeline-config.sh board.enabled true)" = "true" ]
         print(str(value).lower(), end="")
+    elif key == "verify.targeted_commands" and isinstance(value, list):
+        # A list of objects (#716): JSON, never a Python repr, for the shell to parse.
+        import json
+        print(json.dumps(value), end="")
     elif isinstance(value, list):
         # Lists come back newline-separated for easy shell iteration.
         print("\n".join(str(v) for v in value), end="")
@@ -1372,6 +1376,9 @@ def _dump(env_keys, secrets_path):
     if isinstance(_raw_verify, dict):
         flat["verify"] = _raw_verify.get("commands", [])
     flat["verify.qa_mode"] = _qa_mode(walk(cfg, ["verify", "qa_mode"]))
+    if isinstance(flat.get("verify.targeted_commands"), list):
+        import json
+        flat["verify.targeted_commands"] = json.dumps(flat["verify.targeted_commands"])
 
     # An invalid value warns once on stderr and is dropped: the caller then
     # gets the key's table default. The defaults are the CALLER's -- the dump

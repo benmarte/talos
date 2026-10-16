@@ -229,7 +229,7 @@ A higher layer overrides a lower one key by key: mappings merge, scalars replace
 
 The user-level file accepts every key except the repo-only ones (scope `repo` in the table).
 
-Repo-only keys: `base_branch`, `repo`, `vcs.provider`, `vcs.repo`, `vcs.azure.*`, `vcs.file.source.path`, `board.*`, `verify` (and `verify.commands`), `verify.qa_mode`, `merge.required_checks`, `merge.forbidden_files`, `merge.forbidden_files_replace`, `merge.forbidden_files_allow`, `merge.approval_waiver_paths`, `merge.union_paths`, `issues.label_filter`, `issues.skip_labels`, `markers.trusted_authors`, `markers.verify_authors`. In the user-level file each is dropped with one stderr note naming the key, not the value. Their environment variables still apply.
+Repo-only keys: `base_branch`, `repo`, `vcs.provider`, `vcs.repo`, `vcs.azure.*`, `vcs.file.source.path`, `board.*`, `verify` (and `verify.commands`), `verify.qa_mode`, `verify.targeted_commands`, `merge.required_checks`, `merge.forbidden_files`, `merge.forbidden_files_replace`, `merge.forbidden_files_allow`, `merge.approval_waiver_paths`, `merge.union_paths`, `issues.label_filter`, `issues.skip_labels`, `markers.trusted_authors`, `markers.verify_authors`. In the user-level file each is dropped with one stderr note naming the key, not the value. Their environment variables still apply.
 
 The user-level file drives `hooks.*` and `notifications.cmd`, so it is read only if it is a regular file (or your symlink to one) owned by you and not group- or world-writable. Otherwise one stderr line names the fix and the layer reads as absent, as does malformed or non-mapping content.
 
@@ -328,6 +328,7 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `verify.commands` | list | - | - | repo |
 | `verify.qa_mode` | enum | `local` | - | repo |
 | `verify.targeted` | bool | `true` | - | any |
+| `verify.targeted_commands` | list | - | - | repo |
 | `verify.ci_wait_s` | int | `900` | - | any |
 | `verify.timeout_ms` | int | `600000` | - | any |
 
@@ -915,6 +916,7 @@ An unreadable gate answers `stop reason=<r>` (fail closed). Gates 3 and 4 set `p
 |---|---|---|
 | `verify.commands` | none | Shell commands run in order, first failure stops. Repo file only. |
 | `verify.targeted` | `true` | `true`: while iterating the developer runs only tests covering changed files; `false`: the full list after each change. Both run the full list once, after the last change. |
+| `verify.targeted_commands` | none | How to run one test file of a stack Talos does not know, and how to read its result lines. A list of `{ "match", "run", "pass", "fail" }` objects, first match wins; `pass` and `fail` are optional. `match` is a glob on the repo-relative path: `*` is any characters except `/`, `?` is one character, `**/` is zero or more directories. `run` is a command template with `{file}` (repo-relative path), `{class}` (file name without its last extension) and `{dir}` (repo-relative directory); it runs from the repo root through `pipeline-verify.sh`, once per `Tests:` file that matches. `pass` and `fail` are extended regexes for one output line, `{n}` is the criterion number and the match cannot continue into another digit (`AC1` never matches `AC10`); a missing one is the `ok AC<n>` / `FAIL AC<n>` line, and a criterion with both a pass and a fail line is `fail`. `qa-run` and the developer's targeted runs use it; a file that matches no entry, or no key, uses `tests/run-tests.sh --for` or the first `verify` line with "test". A malformed entry is skipped with one stderr note naming its index; a `Tests:` path outside `[A-Za-z0-9_./-]` is never substituted (`qa-run` ends `BLOCKED spec`, exit 4). Repo file only. Example: `{"match": "terrasow-api/**/*.cs", "run": "dotnet test terrasow-api/Terrasow.Tests --filter {class}", "pass": "^\\s*Passed .*\\.AC{n}_", "fail": "^\\s*Failed .*\\.AC{n}_"}` |
 | `verify.qa_mode` | derived | `ci` when `merge.required_checks` is non-empty, else `local`. Explicit `ci` with no required checks becomes `local` (stderr warning). Repo file only. |
 | `verify.ci_wait_s` | `900` | CI wait budget, 1 to 86400 s |
 | `verify.timeout_ms` | `600000` | Foreground timeout for each verify and CI-wait call, 1 to 86400000. The claude harness stops a foreground command at 600000 ms, so under the claude runner the stage prompts state `min(verify.timeout_ms, 600000)` and `talos.sh prompt` warns on stderr when the configured value is over the cap; other runners get it unchanged. A suite that needs longer goes in several `verify.commands` (for example `bash tests/run-tests.sh --quiet --shard 1/4` to `4/4`) or `qa_mode: ci` |
