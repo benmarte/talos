@@ -202,6 +202,32 @@ print(json.dumps(d))
       done
       printf '{}\n'; exit 0
     fi ;;
+  "rest --method get "*"/_apis/projects/"*"/teams?"*)
+    # Board column resolution (#732): the project's teams. STUB_AZURE_TEAMS is
+    # the raw REST body ({"value": [{"id","name"}...]}).
+    [ "${STUB_AZURE_TEAMS_FAIL:-}" = "1" ] && _stub_fail "VS403403: no access to the teams."
+    if [ -n "${STUB_AZURE_TEAMS:-}" ]; then printf '%s\n' "$STUB_AZURE_TEAMS"; exit 0; fi ;;
+  "rest --method get "*"/teamsettings/teamfieldvalues"*)
+    # A team's default area path: STUB_AZURE_TEAMFIELDS_<team id> answers one
+    # team (the raw {"defaultValue": ...} body), else STUB_AZURE_TEAMFIELDS.
+    [ "${STUB_AZURE_TEAMFIELDS_FAIL:-}" = "1" ] && _stub_fail "VS403403: no access to the team settings."
+    _tf_id="${args%%/_apis/work/teamsettings*}"; _tf_id="${_tf_id##*/}"
+    _tf_var="STUB_AZURE_TEAMFIELDS_${_tf_id//[^A-Za-z0-9_]/_}"
+    if [ -n "${!_tf_var:-}" ]; then printf '%s\n' "${!_tf_var}"; exit 0; fi
+    if [ -n "${STUB_AZURE_TEAMFIELDS:-}" ]; then printf '%s\n' "$STUB_AZURE_TEAMFIELDS"; exit 0; fi ;;
+  "rest --method get "*"/_apis/work/backlogs"*)
+    # STUB_AZURE_BACKLOGS is the raw body ({"value": [{"name","type"}...]}).
+    [ "${STUB_AZURE_BACKLOGS_FAIL:-}" = "1" ] && _stub_fail "VS403403: no access to the backlogs."
+    if [ -n "${STUB_AZURE_BACKLOGS:-}" ]; then printf '%s\n' "$STUB_AZURE_BACKLOGS"; exit 0; fi ;;
+  "rest --method get "*"/_apis/work/boards/"*"/columns"*)
+    # STUB_AZURE_BOARD_COLUMNS is the raw body ({"value": [{"name","stateMappings"}...]}).
+    [ "${STUB_AZURE_BOARD_COLUMNS_FAIL:-}" = "1" ] && _stub_fail "VS403403: no access to the board."
+    if [ -n "${STUB_AZURE_BOARD_COLUMNS:-}" ]; then printf '%s\n' "$STUB_AZURE_BOARD_COLUMNS"; exit 0; fi ;;
+  "boards work-item show "*"System.BoardColumn"*)
+    # The column read-back after a state move: STUB_AZURE_BOARDCOLUMN, empty
+    # when unset; STUB_AZURE_BOARDCOLUMN_FAIL=1 fails the read.
+    [ "${STUB_AZURE_BOARDCOLUMN_FAIL:-}" = "1" ] && _stub_fail "TF401232: Work item does not exist."
+    printf '%s\n' "${STUB_AZURE_BOARDCOLUMN:-}"; exit 0 ;;
   "boards work-item show "*"-o tsv") ;;
   "boards work-item show "*"--expand relations"*)
     [ "${STUB_AZURE_WORKITEM_RELATIONS_FAIL:-}" = "1" ] && _stub_fail "TF401232: Work item does not exist." ;;
