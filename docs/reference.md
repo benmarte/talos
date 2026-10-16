@@ -110,7 +110,7 @@ Only a person does these:
 - Answer a `pipeline:needs-owner` question (`next` answers `ask-owner`).
 - Decide the design when `gate fix-round` answers `ask-owner reason=design-decision`: reply on the PR under the `Design decision needed` comment; the next `gate fix-round` continues from the reply. See [Retries and attempt counting](#retries-and-attempt-counting).
 
-There is no switch that removes the CI gate: `gate merge` stops with `reason=ci-unverified` when `merge.required_checks` is empty (on `azure` the PR's blocking policy evaluations stand in; see `pr-checks-required`).
+There is no switch that removes the CI gate: `gate merge` stops with `reason=ci-unverified` when `merge.required_checks` is empty (on `azure` the PR's blocking policy evaluations stand in, on `gitlab` the MR's head pipeline; see `pr-checks-required`).
 
 ## Install and setup
 
@@ -762,7 +762,7 @@ Cost: the plan's cloud session credit applies to cloud sessions only; a run on y
 
 ### GitLab
 
-`list-issues`, `view-issue` and `list-prs` print the raw `glab` objects (`--output json`) with the GitHub-shaped keys the router reads added: `number` (from `iid`), `title`, `state`, `body` (from `description`) and `labels` as `[{"name": ...}]` for issues; `number`, `headRefName`, `baseRefName`, `isDraft` and `isCrossRepository` for MRs (`false` only when `source_project_id` equals `target_project_id`, else `true`). Output that is not a JSON array (an object for `view-issue`) exits 1 with nothing on stdout. `view-issue` adds the issue's notes as `comments: [{id, body, author: {login}, createdAt}]` (every page, oldest first, GitLab system notes dropped), and `--spec` and `--since-stage` work as on GitHub; a failed issue or notes read exits 1 with nothing on stdout. `list-issues` and `list-prs` stop at 100 items (`WARNING result capped at 100` on stderr). No board (`pipeline-status.sh` prints `board unsupported for gitlab`). `pr-checks-required` fails closed. `pr-head`, `read-comments` (MR ids), `check-approval-sha` and `post-approval` work on MRs with the same trust rules and markers as GitHub (MR notes through `glab api`, the head sha from `glab mr view`, the label with `glab mr update --label`), and `record-attempt`, `read-attempt`, `check-attempt` and `has-spec` work on issues, with the attempt marker in an issue note.
+`list-issues`, `view-issue` and `list-prs` print the raw `glab` objects (`--output json`) with the GitHub-shaped keys the router reads added: `number` (from `iid`), `title`, `state`, `body` (from `description`) and `labels` as `[{"name": ...}]` for issues; `number`, `headRefName`, `baseRefName`, `isDraft` and `isCrossRepository` for MRs (`false` only when `source_project_id` equals `target_project_id`, else `true`). Output that is not a JSON array (an object for `view-issue`) exits 1 with nothing on stdout. `view-issue` adds the issue's notes as `comments: [{id, body, author: {login}, createdAt}]` (every page, oldest first, GitLab system notes dropped), and `--spec` and `--since-stage` work as on GitHub; a failed issue or notes read exits 1 with nothing on stdout. `list-issues` and `list-prs` stop at 100 items (`WARNING result capped at 100` on stderr). No board (`pipeline-status.sh` prints `board unsupported for gitlab`). `pr-checks-required` judges the MR's head pipeline (or the named jobs of it; see Required checks), and exits 1 when it cannot read it. `pr-head`, `read-comments` (MR ids), `check-approval-sha` and `post-approval` work on MRs with the same trust rules and markers as GitHub (MR notes through `glab api`, the head sha from `glab mr view`, the label with `glab mr update --label`), and `record-attempt`, `read-attempt`, `check-attempt` and `has-spec` work on issues, with the attempt marker in an issue note.
 
 ### Azure DevOps
 
@@ -958,7 +958,7 @@ An unreadable gate answers `stop reason=<r>` (fail closed). Gates 3 and 4 set `p
 
 ### Required checks
 
-`merge.required_checks` (repo file only) lists check names as the provider reports them (GitHub check-run or status names; Azure policy display names, case-insensitive). `pipeline-vcs.sh pr-checks-required <pr> [--wait <s>]` reads only those:
+`merge.required_checks` (repo file only) lists check names as the provider reports them (GitHub check-run or status names; Azure policy display names, case-insensitive; GitLab job names of the MR's head pipeline). `pipeline-vcs.sh pr-checks-required <pr> [--wait <s>]` reads only those:
 
 | Exit | Meaning |
 |---|---|
@@ -966,7 +966,9 @@ An unreadable gate answers `stop reason=<r>` (fail closed). Gates 3 and 4 set `p
 | 2 | pending or missing (a skipped check is pending, never a pass) |
 | 1 | one failed (`pr-checks-required: failed:` on stderr), or the list is empty (never a vacuous pass) |
 
-`--wait` takes digits, at most 3600 (else exit 2). On `github` and `github-api` it polls inside the call at 30 s, 60 s, then 120 s steps; other providers answer once. GitLab is not implemented and exits 1.
+`--wait` takes digits, at most 3600 (else exit 2). On `github` and `github-api` it polls inside the call at 30 s, 60 s, then 120 s steps; other providers answer once.
+
+On `gitlab` the verb judges the MR's head pipeline (`head_pipeline` of the MR read). An empty `merge.required_checks` is not a refusal: the pipeline's own status stands in (`success` passes; `failed`, `canceled`, `canceling` and an unknown status fail; `created`, `waiting_for_resource`, `preparing`, `pending`, `running`, `scheduled`, `manual` and `skipped` are pending, so a skipped or manual pipeline never passes). With names, each is matched exactly against the pipeline's jobs (every page), and of several jobs with one name (a retry) the highest job id decides; the pipeline's own status is not consulted, and jobs that are not named are ignored. An MR with no head pipeline, or whose head pipeline is for another commit than the MR's `sha`, is pending (exit 2). A failed read or unparseable JSON exits 1.
 
 On `azure` an empty `merge.required_checks` is not a refusal: the verb judges the PR's blocking policy evaluations (`isBlocking` true) instead, with the same exits (`approved` and `notApplicable` pass, `rejected` and `broken` fail, `queued` and `running` are pending). Non-blocking policies are ignored, and a PR with no blocking evaluation is pending (exit 2), never a pass. A policy-only project needs no `merge.required_checks` for this verb.
 

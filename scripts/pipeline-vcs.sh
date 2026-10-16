@@ -187,7 +187,10 @@
 #                                             the current head; exit 2 while
 #                                             any is pending/missing, exit 1
 #                                             on failure or an empty
-#                                             merge.required_checks (#205).
+#                                             merge.required_checks (#205);
+#                                             gitlab and azure judge the head
+#                                             pipeline / blocking policies then
+#                                             (#737, #686).
 #                                             A skipped or neutral check
 #                                             is pending, not failed (#435): a
 #                                             draft push leaves one until the
@@ -5965,12 +5968,101 @@ print(p.get("id") or "")
       echo "rerun-ci: retried pipeline $_glrc_pid for MR !$n"
       ;;
     pr-checks-required)
-      # Not implemented for gitlab yet. This verb gates a CI-wait
-      # loop that trusts exit 0 as "every required check passed" -- failing
-      # open here would let that loop treat unimplemented CI status as a
-      # vacuous pass. Fail closed instead (#205).
-      echo "pipeline-vcs: pr-checks-required not implemented for gitlab -- falls back to failing closed, not a vacuous pass" >&2
-      return 1
+      # pr-checks-required <iid> (#737): this verb gates a CI-wait loop that
+      # trusts exit 0 as "every required check passed", so any read or parse
+      # failure exits 1, never 0 or 2. The MR read is rerun-ci's, and its
+      # head_pipeline is the pipeline judged. GitLab statuses: success passes;
+      # failed, canceled, canceling and anything unknown fail; created,
+      # waiting_for_resource, preparing, pending, running, scheduled, manual
+      # and skipped are pending (a skipped or manual pipeline is never a pass).
+      # A head pipeline whose sha is not the MR's is for an older commit:
+      # pending. With merge.required_checks empty the pipeline's own status
+      # stands in, like azure's blocking policies (#686); with names, each is
+      # matched exactly against the pipeline's jobs (every page), and of several
+      # jobs sharing a name (a retry) the highest id decides. No head pipeline
+      # is pending (exit 2). The exit contract and summary lines are github's,
+      # via _eval_required_checks.
+      local n="${1:-}" _required _glpc_proj _glpc_mr _glpc_head _glpc_pid _glpc_state
+      local _glpc_jobs _glpc_norm
+      _gl_require_iid pr-checks-required "$n" || exit 1
+      _required="$(cfg merge.required_checks)"
+      _glpc_proj="$(_gl_api_project)"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab api projects/$_glpc_proj/merge_requests/$n; glab api --paginate projects/$_glpc_proj/pipelines/<head pipeline of MR !$n>/jobs; evaluate against merge.required_checks, or the head pipeline's status when it is empty"
+        return 0
+      fi
+      local _glpc_py='
+import json, sys
+STATUS = {"success": "pass", "failed": "fail", "canceled": "fail", "canceling": "fail"}
+for s in ("created", "waiting_for_resource", "preparing", "pending", "running",
+          "scheduled", "manual", "skipped"):
+    STATUS[s] = "pending"
+def status_of(raw):
+    return STATUS.get(raw, "fail") if isinstance(raw, str) else "fail"
+def pages(text):
+    dec, idx, out = json.JSONDecoder(), 0, []
+    while True:
+        while idx < len(text) and text[idx].isspace():
+            idx += 1
+        if idx >= len(text):
+            return out
+        page, idx = dec.raw_decode(text, idx)
+        out.append(page)
+if sys.argv[1] == "mr":
+    mr = json.load(sys.stdin)
+    pipe = mr.get("head_pipeline")
+    if not isinstance(pipe, dict):
+        print("none")
+        sys.exit(0)
+    pid = str(pipe.get("id"))
+    if not pid.isdigit():
+        sys.exit(1)
+    sha, want = pipe.get("sha"), mr.get("sha")
+    if sha is not None and want is not None and sha != want:
+        print(pid + "\tstale")
+    else:
+        print(pid + "\t" + status_of(pipe.get("status")))
+    sys.exit(0)
+required = [l.strip() for l in sys.argv[2].splitlines() if l.strip()]
+best = {}
+data = pages(sys.stdin.read())
+if not data:
+    sys.exit(1)
+for page in data:
+    if not isinstance(page, list):
+        sys.exit(1)
+    for job in page:
+        jid = job.get("id")
+        jid = jid if isinstance(jid, int) else -1
+        if job.get("name") in required and (job["name"] not in best or jid > best[job["name"]][0]):
+            best[job["name"]] = (jid, status_of(job.get("status")))
+for name in required:
+    if name in best:
+        print(name + "\t" + best[name][1])
+'
+      _glpc_mr="$(glab api "projects/$_glpc_proj/merge_requests/$n")" || {
+        echo "pipeline-vcs: pr-checks-required: could not read MR !$n" >&2; exit 1; }
+      _glpc_head="$(printf '%s' "$_glpc_mr" | python3 -I -c "$_glpc_py" mr 2>/dev/null)" || {
+        echo "pipeline-vcs: pr-checks-required: could not parse MR !$n" >&2; exit 1; }
+      if [ "$_glpc_head" = "none" ]; then
+        echo "pr-checks-required: pending or missing: no head pipeline on MR !$n" >&2
+        exit 2
+      fi
+      _glpc_pid="$(printf '%s' "$_glpc_head" | cut -f1)"
+      _glpc_state="$(printf '%s' "$_glpc_head" | cut -f2)"
+      if [ "$_glpc_state" = "stale" ]; then
+        echo "pr-checks-required: pending or missing: head pipeline $_glpc_pid is not for the head commit of MR !$n" >&2
+        exit 2
+      fi
+      if [ -z "$_required" ]; then
+        printf 'pipeline %s\t%s\n' "$_glpc_pid" "$_glpc_state" | _eval_required_checks "pipeline $_glpc_pid"
+        return
+      fi
+      _glpc_jobs="$(glab api --paginate "projects/$_glpc_proj/pipelines/$_glpc_pid/jobs?per_page=100")" || {
+        echo "pipeline-vcs: pr-checks-required: could not read the jobs of pipeline $_glpc_pid" >&2; exit 1; }
+      _glpc_norm="$(printf '%s' "$_glpc_jobs" | python3 -I -c "$_glpc_py" jobs "$_required" 2>/dev/null)" || {
+        echo "pipeline-vcs: pr-checks-required: could not parse the jobs of pipeline $_glpc_pid" >&2; exit 1; }
+      printf '%s\n' "$_glpc_norm" | _eval_required_checks "$_required"
       ;;
     *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;
   esac

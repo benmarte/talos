@@ -735,8 +735,8 @@ cat > talos.pipeline.json <<'EOF'
 EOF
 
 # pr-checks-required is the one verb that must NOT fail open here (#205): the
-# QA CI-wait loop trusts exit 0 as "every required check passed", so an
-# unimplemented provider must fail closed instead of vacuously passing.
+# QA CI-wait loop trusts exit 0 as "every required check passed", so a gitlab
+# MR whose pipeline cannot be resolved must fail closed (exit 1; #737 judges it).
 out="$(bash "$VCS" pr-checks-required 9 2>&1)"; rc=$?
 assert_eq "1" "$rc" "gitlab: pr-checks-required fails closed (exit 1), not vacuously open (#205)"
 

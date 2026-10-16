@@ -253,6 +253,16 @@ print('\n'.join(out))
       printf '[{"iid":7,"title":"fix: guard","state":"opened","source_branch":"fix/issue-42-guard"}]\n'
     fi
     exit 0 ;;
+  "api --paginate projects/"*"/pipelines/"*"/jobs"*)
+    # A pipeline's jobs (#737): STUB_GITLAB_PIPELINE_JOBS is the raw output,
+    # pages back-to-back as `glab api --paginate` prints them (unset = no
+    # jobs). STUB_GITLAB_JOBS_FAIL=1 or STUB_GITLAB_API_FAIL=1 fails it.
+    if [ "${STUB_GITLAB_JOBS_FAIL:-}" = "1" ] || [ "${STUB_GITLAB_API_FAIL:-}" = "1" ]; then
+      echo "ERROR: 500 Internal Server Error" >&2
+      exit 1
+    fi
+    printf '%s\n' "${STUB_GITLAB_PIPELINE_JOBS:-[]}"
+    exit 0 ;;
   "api "*"merge_requests/"*"/diffs"*|"api "*"/pipelines/"*"/retry"*|"api projects/"*"/merge_requests/"*)
     # MR REST calls (#303): pr-files/check-pr-files read
     # STUB_GITLAB_MR_DIFFS, rerun-ci reads STUB_GITLAB_MR_API and POSTs the
