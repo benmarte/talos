@@ -16,7 +16,7 @@ Prior stage summary: {{PRIOR_STAGE_SUMMARY}}
 {{QA_RULE}}
   bash scripts/pipeline-criteria.sh qa-run {{ISSUE}} {{PR}}
 {{QA_GATE_STEP}}
-A criterion `qa-run` reports `red@<sha8> green@head` has its proof: do not re-run or hand-exercise it. Exercise real behaviour for every other criterion (`green@head (red: missing)`, `prose hand-checked`, any `qa-run` did not run).
+A criterion `qa-run` reports `red@<sha8> green@head` has its proof, as does a `guard green@head` line: do not re-run or hand-exercise it. Exercise real behaviour for every other criterion (`green@head (red: missing)`, `prose hand-checked`, any `qa-run` did not run).
 post-approval verifies its own stamp: do not re-read your comment or re-check labels.
 
 {{STOP_RULE}}

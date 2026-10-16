@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix(qa): a `(test)` criterion that is green at the red commit and at the head is a regression guard (`AC<n> guard green@head (green at red@<sha8>)`) when another criterion went red then green and no other FAIL line exists, so a mixed spec no longer ends `spec-unusable`; all criteria vacuous still does
 
 ## [0.19.0] - 2026-10-16
 - docs: `post-approval`, `check-approval-sha` and `has-spec` are documented as running on Azure too (the stage profiles no longer call `post-approval` GitHub-only); the reference documents the `comment-issue` / `comment-pr` body rules and the `map` verb, `qa.md` lists the `flaky` and `e2e` `qa-run` lines, `talos.pipeline.json.example` keeps the `*.example` approval waiver, and a guard test catches a GitHub-only claim about an Azure verb

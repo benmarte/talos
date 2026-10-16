@@ -33,6 +33,8 @@
 #         AC<n> red@<sha8> green@head       red at the first commit, green at head
 #         AC<n> green@head (red: missing)   no per-id output at red: a note
 #         AC<n> FAIL vacuous (green at red@<sha8>)
+#         AC<n> guard green@head (green at red@<sha8>)   #693: a vacuous line
+#                                   beside a red-then-green one, no other FAIL
 #         AC<n> FAIL head=<fail|missing> red=<state>
 #         AC<n> prose hand-checked
 #       A (same) criterion (#715) passes when green at red AND at head:
@@ -300,9 +302,15 @@ cmd_report() {
   head_map="$(cmd_map "$head" --spec "$spec")" || return 1
   [ -z "$frozen" ] || frozen_map="$(cmd_map "$frozen" --spec "$spec")" || return 1
   [ -z "$rerun" ] || rerun_map="$(cmd_map "$rerun" --spec "$spec")" || return 1
+  # The lines are buffered: a vacuous (test) criterion is a guard or a FAIL
+  # (#693) only once every criterion is classified. `guards` holds the indexes
+  # of the vacuous lines, `rtg` counts the red-then-green criteria and `rc`
+  # (set by every other FAIL) is the clean-remainder check.
+  local -a buf=() guards=()
+  local rtg=0 i
   while read -r id kind; do
     if [ "$kind" = "prose" ]; then
-      printf '%s prose hand-checked\n' "$id"
+      buf[${#buf[@]}]="$id prose hand-checked"
       continue
     fi
     r="$(awk -v i="$id" '$1 == i { print $2 }' <<<"$red_map")"
@@ -314,31 +322,45 @@ cmd_report() {
     # Failed at the head, passed on the one re-run (#717): flaky, not a finding on the PR.
     rr="$(awk -v i="$id" '$1 == i { print $2 }' <<<"$rerun_map")"
     if [ "$h" = "fail" ] && [ "$rr" = "pass" ]; then
-      printf '%s FAIL flaky (failed at head, passed on re-run)\n' "$id"; rc=1
+      buf[${#buf[@]}]="$id FAIL flaky (failed at head, passed on re-run)"; rc=1
     elif [ "$kind" = "same" ]; then
       if [ "$h" != "pass" ]; then
-        printf '%s FAIL same red=%s head=%s\n' "$id" "${r:-missing}" "${h:-missing}"; rc=1
+        buf[${#buf[@]}]="$id FAIL same red=${r:-missing} head=${h:-missing}"; rc=1
       elif [ "$r" = "fail" ]; then
-        printf '%s FAIL same red=fail head=pass\n' "$id"; rc=1
+        buf[${#buf[@]}]="$id FAIL same red=fail head=pass"; rc=1
       elif [ "$f" = "fail" ]; then
-        _weakened "$id" "$ack" || rc=1
+        buf[${#buf[@]}]="$(_weakened "$id" "$ack")" || rc=1
       elif [ "$r" = "pass" ]; then
-        printf '%s PASS same red@%s green@head%s\n' "$id" "$sha" "$fcol"
+        buf[${#buf[@]}]="$id PASS same red@$sha green@head$fcol"
       else
-        printf '%s PASS same green@head%s (red: missing)\n' "$id" "$fcol"
+        buf[${#buf[@]}]="$id PASS same green@head$fcol (red: missing)"
       fi
     elif [ "$h" != "pass" ]; then
-      printf '%s FAIL head=%s red=%s\n' "$id" "${h:-missing}" "${r:-missing}"; rc=1
+      buf[${#buf[@]}]="$id FAIL head=${h:-missing} red=${r:-missing}"; rc=1
     elif [ "$r" = "pass" ]; then
-      printf '%s FAIL vacuous (green at red@%s)\n' "$id" "$sha"; rc=1
+      guards[${#guards[@]}]="${#buf[@]} $id"
+      buf[${#buf[@]}]="$id FAIL vacuous (green at red@$sha)"
     elif [ "$f" = "fail" ]; then
-      _weakened "$id" "$ack" || rc=1
+      buf[${#buf[@]}]="$(_weakened "$id" "$ack")" || rc=1
     elif [ "$r" = "fail" ]; then
-      printf '%s red@%s green@head%s\n' "$id" "$sha" "$fcol"
+      buf[${#buf[@]}]="$id red@$sha green@head$fcol"; rtg=$((rtg + 1))
     else
-      printf '%s green@head%s (red: missing)\n' "$id" "$fcol"
+      buf[${#buf[@]}]="$id green@head$fcol (red: missing)"
     fi
   done <<<"$table"
+  # A vacuous criterion is a regression guard (#693) when another criterion went
+  # red then green and no other FAIL line exists; else it is the FAIL it was.
+  if [ "${#guards[@]}" -gt 0 ]; then
+    local g
+    if [ "$rtg" -gt 0 ] && [ "$rc" -eq 0 ]; then
+      for g in "${guards[@]}"; do
+        buf[${g%% *}]="${g#* } guard green@head (green at red@$sha)"
+      done
+    else
+      rc=1
+    fi
+  fi
+  [ "${#buf[@]}" -eq 0 ] || for i in "${buf[@]}"; do printf '%s\n' "$i"; done
   return "$rc"
 }
 

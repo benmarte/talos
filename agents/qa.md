@@ -38,6 +38,8 @@ substitute it).
      red commit is the branch's first, so no later commit can turn it red. The
      fix is the spec (the criterion becomes `(same: <why>)`, or its test file
      goes on the `Tests:` line); `talos.sh run` stops it as `spec-unusable`.
+   - `AC<n> guard green@head (green at red@<sha8>)` -- a vacuous test beside
+     red-then-green ones: a guard, copied into the verdict, not exercised by hand.
    - `AC<n> PASS same red@<sha8> green@head` -- a `(same)` criterion green at
      red and at head. `AC<n> FAIL same ...` is an ordinary FAIL.
    - `AC<n> prose hand-checked` -- no test; you check it by hand in step 3.
