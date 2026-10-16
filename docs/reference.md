@@ -34,7 +34,7 @@ Paths such as `scripts/talos.sh` are relative to the Talos install (`~/.talos` a
 
 `run --issue <N>` works one issue and ends after its merge with `stop merged pr=<M>`.
 
-Verbs: `env`, `state [--summary]`, `next [--issue N]`, `prompt`, `done`, `gate fix-round|merge`, `docs-gate`, `post-merge`, `sweep`, `summary`, `claim`, `lease prune`, `run`.
+Verbs: `env`, `state [--summary]`, `next [--issue N]`, `prompt`, `done`, `gate fix-round|merge`, `docs-gate`, `post-merge`, `sweep`, `summary`, `claim`, `lease prune`, `map`, `run`.
 
 ### Stages
 
@@ -761,7 +761,7 @@ Cost: the plan's cloud session credit applies to cloud sessions only; a run on y
 
 ### GitHub-only verbs
 
-Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azure), `upsert-pr-comment`, `mark-needs-owner` and `list-needs-owner` (also on Azure), `edit-pr-body`, `has-spec`, `conflict-files`. Other providers exit non-zero; `talos.sh next` then stops with `unsupported-verb:<verb>`.
+Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azure), `upsert-pr-comment`, `mark-needs-owner` and `list-needs-owner` (also on Azure), `edit-pr-body`, `has-spec` (also on Azure), `conflict-files`. Other providers exit non-zero; `talos.sh next` then stops with `unsupported-verb:<verb>`.
 
 ### File mode and chat mode
 
@@ -820,6 +820,7 @@ From `~/.talos/scripts` (or `scripts/` in a checkout); `--dry-run` prints the ca
 - `pipeline-vcs.sh list-issues | list-prs | view-issue <n> | view-pr <n>`: read as JSON.
 - `pipeline-vcs.sh label-issue <n> --add pipeline:ready`: queue an issue (`--remove` drops a label).
 - `pipeline-vcs.sh current-user | assert-sync`: your login; checkout clean and level.
+- `pipeline-vcs.sh comment-issue <n> | comment-pr <n>`: post a comment. A stage writes its body to `.talos/<role>-*.body` or passes `--body-file -` with a heredoc on stdin; a `--body-file` or stdin body is never read as a path. A positional or `--body` body that is one whitespace-free token naming a readable file (bare, relative or absolute) is refused with "use `--body-file`", so a path is never posted as the comment; any other text is posted as written.
 - `talos.sh state --summary`: in flight, waiting, next, other operators' items.
 - `talos.sh map`: the project map (below).
 
@@ -973,7 +974,7 @@ Only `!= true`, `== false` or `!draft` (alone or `&&`-combined) counts as a skip
 
 ### Approvals bound to the head SHA
 
-An approval is a PR comment ending in `<!-- talos:approval sha=<40-hex head SHA> role=<role> -->` plus the role's label. `pipeline-vcs.sh post-approval <pr> <role> --body-file f [--issue n]` (`github` and `github-api` only) reads the head SHA itself, posts, labels and self-checks (`stamp ok`, or `stamp FAILED` and exit 1). `--body-file` is required for `reviewer` and `security` and optional for the other roles.
+An approval is a PR comment ending in `<!-- talos:approval sha=<40-hex head SHA> role=<role> -->` plus the role's label. `pipeline-vcs.sh post-approval <pr> <role> --body-file f [--issue n]` (`github`, `github-api` and `azure`) reads the head SHA itself, posts, labels and self-checks (`stamp ok`, or `stamp FAILED` and exit 1). `--body-file` is required for `reviewer` and `security` and optional for the other roles.
 
 For `reviewer` and `security`, `post-approval` refuses (exit 1, nothing posted) when:
 - there is no `--body-file`: `pipeline-vcs: post-approval: <role> approval requires --body-file with the review text`;
@@ -990,7 +991,7 @@ After a successful post the reviewer or security body file is removed; the qa an
 | `adversarial` (`roles.adversarial`) | `adversarial:approved` |
 | `docs` | `docs:done` |
 
-`check-approval-sha <pr> [--stale-list]` (`github` and `github-api` only) exits 1 when a present label has no valid marker or its SHA is not the head; `--stale-list` also prints `stale role=<role> label=<label> sha=<marker sha>` per stale role, without `sha=` when the marker gave no SHA that exists in the repository (match the line by its prefix).
+`check-approval-sha <pr> [--stale-list]` (`github`, `github-api` and `azure`) exits 1 when a present label has no valid marker or its SHA is not the head; `--stale-list` also prints `stale role=<role> label=<label> sha=<marker sha>` per stale role, without `sha=` when the marker gave no SHA that exists in the repository (match the line by its prefix).
 
 **Lost stamps.** An approval label is a fact about one head SHA, read only through `check-approval-sha`. If a label disappears (a hand edit, label churn) while its marker still pins the PR's current head, the stamp is recovered, not re-earned.
 - `check-approval-sha <pr> --evidence-list` prints `evidence role=<r> label=<l> state=present|lost|missing` per role. `lost` means the label is absent and the role's newest marker is the exact line `post-approval` writes for the current head; a hand-made marker with other spacing or trailing text is `missing`.

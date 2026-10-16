@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- docs: `post-approval`, `check-approval-sha` and `has-spec` are documented as running on Azure too (the stage profiles no longer call `post-approval` GitHub-only); the reference documents the `comment-issue` / `comment-pr` body rules and the `map` verb, `qa.md` lists the `flaky` and `e2e` `qa-run` lines, `talos.pipeline.json.example` keeps the `*.example` approval waiver, and a guard test catches a GitHub-only claim about an Azure verb
 - feat(qa): `qa-run` re-runs a failing head run once and names a test that passed the second time `AC<n> FAIL flaky`, which stops the run for the owner (`stop reason=qa-flaky`) instead of starting a fix round; a repo-only `verify.e2e` command runs once on a green draft, and a non-zero exit is a QA FAIL with its output tail
 - feat(verify): a repo-only `verify.targeted_commands` list of `{match, run, pass, fail}` entries tells `qa-run` and the developer how to run one test file of another stack (dotnet, vitest, ...) and how to read its pass/fail lines, so red/green is proved without a hand-run override; `pipeline-criteria.sh map` takes `--pass-re` / `--fail-re`
 - feat(qa): `qa-run` also runs the red commit's version of each `Tests:` file the PR changed since, against the head code (the frozen run), and prints `frozen@head` or `AC<n> FAIL weakened (red-commit test fails at head)`, so a fix round cannot weaken a test after the red proof; `--ack-changed <reason>` records a change made on purpose as `weakened-ack`

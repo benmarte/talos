@@ -42,7 +42,8 @@
     "approval_waiver_paths": [
       "*.md",
       "docs/**",
-      "CHANGELOG.md"
+      "CHANGELOG.md",
+      "*.example"
     ],
     "union_paths": [
       "CHANGELOG.md"

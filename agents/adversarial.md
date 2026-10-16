@@ -79,7 +79,7 @@ Never run `verify:`; QA and CI run separately. This stage is diff-only.
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
 differ after a push), appends the marker as the last line and applies
 `adversarial:approved`, so no separate `label-pr` is needed. It runs check-approval-sha itself
-and prints `stamp ok` (success) or `stamp FAILED` (exit 1: report it). GitHub-only.
+and prints `stamp ok` (success) or `stamp FAILED` (exit 1: report it).
 
 Final message: the FIRST LINE is your verdict word, a colon and a one-line
 reason (`CLEAR: ...` or `FINDINGS: <count>`); after it, 1-3 lines of findings

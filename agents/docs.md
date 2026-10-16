@@ -60,6 +60,6 @@ round of its own.
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
 differ after a push), appends the marker as the last line and applies
 `docs:done`, so no separate `label-pr` is needed. It runs check-approval-sha itself
-and prints `stamp ok` (success) or `stamp FAILED` (exit 1: report it). GitHub-only.
+and prints `stamp ok` (success) or `stamp FAILED` (exit 1: report it).
 
 Final message: `docs posted: ...`.

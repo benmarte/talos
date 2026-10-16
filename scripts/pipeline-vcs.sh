@@ -513,7 +513,6 @@
 #                                             Fetch head SHA from the PR, construct
 #                                             the wrapped approval marker, post it as a
 #                                             comment, and apply the approval label.
-#                                             GitHub-only (github and github-api providers).
 #                                             Roles: qa, reviewer, security, docs.
 #                                             Eliminates marker format failures for any
 #                                             stage that uses this verb (#146).
@@ -8501,7 +8500,7 @@ if [ "$VERB" = "label-pr" ] && [ "${#ARGS[@]}" -ge 1 ]; then
 fi
 
 # ── post-approval: atomic marker-post + label (#146) ─────────────────────────
-# GitHub-only (github and github-api providers). For other providers, exit 1.
+# github, github-api and azure. For other providers, exit 1.
 #
 # Issue #128 note: post-approval is the single controlled surface through which
 # all approval markers enter the system. Future provenance work (signed markers,
