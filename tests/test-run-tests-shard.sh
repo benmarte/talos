@@ -25,12 +25,12 @@ for n in 3 4; do
 $(cat "$SHARDS_DIR/$i-of-$n")"
   done
   union="$(printf '%s\n' "$union" | grep -v '^$' | LC_ALL=C sort)"
-  assert_eq "$all" "$union" "real suite: shards 1..$n/$n together run every file exactly once"
+  assert_eq "$all" "$union" "AC3 real suite: shards 1..$n/$n together run every file exactly once"
 done
 
 # deterministic: the same call twice names the same files
 b="$(bash "$REAL_RUN_TESTS" --shard 2/4 --list 2>/dev/null)"
-assert_eq "$(cat "$SHARDS_DIR/2-of-4")" "$b" "shard partition is deterministic"
+assert_eq "$(cat "$SHARDS_DIR/2-of-4")" "$b" "AC3 shard partition is deterministic"
 
 # balanced: by tests/timings.txt no shard carries much more than its share
 load_of() {  # $1=shard list file
@@ -51,9 +51,9 @@ done
 biggest="$(awk '!/^#/ && $1 + 0 > m {m = $1 + 0} END {print m + 0}' "$TALOS_ROOT/tests/timings.txt")"
 [ "$biggest" -lt 8 ] && biggest=8
 if [ $((max - min)) -le "$biggest" ]; then
-  pass "4 shards are balanced by timings (heaviest ${max}s vs lightest ${min}s, spread <= the biggest file, ${biggest}s)"
+  pass "AC3 4 shards are balanced by timings (heaviest ${max}s vs lightest ${min}s, spread <= the biggest file, ${biggest}s)"
 else
-  fail "4 shards are balanced by timings" "heaviest ${max}s vs lightest ${min}s, spread over ${biggest}s"
+  fail "AC3 4 shards are balanced by timings" "heaviest ${max}s vs lightest ${min}s, spread over ${biggest}s"
 fi
 
 # a pattern composes with a shard: a subset of that shard, nothing outside it
@@ -119,7 +119,7 @@ assert_contains "$out" "test-b.sh" "count-only: names the missing file"
 
 printf 'test-b.sh\n' > "$CD/tests/retired-tests.txt"
 out="$(bash "$CD/tests/run-tests.sh" --count-only --base-ref basebr 2>&1)"; rc=$?
-assert_exit_code 0 "$rc" "count-only: retired-tests.txt excuses the missing file"
+assert_exit_code 0 "$rc" "AC3 count-only: retired-tests.txt excuses the missing file"
 
 out="$(bash "$CD/tests/run-tests.sh" --count-only --base-ref no-such-ref 2>&1)"; rc=$?
 assert_exit_code 1 "$rc" "count-only: an unresolvable base ref is an error, not a skip"

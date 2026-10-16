@@ -11,7 +11,14 @@
 # tests/timings.txt: one "<secs> <basename>" line per tests/test-*.sh, sorted
 # by name so a refresh diffs cleanly. Timings drift slowly; refresh when a
 # shard's CI time visibly outgrows its siblings. A file that is missing from
-# the table (a new test) still runs: it gets a fixed default weight.
+# the table (a new test) still runs: it gets a fixed default weight, but
+# tests/test-shard-weights.sh fails until the file has its own entry, so a new
+# test file needs a line here: run this script and commit the result. The same
+# test caps the heaviest shard's summed weight (SHARD_WEIGHT_BOUND): after a
+# refresh, set it to the new heaviest shard rounded up by about 10%.
+# A suite is too long for one foreground command (verify.timeout_ms 600000), so
+# time it per shard (`run-tests.sh --no-cache --quiet --timings --shard i/n`)
+# and pass the TIMINGS blocks as one log if a single run would pass the cap.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 JOBS=4
