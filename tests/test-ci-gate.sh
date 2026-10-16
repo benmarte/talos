@@ -234,7 +234,7 @@ assert_contains "$out" "test	pass" "AC5 that row is the newest run's"
 
 printf '{"vcs": {"provider": "gitlab"}, "merge": {"required_checks": ["test"]}}\n' > talos.pipeline.json
 wait_run 0 pass 9 --wait 60
-assert_eq "1" "$rc" "gitlab: --wait is dropped and the verb still fails closed (exit 1)"
-assert_contains "$out" 'not implemented for gitlab' "gitlab: same not-implemented line with --wait"
+assert_eq "1" "$rc" "gitlab: --wait is dropped and an unresolvable pipeline still fails closed (exit 1)"
+assert_contains "$out" 'pipeline-vcs: pr-checks-required: could not parse MR' "gitlab: same unreadable-MR line with --wait (#737)"
 
 finish
