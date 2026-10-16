@@ -41,6 +41,20 @@ else
     "missing (run bash tests/update-timings.sh):$(printf '%s' "$missing" | cut -c1-400)"
 fi
 
+# ── AC7 (#738): the three routing e2e legs are in the table ──────────────────
+missing=""
+for name in test-routing-e2e-github.sh test-routing-e2e-azure.sh test-routing-e2e-gitlab.sh; do
+  if ! awk -v n="$name" '$1 ~ /^[0-9]+$/ && $2 == n { found = 1 } END { exit !found }' "$TIMINGS"; then
+    missing="$missing $name"
+  fi
+done
+if [ -z "$missing" ]; then
+  pass "AC7 each tests/test-routing-e2e-<provider>.sh has a numeric entry in tests/timings.txt"
+else
+  fail "AC7 each tests/test-routing-e2e-<provider>.sh has a numeric entry in tests/timings.txt" \
+    "missing (run bash tests/update-timings.sh):$missing"
+fi
+
 # ── AC2: the heaviest shard stays under the bound ────────────────────────────
 n="$(grep -o -e '--shard [0-9]*/[0-9]*' "$TALOS_ROOT/talos.pipeline.json" | sed 's|.*/||' | sort -u)"
 case "$n" in
