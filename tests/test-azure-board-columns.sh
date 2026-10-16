@@ -53,11 +53,15 @@ move "In review"
 assert_contains "$LOG" "[work-item] [update] [--id] [5] [--state] [Committed]" "AC1 In review updates the work item to the state of the In Review column (Committed)"
 
 # ── AC2 ──────────────────────────────────────────────────────────────────────
+export STUB_AZURE_BOARD_COLUMNS='{"value": [
+ {"name": "In Progress", "stateMappings": {"Product Backlog Item": "Approved"}},
+ {"name": "In Review", "stateMappings": {"Product Backlog Item": "Resolved"}}]}'
 cfg_json ', "azure_states": {"in_progress": "Active"}'
 move "In progress"
 assert_contains "$LOG" "[--state] [Active]" "AC2 an explicit board.azure_states.in_progress wins over the column"
 move "In review"
-assert_contains "$LOG" "[--state] [Committed]" "AC2 the other statuses still resolve from the columns"
+assert_contains "$LOG" "[--state] [Resolved]" "AC2 the other statuses still resolve from the columns (not the table default)"
+export STUB_AZURE_BOARD_COLUMNS="$BOARD_NEW"
 
 # ── AC3 ──────────────────────────────────────────────────────────────────────
 export STUB_AZURE_BOARD_COLUMNS='{"value": [
@@ -115,10 +119,10 @@ unset STUB_AZURE_BOARD_COLUMNS_FAIL
 cfg_json ""
 export STUB_AZURE_BOARDCOLUMN="In Progress"
 move "In progress"
-assert_eq "#5 → In progress (ADO state: Approved, column: In Progress)" "$(printf '%s\n' "$OUT" | tail -n1)" "AC7 the success line names the column read back"
+assert_eq "#5 → In progress (ADO state: Approved, column: In Progress)" "$OUT" "AC7 the success line names the column read back"
 export STUB_AZURE_BOARDCOLUMN_FAIL=1
 move "In progress"
-assert_eq "#5 → In progress (ADO state: Approved)" "$(printf '%s\n' "$OUT" | tail -n1)" "AC7 the state-only line when the read-back fails"
+assert_eq "#5 → In progress (ADO state: Approved)" "$OUT" "AC7 the state-only line when the read-back fails"
 unset STUB_AZURE_BOARDCOLUMN STUB_AZURE_BOARDCOLUMN_FAIL
 
 # ── AC8 ──────────────────────────────────────────────────────────────────────

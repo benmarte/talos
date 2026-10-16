@@ -309,6 +309,8 @@ print(json.dumps({'id': 5, 'fields': fields}))
       [ -n "${STUB_ASSIGNEE_RACER:-}" ] && [ -n "$_as_login" ] && printf '%s\n' "$STUB_ASSIGNEE_RACER" > "$_as_f"
     fi
     exit 0 ;;
+  "boards work-item update "*"-o none")
+    exit 0 ;;  # -o none prints nothing, as the real az does
   "boards work-item update "*)
     printf '{"id":1}\n' ;;
   "account show "*)
