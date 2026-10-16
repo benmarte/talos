@@ -3870,6 +3870,11 @@ _talos_run_loop() {
   # The project map (#614): refreshed at each stage end and once at the end.
   [ -n "${TALOS_RUN_STARTED:-}" ] || TALOS_RUN_STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   export TALOS_RUN_STARTED
+  # One id per run (#740): every pipeline-status.sh move of the run, and of a run
+  # continued by exec after a merge, shares the per-run board caches. A caller's
+  # own id wins; the timestamp loses its `:` so the id is safe in a file name.
+  PIPELINE_RUN_ID="${PIPELINE_RUN_ID:-${TALOS_RUN_PID}-${TALOS_RUN_STARTED//[^0-9A-Za-z]/}}"
+  export PIPELINE_RUN_ID
   # First of the exit hooks: it reads the end line from the scratch dir, which
   # an earlier-registered hook removes, releases the run's own leases (every
   # exit path), and then renders the map.
