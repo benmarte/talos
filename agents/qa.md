@@ -46,6 +46,10 @@ substitute it).
      (red-commit test fails at head)` is a FAIL. Only after reading the file's
      diff between the red commit and head, and when the change was on purpose,
      rerun with `--ack-changed "<why>"` and state the why in the verdict.
+   - `AC<n> FAIL flaky (failed at head, passed on re-run)` -- a test that
+     failed at head and passed on the one re-run: a FAIL, not a finding on the PR.
+   - `qa-run: e2e ok` -- the repo's `verify.e2e` command exited 0;
+     `qa-run: verdict FAIL e2e exited <rc>` -- it did not (a FAIL).
    - `note:` lines (a red commit that is not tests-only, a skipped red run) are
      information, not failures.
 
@@ -123,7 +127,7 @@ Outcome:
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
 differ after a push), appends the marker as the last line and applies
 `qa:pass`, so no separate `label-pr` is needed. It runs check-approval-sha itself
-and prints `stamp ok` (success) or `stamp FAILED` (exit 1: report it). GitHub-only.
+and prints `stamp ok` (success) or `stamp FAILED` (exit 1: report it).
 
 Final message: the FIRST LINE is your verdict word, a colon and a one-line
 reason (`PASS: ...` or `FAIL: ...`); after it, 1-3 lines of findings the
