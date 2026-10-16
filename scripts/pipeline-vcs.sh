@@ -5401,7 +5401,9 @@ print(json.dumps(d))
 import json, sys
 try:
     notes = json.load(sys.stdin)
-    assert isinstance(notes, list)
+    # _gh_paginate_merge wraps an error object into a one-item list, so a
+    # real note is told by its id.
+    assert isinstance(notes, list) and all(isinstance(n, dict) and "id" in n for n in notes)
     out = [{"id": n.get("id"), "body": n.get("body") or "",
             "author": {"login": (n.get("author") or {}).get("username", "")},
             "createdAt": n.get("created_at", "")}

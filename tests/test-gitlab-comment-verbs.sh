@@ -65,6 +65,9 @@ assert_eq '{"comments": []}' "$out" "AC2 the MR notes are not served from the si
 out="$(STUB_GITLAB_MR_NOTES_FAIL=1 bash "$VCS" read-comments 9 2>/dev/null)"; rc=$?
 assert_eq "1" "$rc" "AC2 read-comments exits 1 when the API fails"
 assert_eq "" "$out" "AC2 read-comments prints nothing when the API fails"
+out="$(STUB_GITLAB_MR_NOTES='{"message":"404 Not Found"}' bash "$VCS" read-comments 9 2>/dev/null)"; rc=$?
+assert_eq "1" "$rc" "AC2 read-comments exits 1 when the answer is not a list of notes"
+assert_eq "" "$out" "AC2 read-comments prints nothing when the answer is not a list of notes"
 bash "$VCS" read-comments >/dev/null 2>&1; rc=$?
 assert_eq "1" "$rc" "AC2 read-comments exits 1 without an id"
 bash "$VCS" read-comments 'x;9' >/dev/null 2>&1; rc=$?
@@ -96,5 +99,18 @@ for v in "pr-head 9" "read-comments 9" "has-spec 5"; do
   assert_contains "$out" "[dry-run]" "AC11 --dry-run $v prints a [dry-run] line"
   assert_eq "" "$(cat "$GH_LOG")" "AC11 --dry-run $v calls no glab"
 done
+
+# ── AC12: other providers unchanged ───────────────────────────────────────────
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "file"}}
+EOF
+out="$(bash "$VCS" has-spec 5 2>&1)"; rc=$?
+assert_eq "1" "$rc" "AC12 has-spec still refuses the file provider"
+assert_contains "$out" "not implemented for provider 'file'" "AC12 the refusal still names the provider"
+out="$(bash "$VCS" post-approval 9 qa 2>&1)"; rc=$?
+assert_eq "1" "$rc" "AC12 post-approval still refuses the file provider"
+assert_contains "$out" "not implemented for provider 'file'" "AC12 post-approval's refusal still names the provider"
+bash "$TALOS_ROOT/tests/test-docs-729-azure-verbs.sh" >/dev/null 2>&1; rc=$?
+assert_eq "0" "$rc" "AC12 the azure docs guard still passes unedited"
 
 finish
