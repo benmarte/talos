@@ -100,6 +100,8 @@
 116 test-github-api.sh
 82 test-github-transport-parity.sh
 2 test-gitlab-assignee-cli.sh
+20 test-gitlab-attempt-verbs.sh
+5 test-gitlab-comment-verbs.sh
 45 test-gitlab-gate-verbs.sh
 7 test-gitlab-normalised-shapes.sh
 12 test-global-install-model-hint.sh

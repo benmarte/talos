@@ -5390,17 +5390,20 @@ except Exception:
 print(json.dumps(d))
 ' "$1"
   }
-  # The notes of issue <n> as {"comments": [...]} in the read-comments shape
-  # (#735): every page, system notes dropped, oldest first. Returns non-zero
-  # with no stdout on an API failure or output that is not notes.
-  _gl_issue_comments() {
+  # The notes of issue or MR <n> (`_gl_notes <issues|merge_requests> <n>`) as
+  # {"comments": [...]} in the read-comments shape (#735, #736): every page,
+  # system notes dropped, oldest first. Returns non-zero with no stdout on an
+  # API failure or output that is not notes.
+  _gl_notes() {
     local _raw
-    _raw="$(glab api --paginate "projects/$(_gl_api_project)/issues/$1/notes?per_page=100&order_by=created_at&sort=asc")" || return 1
+    _raw="$(glab api --paginate "projects/$(_gl_api_project)/$1/$2/notes?per_page=100&order_by=created_at&sort=asc")" || return 1
     printf '%s' "$_raw" | _gh_paginate_merge | python3 -I -c '
 import json, sys
 try:
     notes = json.load(sys.stdin)
-    assert isinstance(notes, list)
+    # _gh_paginate_merge wraps an error object into a one-item list, so a
+    # real note is told by its id.
+    assert isinstance(notes, list) and all(isinstance(n, dict) and "id" in n for n in notes)
     out = [{"id": n.get("id"), "body": n.get("body") or "",
             "author": {"login": (n.get("author") or {}).get("username", "")},
             "createdAt": n.get("created_at", "")}
@@ -5409,6 +5412,27 @@ except Exception:
     sys.exit(1)
 print(json.dumps({"comments": out}))
 '
+  }
+  # MR <iid> as the approval-marker readers' input (#736): {"headRefOid",
+  # "baseRefName", "labels", "comments"} from `glab mr view` (head sha from
+  # .sha, else .diff_refs.head_sha; labels are plain strings) and the MR's
+  # notes. Non-zero with no stdout when either read fails or the MR has no sha.
+  _gl_marker_data() {
+    local _mr _cm
+    _mr="$(glab mr view "$1" --output json $RARG 2>/dev/null)" || return 1
+    _cm="$(_gl_notes merge_requests "$1")" || return 1
+    printf '%s\n%s' "$_cm" "$_mr" | python3 -I -c '
+import json, sys
+head, _, mr = sys.stdin.read().partition("\n")
+mr = json.loads(mr)
+sha = (mr.get("sha") or (mr.get("diff_refs") or {}).get("head_sha") or "").lower()
+if not sha:
+    sys.exit(1)
+json.dump({"headRefOid": sha,
+           "baseRefName": mr.get("target_branch") or "",
+           "labels": [{"name": l["name"] if isinstance(l, dict) else l} for l in mr.get("labels") or []],
+           "comments": json.loads(head)["comments"]}, sys.stdout)
+' 2>/dev/null
   }
   # MR <iid>'s changed paths, one per line (#303): new_path covers added,
   # modified and renamed files. GET /projects/:id/merge_requests/:iid/diffs,
@@ -5493,7 +5517,7 @@ for p in paths:
       fi
       _glvi_out="$(glab issue view "$_glvi_n" --output json $RARG)" || exit 1
       _glvi_out="$(printf '%s\n' "$_glvi_out" | _gl_normalise issue)" || exit 1
-      _glvi_cm="$(_gl_issue_comments "$_glvi_n")" || { echo "pipeline-vcs: view-issue: could not fetch issue #$_glvi_n notes" >&2; exit 1; }
+      _glvi_cm="$(_gl_notes issues "$_glvi_n")" || { echo "pipeline-vcs: view-issue: could not fetch issue #$_glvi_n notes" >&2; exit 1; }
       if [ "$_glvi_spec" = "true" ] || [ "$_glvi_since" = "true" ]; then
         _glvi_meta="$(printf '%s' "$_glvi_out" | python3 -I -c "
 import json, sys
@@ -5605,6 +5629,117 @@ print(d.get('source_branch') or d.get('sourceBranch') or '')
 " 2>/dev/null)"
       [ -z "$_phr_ref" ] && { echo "pipeline-vcs: pr-head-ref: could not resolve the head branch of MR !$n" >&2; exit 1; }
       printf '%s\n' "$_phr_ref"
+      ;;
+    pr-head)
+      # pr-head <iid> (#736) -- the MR's head sha, same contract as github: a
+      # failed fetch or an MR without a sha exits 1 with no stdout.
+      local n="${1:-}" _ph_sha
+      _gl_require_iid pr-head "$n" || exit 1
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab mr view $n --output json $RARG  # .sha (else .diff_refs.head_sha)"
+        return 0
+      fi
+      _ph_sha="$(glab mr view "$n" --output json $RARG 2>/dev/null | python3 -I -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+print((d.get('sha') or (d.get('diff_refs') or {}).get('head_sha') or '').lower())
+" 2>/dev/null)"
+      [ -z "$_ph_sha" ] && { echo "pipeline-vcs: pr-head: could not resolve head SHA for MR !$n" >&2; exit 1; }
+      printf '%s\n' "$_ph_sha"
+      ;;
+    read-comments)
+      # read-comments <iid> (#736): every note of the MR as {"comments": [...]},
+      # the shared reader behind post-approval's duplicate check. Fail-closed:
+      # nothing on stdout and exit 1 on any failure. An issue's notes are read
+      # by view-issue and read-attempt, so the id kind is the caller's.
+      local n="${1:-}"
+      [ -z "$n" ] && { echo "pipeline-vcs: read-comments: missing MR number" >&2; exit 1; }
+      _gl_require_iid read-comments "$n" || exit 1
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab api --paginate projects/$(_gl_api_project)/merge_requests/$n/notes?per_page=100&order_by=created_at&sort=asc"
+        return 0
+      fi
+      _gl_notes merge_requests "$n" || { echo "pipeline-vcs: read-comments: could not fetch MR !$n notes" >&2; exit 1; }
+      ;;
+    read-attempt)
+      # read-attempt <issue> (#736): as github, from the issue's notes.
+      local n="${1:-}" issue_data trusted_authors verify_authors
+      [ -z "$n" ] && { echo "pipeline-vcs: read-attempt: missing issue number" >&2; exit 1; }
+      _gl_require_iid read-attempt "$n" || exit 1
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] read-attempt $n: GET projects/$(_gl_api_project)/issues/$n/notes (paginated) and extract the last talos:attempt marker"; return 0; }
+      issue_data="$(_gl_notes issues "$n")" || { echo "pipeline-vcs: read-attempt: could not fetch issue #$n data" >&2; exit 1; }
+      trusted_authors="$(cfg markers.trusted_authors)"
+      verify_authors="$(cfg markers.verify_authors)"
+      _vcs_shared_reader_identity "$verify_authors" _gl_current_user
+      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" VERIFY_AUTHORS="$verify_authors" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
+      ;;
+    check-attempt)
+      # check-attempt <issue> (#736): exit 1 (with reason) when either ceiling
+      # is already reached; records nothing. As github.
+      local n="${1:-}"
+      [ -z "$n" ] && { echo "pipeline-vcs: check-attempt: missing issue number" >&2; exit 1; }
+      _gl_require_iid check-attempt "$n" || exit 1
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] check-attempt $n: compare current attempt state against configured ceilings"; return 0; }
+      local max_stage max_total state rc
+      max_stage="$(cfg limits.max_fix_attempts)"
+      max_total="$(cfg limits.max_total_dispatches)"
+      state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$n" ${REPO:+--repo "$REPO"} 2>&1)"
+      rc=$?
+      if [ $rc -ne 0 ]; then
+        echo "pipeline-vcs: check-attempt: read-attempt failed: $state" >&2
+        exit 1
+      fi
+      printf '%s\n' "$state" | grep '^talos:' || true
+      state="$(printf '%s\n' "$state" | grep '^stage=')"
+      local cur_stage cur_count cur_total
+      cur_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
+      cur_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
+      cur_total="$(printf '%s' "$state" | sed 's/.*total=\([0-9]*\).*/\1/')"
+      if ! _vcs_shared_attempt_blocked "check-attempt" "$cur_count" "$cur_total" "$max_stage" "$max_total" "$cur_stage"; then
+        exit 1
+      fi
+      echo "pipeline-vcs: check-attempt: ok (stage=$cur_stage count=$cur_count total=$cur_total; max_stage=$max_stage max_total=$max_total)"
+      exit 0
+      ;;
+    record-attempt)
+      # record-attempt <issue> <stage> [--pr <mr> | --idempotency-key <token>]
+      # (#736): see _vcs_shared_record_attempt; the write is an issue note.
+      local n="${1:-}" stage="${2:-}"
+      [ -z "$n" ]     && { echo "pipeline-vcs: record-attempt: missing issue number" >&2; exit 1; }
+      [ -z "$stage" ] && { echo "pipeline-vcs: record-attempt: missing stage argument" >&2; exit 1; }
+      _gl_require_iid record-attempt "$n" || exit 1
+      case "$stage" in
+        *[!A-Za-z0-9._-]*) echo "pipeline-vcs: record-attempt: stage may only use letters, digits, '.', '_' and '-', got '$stage'" >&2; exit 1 ;;
+      esac
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] record-attempt $n $stage: read prior state, post <!-- talos:attempt stage=$stage ... --> marker"; return 0; }
+      # Notes keep their markdown as typed, so the marker needs no conversion.
+      _gl_post_attempt_marker() { glab issue note "$1" --message "$2" $RARG; }
+      shift 2 2>/dev/null || shift "$#"
+      _vcs_shared_record_attempt "$n" "$stage" _gl_post_attempt_marker "$@"
+      ;;
+    check-approval-sha)
+      # check-approval-sha <iid> [--stale-list|--evidence-list] (#736): as
+      # github; this arm is fetch (_gl_marker_data) ->
+      # _vcs_shared_check_approval_run.
+      local n="${1:-}"
+      [ "$#" -eq 0 ] || shift
+      local stale_list_flag="false" evidence_flag="false"
+      case "${1:-}" in
+        --stale-list) stale_list_flag="true" ;;
+        --evidence-list) evidence_flag="true" ;;
+      esac
+      _gl_require_iid check-approval-sha "$n" || exit 1
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] check-approval-sha $n: verify all approval labels match current head SHA"; return 0; }
+      local pr_data
+      pr_data="$(_gl_marker_data "$n")" || pr_data=""
+      if [ -z "$pr_data" ]; then
+        echo "pipeline-vcs: check-approval-sha: could not fetch PR #$n data" >&2
+        exit 1
+      fi
+      _vcs_shared_check_approval_run "$pr_data" "$stale_list_flag" "$evidence_flag" _gl_current_user
       ;;
     list-prs)
       # Same reasoning as list-issues above: raise the page size and warn
@@ -8426,11 +8561,11 @@ fi
 
 # ── has-spec: skip-PM detection (#199) ────────────────────────────────────────
 # Exits 0 when issue <n>'s body already IS a usable spec (skip the PM stage),
-# exits 1 when PM should still run. github, github-api and azure (#683) —
-# fetches via this script's own view-issue verb, so the providers share one
-# code path and one scan (_has_spec_scan above).
+# exits 1 when PM should still run. github, github-api, azure (#683) and
+# gitlab (#736) — fetches via this script's own view-issue verb, so the
+# providers share one code path and one scan (_has_spec_scan above).
 if [ "$VERB" = "has-spec" ]; then
-  if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ] && [ "$PROVIDER" != "azure" ]; then
+  if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ] && [ "$PROVIDER" != "azure" ] && [ "$PROVIDER" != "gitlab" ]; then
     echo "pipeline-vcs: has-spec: not implemented for provider '$PROVIDER'" >&2
     exit 1
   fi
@@ -8601,7 +8736,7 @@ if [ "$VERB" = "label-pr" ] && [ "${#ARGS[@]}" -ge 1 ]; then
 fi
 
 # ── post-approval: atomic marker-post + label (#146) ─────────────────────────
-# github, github-api and azure. For other providers, exit 1.
+# github, github-api and azure (and gitlab, #736). For other providers, exit 1.
 #
 # Issue #128 note: post-approval is the single controlled surface through which
 # all approval markers enter the system. Future provenance work (signed markers,
@@ -8615,7 +8750,7 @@ fi
 # Hand-construction of approval markers remains possible and remains the
 # caller's responsibility -- these failures are eliminated for verb users only.
 if [ "$VERB" = "post-approval" ]; then
-  if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ] && [ "$PROVIDER" != "azure" ]; then
+  if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ] && [ "$PROVIDER" != "azure" ] && [ "$PROVIDER" != "gitlab" ]; then
     echo "pipeline-vcs: post-approval: not implemented for provider '$PROVIDER'" >&2
     exit 1
   fi

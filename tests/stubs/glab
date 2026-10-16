@@ -47,6 +47,49 @@ _as_add() {
   grep -qixF -- "$2" "$1" 2>/dev/null || printf '%s\n' "$2" >> "$1"
 }
 
+# Note write-back (#736). With STUB_GITLAB_STATE_DIR set, `issue note` and
+# `mr note` append the note to <dir>/{issue,mr}_notes_<n> (one JSON object per
+# line, authored by STUB_GITLAB_POST_AUTHOR, else STUB_CURRENT_USER) and the
+# notes GET serves them after the canned pages, so record-attempt then
+# read-attempt is a round trip. `mr update --label` appends to <dir>/labels_<n>
+# and `mr view` shows those labels. Without it every write is a silent no-op.
+_note_post() {  # <issue_notes|mr_notes> <n> <message>
+  [ -n "${STUB_GITLAB_STATE_DIR:-}" ] || return 0
+  local _f="$STUB_GITLAB_STATE_DIR/${1}_$2" _k
+  _k=$(( $(wc -l < "$_f" 2>/dev/null || echo 0) + 1 ))
+  K="$_k" MSG="$3" AUTHOR="${STUB_GITLAB_POST_AUTHOR:-${STUB_CURRENT_USER:-}}" python3 -I -c '
+import json, os
+k = int(os.environ["K"])
+print(json.dumps({"id": k + 5000, "body": os.environ["MSG"], "system": False,
+                  "author": {"username": os.environ["AUTHOR"]},
+                  "created_at": "2026-10-16T00:00:%02dZ" % k}))
+' >> "$_f"
+  case "$1" in
+    issue_notes) printf 'https://gitlab.com/acme/widget/-/issues/%s#note_%s\n' "$2" "$_k" ;;
+    *)           printf 'https://gitlab.com/acme/widget/-/merge_requests/%s#note_%s\n' "$2" "$_k" ;;
+  esac
+}
+_notes_posted() {  # <issue_notes|mr_notes> <the api path>: the posted notes as one page
+  [ -n "${STUB_GITLAB_STATE_DIR:-}" ] || return 0
+  local _n
+  case "$1" in
+    issue_notes) _n="${2#*/issues/}" ;;
+    *)           _n="${2#*/merge_requests/}" ;;
+  esac
+  _n="${_n%%/*}"
+  [ -s "$STUB_GITLAB_STATE_DIR/${1}_$_n" ] || return 0
+  python3 -I -c 'import json, sys; print(json.dumps([json.loads(l) for l in sys.stdin if l.strip()]))' \
+    < "$STUB_GITLAB_STATE_DIR/${1}_$_n"
+}
+# The value of --message/-m in the argv.
+_msg_of() {
+  local _prev="" _a
+  for _a in "$@"; do
+    case "$_prev" in --message|-m) printf '%s' "$_a"; return ;; esac
+    _prev="$_a"
+  done
+}
+
 args="$*"
 case "$args" in
   "mr create "*)
@@ -170,12 +213,28 @@ print('\n'.join(out))
   "api --paginate projects/"*"/issues/"*"/notes"*)
     # view-issue's notes (#735): STUB_GITLAB_ISSUE_NOTES is the raw output,
     # pages back-to-back as `glab api --paginate` prints them (unset = no
-    # notes). STUB_GITLAB_API_FAIL=1 fails it.
+    # notes). STUB_GITLAB_API_FAIL=1 fails it. With STUB_GITLAB_STATE_DIR set,
+    # the notes `issue note` wrote follow as one more page (#736).
     if [ "${STUB_GITLAB_API_FAIL:-}" = "1" ]; then
       echo "ERROR: 500 Internal Server Error" >&2
       exit 1
     fi
     printf '%s\n' "${STUB_GITLAB_ISSUE_NOTES:-[]}"
+    _notes_posted issue_notes "$args"
+    exit 0 ;;
+  "api --paginate projects/"*"/merge_requests/"*"/notes"*)
+    # An MR's notes (#736). This arm must stay above the sibling-list arm
+    # below: its "merge_requests?"* pattern also matches
+    # ".../merge_requests/9/notes?..." (? matches one character) and would
+    # serve the MR list as notes. STUB_GITLAB_MR_NOTES is the raw output, pages
+    # back-to-back (unset = no notes); STUB_GITLAB_MR_NOTES_FAIL=1 or
+    # STUB_GITLAB_API_FAIL=1 fails it.
+    if [ "${STUB_GITLAB_MR_NOTES_FAIL:-}" = "1" ] || [ "${STUB_GITLAB_API_FAIL:-}" = "1" ]; then
+      echo "ERROR: 500 Internal Server Error" >&2
+      exit 1
+    fi
+    printf '%s\n' "${STUB_GITLAB_MR_NOTES:-[]}"
+    _notes_posted mr_notes "$args"
     exit 0 ;;
   "api --paginate projects/"*"/merge_requests?"*)
     # check-closing-keyword's sibling list (#319): STUB_GITLAB_MR_PAGES is
@@ -239,11 +298,41 @@ print('\n'.join(out))
     if [ "${STUB_GITLAB_MR_VIEW_FAIL:-}" = "1" ]; then
       echo "ERROR: 404 Not Found" >&2
       exit 1
-    elif [ -n "${STUB_GITLAB_MR_VIEW:-}" ]; then
-      printf '%s\n' "$STUB_GITLAB_MR_VIEW"
     else
-      printf '{"iid":7,"title":"fix: guard","state":"opened"}\n'
+      _mv_json='{"iid":7,"title":"fix: guard","state":"opened"}'
+      [ -n "${STUB_GITLAB_MR_VIEW:-}" ] && _mv_json="$STUB_GITLAB_MR_VIEW"
+      _mv_n="$3"
+      if [ -n "${STUB_GITLAB_STATE_DIR:-}" ] && [ -s "$STUB_GITLAB_STATE_DIR/labels_$_mv_n" ]; then
+        JSON="$_mv_json" LABELS="$STUB_GITLAB_STATE_DIR/labels_$_mv_n" python3 -I -c '
+import json, os
+d = json.loads(os.environ["JSON"])
+have = list(d.get("labels") or [])
+for l in open(os.environ["LABELS"]).read().split():
+    if l not in have:
+        have.append(l)
+d["labels"] = have
+print(json.dumps(d))
+'
+      else
+        printf '%s\n' "$_mv_json"
+      fi
     fi ;;
+  "issue note "*)
+    # glab issue note <n> --message <body>: prints the note's URL.
+    shift 2; _note_post issue_notes "$1" "$(_msg_of "$@")"; exit 0 ;;
+  "mr note "*)
+    shift 2; _note_post mr_notes "$1" "$(_msg_of "$@")"; exit 0 ;;
+  "mr update "*)
+    # glab mr update <n> --label <l>: recorded when STUB_GITLAB_STATE_DIR is set.
+    shift 2
+    _mu_n="$1" _mu_prev=""
+    for _mu_a in "$@"; do
+      case "$_mu_prev" in
+        -l|--label) [ -n "${STUB_GITLAB_STATE_DIR:-}" ] && printf '%s\n' "$_mu_a" >> "$STUB_GITLAB_STATE_DIR/labels_$_mu_n" ;;
+      esac
+      _mu_prev="$_mu_a"
+    done
+    exit 0 ;;
   "label list "*)
     # Used by bootstrap-board.sh (#266) to verify board-relied-on labels
     # exist. Override STUB_GITLAB_LABEL_LIST to simulate a repo missing one.
