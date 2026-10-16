@@ -41,6 +41,11 @@ substitute it).
    - `AC<n> PASS same red@<sha8> green@head` -- a `(same)` criterion green at
      red and at head. `AC<n> FAIL same ...` is an ordinary FAIL.
    - `AC<n> prose hand-checked` -- no test; you check it by hand in step 3.
+   - `frozen@head` -- the red commit's version of a changed Tests file
+     (`note: frozen run: <file> ...`) still passes at head. `AC<n> FAIL weakened
+     (red-commit test fails at head)` is a FAIL. Only after reading the file's
+     diff between the red commit and head, and when the change was on purpose,
+     rerun with `--ack-changed "<why>"` and state the why in the verdict.
    - `note:` lines (a red commit that is not tests-only, a skipped red run) are
      information, not failures.
 
