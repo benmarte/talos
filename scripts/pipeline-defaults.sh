@@ -103,6 +103,9 @@ board.owner	str		derived	PIPELINE_BOARD_OWNER	repo
 board.status_field	str	Status	-	PIPELINE_STATUS_FIELD	repo
 board.statuses.*	str		derived	-	repo
 board.status_map.*	str		derived	-	repo
+board.azure_team	str		-	-	repo
+board.azure_board	str		-	-	repo
+board.azure_columns.*	str		-	-	repo
 board.azure_states.ready	str	New	-	-	repo
 board.azure_states.in_progress	str	Committed	-	-	repo
 board.azure_states.in_review	str	Committed	-	-	repo

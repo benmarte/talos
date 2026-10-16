@@ -20,6 +20,11 @@
 #                          board column names, e.g. {Blocked: "Needs attention"}.
 #                          An absent key passes through unchanged; an absent map
 #                          produces zero behavioural change.
+#   board.azure_states.*   Azure: explicit work-item State per status; wins over
+#                          the board's columns (#732)
+#   board.azure_team, board.azure_board, board.azure_columns.<status>
+#                          Azure: which team board's columns are read, and the
+#                          column name to look for instead of the defaults
 #   issues.assignee        default: self. On "In progress", fills an empty
 #                          assignee via `pipeline-vcs.sh assign-issue` (#299),
 #                          independent of board.enabled; none skips it.
@@ -418,18 +423,206 @@ fi
 # ── Azure DevOps: the Kanban column follows the work item State ───────────────
 # ADO has no separate board "status field" like GitHub Projects — a work item's
 # System.State drives its board column. Map the pipeline's status name to an ADO
-# state. States are process-specific (Scrum defaults shown); override any of them
-# via board.azure_states.{ready,in_progress,in_review,done,blocked} in the config.
+# state. States are process-specific, so each status's State is read from the team
+# board (#732): the column whose name matches the status carries a stateMappings
+# entry for the work item type. Precedence per status: an explicit
+# board.azure_states.{ready,in_progress,in_review,done} in a config file, then the
+# column-resolved State, then the table default (Scrum) when the board cannot be
+# read. blocked has no column lookup: only board.azure_states.blocked.
+_AZ_RESOURCE="499b84ac-1321-427f-aa17-267ca6975798"  # Azure DevOps AAD app id (az rest --resource)
+_AZ_STATUSES="ready in_progress in_review done"
+_AZ_SEP=$'\037'  # a non-whitespace separator: `read` keeps an empty field
+
+_az_get() { az rest --method get --resource "$_AZ_RESOURCE" --url "$1" 2>/dev/null; }
+_az_urlq() { python3 -I -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
+
+# _az_column_names <status> -- the column names to look for, in priority order,
+# one per line: board.azure_columns.<status> alone when set, else the defaults.
+_az_column_names() {
+  local _custom
+  _custom="$(cfg "board.azure_columns.$1")"
+  if [ -n "$_custom" ]; then printf '%s\n' "$_custom"; return 0; fi
+  case "$1" in
+    ready)       printf '%s\n' "New" "Ready" "To Do" "Proposed" ;;
+    in_progress) printf '%s\n' "In Progress" "Active" "Doing" ;;
+    in_review)   printf '%s\n' "In Review" "Review" "Ready for Review" "Code Review" ;;
+    done)        printf '%s\n' "Done" "Closed" "Resolved" ;;
+  esac
+}
+
+# _az_board_base -- prints "<org>/<project>[/<team id>]" for the board REST calls:
+# board.azure_team (a team name or id) wins, else the team whose default area path
+# equals vcs.azure.area_path, else (no area path) the project's default team.
+# Exit 1 when the org, the project or the team cannot be had.
+_az_board_base() {
+  local _org _proj _team _area _teams _id _fv _def
+  _org="$(cfg vcs.azure.org_url)"; _org="${_org%/}"
+  _proj="$(cfg vcs.azure.project)"
+  [ -n "$_org" ] && [ -n "$_proj" ] || return 1
+  _team="$(cfg board.azure_team)"
+  _area="$(cfg vcs.azure.area_path)"
+  if [ -z "$_team" ] && [ -n "$_area" ]; then
+    _teams="$(_az_get "$_org/_apis/projects/$(_az_urlq "$_proj")/teams?api-version=7.1")" || return 1
+    for _id in $(printf '%s' "$_teams" | python3 -I -c '
+import json, sys
+for t in json.load(sys.stdin)["value"]:
+    print(t["id"])' 2>/dev/null); do
+      _fv="$(_az_get "$_org/$(_az_urlq "$_proj")/$_id/_apis/work/teamsettings/teamfieldvalues?api-version=7.1")" || continue
+      _def="$(printf '%s' "$_fv" | python3 -I -c '
+import json, sys
+print(json.load(sys.stdin).get("defaultValue") or "")' 2>/dev/null)"
+      if [ "$(printf '%s' "$_def" | tr '/' '\\' | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$_area" | tr '/' '\\' | tr '[:upper:]' '[:lower:]')" ]; then
+        _team="$_id"; break
+      fi
+    done
+    [ -n "$_team" ] || return 1
+  fi
+  printf '%s/%s%s' "$_org" "$(_az_urlq "$_proj")" "${_team:+/$(_az_urlq "$_team")}"
+}
+
+# _az_resolve_columns -- reads the board once and prints "<status><SEP><state>" for
+# each of the four statuses (state empty = no column matched, or none for the work
+# item type). Exit 1 when the board cannot be read.
+_az_resolve_columns() {
+  local _base _board _cols _s _n _args=() _names
+  _base="$(_az_board_base)" || return 1
+  _board="$(cfg board.azure_board)"
+  if [ -z "$_board" ]; then
+    _board="$(_az_get "$_base/_apis/work/backlogs?api-version=7.1" | python3 -I -c '
+import json, sys
+for b in json.load(sys.stdin)["value"]:
+    if b.get("type") == "requirement":
+        print(b["name"]); break' 2>/dev/null)"
+    [ -n "$_board" ] || return 1
+  fi
+  _cols="$(_az_get "$_base/_apis/work/boards/$(_az_urlq "$_board")/columns?api-version=7.1")" || return 1
+  for _s in $_AZ_STATUSES; do
+    _names=""
+    while IFS= read -r _n; do _names="${_names:+$_names$_AZ_SEP}$_n"; done < <(_az_column_names "$_s")
+    _args+=("$_s=$_names")
+  done
+  printf '%s' "$_cols" | python3 -I -c '
+import json, sys
+wit = sys.argv[1]
+cols = json.load(sys.stdin)["value"]
+if not isinstance(cols, list):
+    sys.exit(1)
+for arg in sys.argv[2:]:
+    status, _, names = arg.partition("=")
+    state = ""
+    for n in names.split("\x1f"):
+        c = next((c for c in cols if isinstance(c, dict) and str(c.get("name", "")).lower() == n.lower()), None)
+        if c is not None:
+            sm = c.get("stateMappings")
+            state = sm.get(wit, "") if isinstance(sm, dict) else ""
+            break
+    print(status + "\x1f" + str(state))' "$(cfg vcs.azure.work_item_type)" "${_args[@]}" 2>/dev/null
+}
+
+# _az_board_load -- sets _AZB_AVAIL (1 when the board was read), _AZB_WARNED (1
+# when this run already printed the collide warning) and _AZB_STATE_<status>.
+# With PIPELINE_RUN_ID set the answer is cached per run, so the second move of a
+# run makes no REST call and prints no second warning; without it, every call
+# resolves again.
+_az_board_load() {
+  local _s _kind _a _b _raw _dir _file="" _tmp
+  _AZB_AVAIL=0; _AZB_WARNED=0; _AZB_FILE=""
+  for _s in $_AZ_STATUSES; do printf -v "_AZB_STATE_$_s" '%s' ""; done
+  if [ -n "${PIPELINE_RUN_ID:-}" ]; then
+    _dir="${XDG_RUNTIME_DIR:-${HOME}/.cache}/talos"
+    _file="$_dir/azure-board-$(printf '%s' "$(cfg vcs.azure.org_url)-$(cfg vcs.azure.project)-$(cfg board.azure_team)-$(cfg board.azure_board)-$PIPELINE_RUN_ID" | tr -c 'A-Za-z0-9_-' '_')"
+    _AZB_FILE="$_file"
+    if [ -f "$_file" ] && [ ! -L "$_file" ] && [ -O "$_file" ] \
+       && [ -n "$(find "$_file" -mmin -360 -print 2>/dev/null)" ]; then
+      while IFS="$_AZ_SEP" read -r _kind _a _b; do
+        case "$_kind" in
+          avail)  [ "$_a" = "1" ] && _AZB_AVAIL=1 ;;
+          warned) _AZB_WARNED=1 ;;
+          state)  case " $_AZ_STATUSES " in *" $_a "*) printf -v "_AZB_STATE_$_a" '%s' "$_b" ;; esac ;;
+        esac
+      done < "$_file"
+      return 0
+    fi
+  fi
+  if _raw="$(_az_resolve_columns)" && [ -n "$_raw" ]; then
+    _AZB_AVAIL=1
+    while IFS="$_AZ_SEP" read -r _a _b; do
+      case " $_AZ_STATUSES " in *" $_a "*) printf -v "_AZB_STATE_$_a" '%s' "$_b" ;; esac
+    done <<EOF
+$_raw
+EOF
+  else
+    echo "warn reason=board-columns-unavailable (could not read the team board columns; using board.azure_states and the table defaults)" >&2
+  fi
+  if [ -n "$_file" ]; then
+    install -d -m 700 "$_dir" 2>/dev/null || { mkdir -p "$_dir" 2>/dev/null; chmod 700 "$_dir" 2>/dev/null; } || true
+    _tmp="$(umask 077; mktemp "$_dir/.azure-board.XXXXXX" 2>/dev/null)" || _tmp=""
+    if [ -n "$_tmp" ] && [ -d "$_dir" ]; then
+      {
+        printf 'avail%s%s\n' "$_AZ_SEP" "$_AZB_AVAIL"
+        for _s in $_AZ_STATUSES; do
+          _a="_AZB_STATE_$_s"
+          printf 'state%s%s%s%s\n' "$_AZ_SEP" "$_s" "$_AZ_SEP" "${!_a}"
+        done
+      } > "$_tmp" && mv "$_tmp" "$_file" 2>/dev/null || rm -f "$_tmp"
+    fi
+  fi
+}
+
+# _az_effective_state <status> -- prints the State for a status per the precedence
+# above; "explicit" and "unresolved" below say which rule decided.
+_az_effective_state() {
+  local _v="_AZB_STATE_$1"
+  if bash "$SCRIPT_DIR/pipeline-config.sh" --has "board.azure_states.$1" >/dev/null 2>&1; then
+    cfg "board.azure_states.$1"
+  elif [ "$_AZB_AVAIL" = "1" ]; then
+    printf '%s' "${!_v}"
+  else
+    cfg "board.azure_states.$1"
+  fi
+}
+
+# _az_warn_collisions -- once per run: two statuses on one State can never move a card.
+_az_warn_collisions() {
+  local _s _t _v _st _seen="" _group
+  [ "$_AZB_WARNED" = "1" ] && return 0
+  for _s in $_AZ_STATUSES; do printf -v "_AZE_$_s" '%s' "$(_az_effective_state "$_s")"; done
+  for _s in $_AZ_STATUSES; do
+    _v="_AZE_$_s"; _st="${!_v}"
+    [ -n "$_st" ] || continue
+    case "$_seen" in *"|$_st|"*) continue ;; esac
+    _seen="$_seen|$_st|"
+    _group=""
+    for _t in $_AZ_STATUSES; do
+      _v="_AZE_$_t"
+      [ "${!_v}" = "$_st" ] && _group="${_group:+$_group,}$_t"
+    done
+    case "$_group" in *,*) echo "warn reason=board-states-collide statuses=$_group state=$_st (a move between them cannot change the column)" >&2 ;; esac
+  done
+  if [ -n "$_AZB_FILE" ] && [ -f "$_AZB_FILE" ]; then printf 'warned%s1\n' "$_AZ_SEP" >> "$_AZB_FILE"; fi
+}
+
 PROVIDER="$(cfg vcs.provider)"
 if [ "$PROVIDER" = "azure" ]; then
+  AZ_KEY=""
   case "$(printf '%s' "$STATUS" | tr '[:upper:]' '[:lower:]')" in
-    ready|"to do")   AZ_STATE="$(cfg board.azure_states.ready)" ;;
-    "in progress")   AZ_STATE="$(cfg board.azure_states.in_progress)" ;;
-    "in review")     AZ_STATE="$(cfg board.azure_states.in_review)" ;;
-    done)            AZ_STATE="$(cfg board.azure_states.done)" ;;
-    blocked)         AZ_STATE="$(cfg board.azure_states.blocked)" ;;
-    *)               AZ_STATE="" ;;
+    ready|"to do")   AZ_KEY=ready ;;
+    "in progress")   AZ_KEY=in_progress ;;
+    "in review")     AZ_KEY=in_review ;;
+    done)            AZ_KEY=done ;;
+    blocked)         AZ_KEY=blocked ;;
   esac
+  AZ_STATE=""
+  if [ "$AZ_KEY" = "blocked" ]; then
+    AZ_STATE="$(cfg board.azure_states.blocked)"
+  elif [ -n "$AZ_KEY" ]; then
+    _az_board_load
+    AZ_STATE="$(_az_effective_state "$AZ_KEY")"
+    _az_warn_collisions
+    if [ -z "$AZ_STATE" ] && [ "$_AZB_AVAIL" = "1" ]; then
+      echo "warn reason=board-column-unresolved status=$AZ_KEY (no board column matched; set board.azure_columns.$AZ_KEY)" >&2
+    fi
+  fi
   if [ -z "$AZ_STATE" ]; then
     echo "#$ISSUE → $STATUS (no ADO state mapping; leaving work-item state unchanged)" >&2
     exit 0
@@ -441,7 +634,10 @@ if [ "$PROVIDER" = "azure" ]; then
     exit 0
   fi
   if az boards work-item update --id "$ISSUE" --state "$AZ_STATE" ${AZ_ORG:+--org "$AZ_ORG"} -o none 2>/dev/null; then
-    echo "#$ISSUE → $STATUS (ADO state: $AZ_STATE)"
+    # Read the column back so a state that lands in the wrong column shows in the log.
+    AZ_COLUMN="$(az boards work-item show --id "$ISSUE" ${AZ_ORG:+--org "$AZ_ORG"} --query 'fields."System.BoardColumn"' -o tsv 2>/dev/null)" || AZ_COLUMN=""
+    [ "$AZ_COLUMN" = "None" ] && AZ_COLUMN=""
+    echo "#$ISSUE → $STATUS (ADO state: $AZ_STATE${AZ_COLUMN:+, column: $AZ_COLUMN})"
   else
     echo "pipeline-status: could not set #$ISSUE to state '$AZ_STATE' (invalid for this work item type?)" >&2
   fi
