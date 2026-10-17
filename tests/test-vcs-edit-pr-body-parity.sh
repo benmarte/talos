@@ -25,7 +25,7 @@ _run_stdin() { local _in="$1"; shift; OUT="$(printf '%s' "$_in" | bash "$VCS" "$
 _count() { local _n; _n="$(grep -c -- "$1" "$GH_LOG" || true)"; printf '%s' "${_n:-0}"; }
 _gl_puts() { _count '^GLAB api --method PUT '; }
 _az_patches() { _count '^AZ ARGS: \[rest\] \[--method\] \[patch\].*pullRequests/9\?'; }
-_calls() { _count -E '^(GLAB api --method PUT|AZ ARGS: \[rest\] \[--method\] \[patch\])'; }
+_calls() { local _n; _n="$(grep -cE '^(GLAB api --method PUT|AZ ARGS: \[rest\] \[--method\] \[patch\])' "$GH_LOG" || true)"; printf '%s' "${_n:-0}"; }
 # _logged_description <GLAB|AZ> -- the description in the last logged JSON body.
 _logged_description() {
   grep -- "^$1 BODY: " "$GH_LOG" | tail -1 | sed "s/^$1 BODY: //" \
