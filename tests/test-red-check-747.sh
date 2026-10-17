@@ -310,6 +310,17 @@ assert_eq "$EXPECT" "$BODY" "AC9 only the listed ids' final markers change; ever
 assert_contains "$(journal)" "criteria spec-usable 9" "AC9 spec-usable is asked again after the post"
 assert_eq "1" "$(journal | grep -c '^agent reviewer$')" "AC9 the run continues to reviewer"
 
+# AC9 an exit 1 that is a red-check fault (no MISMATCH verdict line) is no kind-mismatch:
+# nothing is revised or posted, and the run continues to reviewer.
+first_round
+printf 'red-check: could not read the spec\n' > "$STUB_DIR/red-check.out"
+printf 1 > "$STUB_DIR/red-check.rc"
+drv
+assert_file_absent "$STUB_DIR/body" "AC9 a red-check fault posts no revised spec"
+assert_eq "0" "$(journal | grep -c '^criteria revise-spec')" "AC9 a red-check fault does not run revise-spec"
+assert_eq "1" "$(journal | grep -c '^agent reviewer$')" "AC9 a red-check fault does not stop the run before reviewer"
+assert_eq "0" "$(printf '%s\n' "$OUT" | grep -c 'state-unavailable')" "AC9 a red-check fault is not state-unavailable"
+
 # AC10 an id-collision blocks and stops before reviewer.
 first_round
 printf 'id-collision AC1 file=tests/test-greet.sh\nred-check: COLLISION 1\n' > "$STUB_DIR/red-check.out"
