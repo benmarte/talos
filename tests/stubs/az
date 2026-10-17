@@ -50,6 +50,11 @@ case "$args" in
   "rest "*"/pullRequests/"*"/iterations?"*)
     [ "${STUB_AZURE_PR_ITERATIONS_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found."
     if [ -n "${STUB_AZURE_PR_ITERATIONS:-}" ]; then printf '%s\n' "$STUB_AZURE_PR_ITERATIONS"; exit 0; fi ;;
+  "rest --method patch "*"/_apis/wit/workitems/"*)
+    # label-issue's json-patch (#783): STUB_AZURE_WI_PATCH_FAIL=1 makes it fail.
+    # Otherwise fall through to the generic `rest` arm below.
+    [ "${STUB_AZURE_WI_PATCH_FAIL:-}" = "1" ] && _stub_fail "TF401232: Work item 5 does not exist, or you do not have permissions to read it."
+    ;;
   "rest --method patch "*"/_apis/policy/evaluations/"*)
     # pr-checks-required requeue (#764): STUB_AZURE_REQUEUE_FAIL=1 makes it fail.
     [ "${STUB_AZURE_REQUEUE_FAIL:-}" = "1" ] && _stub_fail "TF401027: You need the Policy 'Manage' permission."
@@ -336,8 +341,8 @@ print(json.dumps({'id': 5, 'fields': fields}))
       [ -n "${STUB_ASSIGNEE_RACER:-}" ] && [ -n "$_as_login" ] && printf '%s\n' "$STUB_ASSIGNEE_RACER" > "$_as_f"
     fi
     exit 0 ;;
-  "boards work-item update "*"-o none")
-    exit 0 ;;  # -o none prints nothing, as the real az does
+  "boards work-item update "*"-o none"|"boards work-item update "*"--output none")
+    exit 0 ;;  # -o none / --output none print nothing, as the real az does
   "boards work-item update "*)
     printf '{"id":1}\n' ;;
   "account get-access-token "*)

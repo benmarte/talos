@@ -7565,7 +7565,7 @@ print(json.dumps(d))
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] az boards work-item update --id $n --state $done_state $ORG_ARG"
       else
-        az boards work-item update --id "$n" --state "$done_state" $ORG_ARG
+        az boards work-item update --id "$n" --state "$done_state" $ORG_ARG --output none
       fi
       # A Done work item stays "open" on the board with its tags, so strip
       # every pipeline:* tag or the next run treats it as in flight. Goes
@@ -7628,7 +7628,8 @@ try:
     subprocess.run(['az', 'rest', '--method', 'patch', '--url', url,
                     '--resource', ADO_RESOURCE,
                     '--headers', 'Content-Type=application/json-patch+json',
-                    '--body', f'@{body_path}'], check=True)
+                    '--body', f'@{body_path}'], check=True,
+                   stdout=subprocess.DEVNULL)
 finally:
     os.unlink(body_path)
 PYEOF
