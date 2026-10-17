@@ -962,7 +962,7 @@ Identity, resolved once per run: `issues.assignee` when it names a login, else `
 | 1 | No `pipeline:blocked`; every enabled role's approval label present (a human's `skip-qa` waives only this; a [lost stamp](#approvals-bound-to-the-head-sha) is put back first) | `wait` |
 | 2 | `check-approval-sha`: approvals match the head SHA | `redispatch` |
 | 3 | `check-pr-files`: forbidden files (`skip-qa` never waives) | `block` |
-| 4 | `check-closing-keyword`: closing keyword while sibling PRs are open | `block` |
+| 4 | `check-closing-keyword`: closing keyword while sibling PRs are open (`block`); a check that could not look (`talos:closing-keyword-unverified`, `reason=closing-keyword-unverified`: a failed sibling or PR fetch, an unresolved repo, a failed keyword scan) waits and is re-checked next run, with no label and no comment; `siblings-capped` blocks | `block` / `wait` |
 | 5 | Not a draft (only when `pr.draft` resolves true) | `redispatch` |
 | 6 | `pr-checks-required`; a red check is re-run at most twice per head SHA (`talos:ci-rerun` markers) | `wait` / `redispatch` |
 | 7 | Stale base: `pipeline-mergebase.sh`, then `update-branch` (`merge.auto_sync`), then a developer merge-base task | `wait` / `redispatch` |

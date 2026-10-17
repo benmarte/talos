@@ -49,6 +49,7 @@
 61 test-claude-plugin-registration.sh
 14 test-claude-runner-model.sh
 64 test-closing-keyword-siblings-cap.sh
+3 test-closing-keyword-unverified-wait.sh
 55 test-closing-keyword.sh
 7 test-cloud-followups.sh
 23 test-cloud-footer.sh

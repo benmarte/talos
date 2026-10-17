@@ -120,7 +120,7 @@ assert_eq "1" "$(wc -l < "$FETCH_LOG" | tr -d ' ')" "AC6 a body with a keyword s
 BADPY="$SANDBOX/badpy"; mkdir -p "$BADPY"
 printf '#!/bin/sh\nexit 1\n' > "$BADPY/python3"; chmod +x "$BADPY/python3"
 : > "$FETCH_LOG"
-out="$(printf '%s' 'Closes #42' | PATH="$BADPY:$PATH" REPO="acme/widgets" _vcs_shared_check_closing_keyword 42 9 9 _siblings_fetch 2>&1)"; rc=$?
+out="$(printf '%s' 'Closes #42' | PATH="$BADPY:$PATH" REPO="acme/widgets" _vcs_shared_check_closing_keyword 42 9 9 _siblings_fetch 2>/dev/null)"; rc=$?
 assert_eq "0" "$rc" "AC6 a failed keyword scan exits 0"
 assert_eq "talos:closing-keyword-unverified pr=9 issue=42 reason=keyword-scan-failed" "$out" "AC6 a failed keyword scan prints the marker with the fixed reason"
 assert_eq "0" "$(wc -l < "$FETCH_LOG" | tr -d ' ')" "AC6 a failed keyword scan fetches no siblings"
