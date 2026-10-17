@@ -44,7 +44,8 @@ run_role() {
 # ── AC1 / AC2: a Bash write to a resolved config ends the stage with 78 ──────
 for _t in "user:$USER_CFG" "project:$PROJ_CFG" "repo:$REPO_CFG"; do
   _name="${_t%%:*}" _file="${_t#*:}"
-  export STUB_CLAUDE_HOOK="sed -i.bak 's/}\$/, \"x\": 1}/' '$_file'; rm -f '$_file.bak'"
+  # An in-place sed rewrite, in the portable form (the lint refuses sed -i).
+  export STUB_CLAUDE_HOOK="sed 's/}\$/, \"x\": 1}/' '$_file' > '$_file.new' && mv '$_file.new' '$_file'"
   run_role developer
   assert_eq "78" "$RC" "AC1 $_name config rewritten by the stage: the agent exits 78"
   assert_contains "$STDERR" "pipeline-agent: reason=config-mutated role=developer file=$_file" \

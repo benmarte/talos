@@ -305,7 +305,9 @@
 #         The other ends: `stop reason=iterations-exhausted max=<n>` (the pass
 #         cap, exit 0), `stop reason=stage-blocked role=<role>` (a stage ended
 #         `BLOCKED:`, exit 0), `stop reason=provider-failed rc=<75|69>
-#         role=<role>` (failover exhausted, exit 1), `stop reason=merge-failed`
+#         role=<role>` (failover exhausted, exit 1), `stop reason=config-mutated
+#         role=<role> file=<path>` (the stage changed a resolved config file,
+#         pipeline-agent.sh exit 78, exit 1, #754), `stop reason=merge-failed`
 #         (`merge-pr` failed, exit 1), `stop reason=state-unavailable` (an
 #         answer of `next` or of a gate that is not one of its shapes, exit 1),
 #         `stop reason=worktree-unavailable role=docs` (no worktree of the PR's
@@ -319,10 +321,10 @@
 #         stage's final message never does (stderr has the `note` lines and the
 #         `dispatch-failed ... reason=<why>` line). The playbook's end-state
 #         table (skills/pipeline/SKILL.md) has one action for each end.
-# run-reasons: qa-comment-missing usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable map-failed worktree-unavailable same-verdict-same-head verify-timeout qa-flaky
+# run-reasons: qa-comment-missing usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable map-failed worktree-unavailable same-verdict-same-head verify-timeout qa-flaky config-mutated
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         state-unavailable ready-pr-failed draft-unverified head-unresolved
-#         merge-failed provider-failed worktree-unavailable (exit 1; 2 for usage),
+#         merge-failed provider-failed config-mutated worktree-unavailable (exit 1; 2 for usage),
 #         and with exit 0 stop-requested iterations-exhausted stage-blocked
 #         qa-fail-unchanged-head spec-unusable fix-round-unchanged-head
 #         checkout-return-failed same-verdict-same-head qa-flaky; plus the stop reasons
@@ -3108,14 +3110,15 @@ _talos_docs_delta() {
 }
 
 # docs-gate <pr> --issue <N>: does the docs stage need an LLM? Dispatch only
-# when the PR changes README.md, docs/** or scripts/pipeline-defaults.sh; roles.docs_mode always forces it
+# when the PR changes a path matching docs.paths (default README.md, docs/*,
+# scripts/pipeline-defaults.sh, #754); roles.docs_mode always forces it
 # and a failed pr-files read dispatches too (never "nothing to check"). On a
 # skip the docs:done stamp and `done docs` are the verb's own, so the loop and
 # the playbook end up in the same state without a docs agent. After a fix round
 # (docs:done on the PR, and stale) the question is asked of the delta since the
 # approved SHA only (#590): a re-stamp dispatch, or a stamp when docs own none of it.
 _talos_docs_gate() {
-  local _pr="${1:-}" _n="" _p _hits="" _f _body _why _reason=no-docs-paths
+  local _pr="${1:-}" _n="" _p _hits="" _f _body _why _reason=no-docs-paths _globs _g
   [ "$#" -eq 0 ] || shift
   while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] && [ "$1" = "--issue" ] || _talos_stop usage 2
@@ -3137,10 +3140,15 @@ _talos_docs_gate() {
     _talos_emit docs "dispatch reason=fetch-failed"; _talos_flush; return 0
   fi
 
+  # docs.paths (#754): shell `case` globs, so `*` and `**` match across `/`.
+  _globs="$(cfg docs.paths)"
   while IFS= read -r _p; do
-    case "$_p" in
-      README.md | docs/* | scripts/pipeline-defaults.sh) _hits="$_hits$_p"$'\n' ;;
-    esac
+    [ -n "$_p" ] || continue
+    while IFS= read -r _g; do
+      [ -n "$_g" ] || continue
+      # shellcheck disable=SC2254
+      case "$_p" in $_g) _hits="$_hits$_p"$'\n'; break ;; esac
+    done <<< "$_globs"
   done <<< "$_OUT"
 
   _why="docs verified by code: no docs-relevant changes (docs_mode: auto) — no subagent dispatched"
@@ -4197,6 +4205,12 @@ _talos_run_dispatch() {
         # The provider contract (#418): failover exhausted. A stop, never a
         # verdict; the state did not advance, so the run is not clean: exit 1.
         _talos_emit stop "reason=provider-failed rc=$_AG_RC role=$_role"
+        _talos_flush; exit 1 ;;
+      78)
+        # #754: the stage changed a resolved config file (pipeline-agent.sh named
+        # it on stderr). A stop, never a verdict; nothing is recorded.
+        _w="$(sed -n 's/^pipeline-agent: reason=config-mutated role=[^ ]* file=//p' "$_CFG_CACHE_DIR/agent.err" | head -n 1)"
+        _talos_emit stop "reason=config-mutated role=$_role file=$_w"
         _talos_flush; exit 1 ;;
       *)
         _run_fail agent-failed "rc=$_AG_RC" ;;

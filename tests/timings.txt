@@ -64,6 +64,7 @@
 37 test-config-int-validators.sh
 3 test-config-json-only.sh
 0 test-config-known-keys-guard.sh
+12 test-config-mutation-754.sh
 5 test-config-parse-warn.sh
 13 test-config-secret-shapes.sh
 5 test-config-show.sh
@@ -82,6 +83,7 @@
 0 test-docs-729-azure-verbs.sh
 0 test-docs-config-table.sh
 0 test-docs-links.sh
+9 test-docs-paths-754.sh
 11 test-draft-check.sh
 20 test-draft-complete-qa-fresh.sh
 72 test-draft-stage-order.sh
