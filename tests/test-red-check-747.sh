@@ -321,12 +321,15 @@ assert_contains "$(journal)" "vcs label-issue 9 --add pipeline:blocked" "AC10 th
 assert_contains "$(journal)" "vcs label-pr 12 --add pipeline:blocked" "AC10 the PR is blocked"
 assert_eq "0" "$(journal | grep -c '^agent reviewer$')" "AC10 reviewer is not dispatched"
 
-# AC11 a developer fix round does not call red-check.
+# AC11 a developer fix round (a QA FAIL on an open PR) does not call red-check.
 first_round
-printf '{"prs":[{"n":12,"issue":9,"head":"a4f9","owner":false,"stage":"developer"}],"pr_total":1,"ignored":0,"blocked":[],"queued":[],"held":[],"owners":[],"capped":[]}' > "$STUB_DIR/collect.json"
+printf '%s' '{"vcs": {"provider": "github"}, "issues": {"max_parallel": 1}, "roles": {"qa": true}, "pr": {"draft": false}, "comments": {"enabled": false}, "verify": {"timeout_ms": 600000, "ci_wait_s": 900}}' > "$SANDBOX/talos.pipeline.json"
+cp "$STUB_DIR/view-issue.9.after" "$STUB_DIR/view-issue.9"
+printf '{"prs":[{"n":12,"issue":9,"head":"a4f9","owner":false,"stage":"qa"}],"pr_total":1,"ignored":0,"blocked":[],"queued":[],"held":[],"owners":[],"capped":[]}' > "$STUB_DIR/collect.json"
+printf 'FAIL: AC1 broke\n' > "$STUB_DIR/message.qa.1"
 printf 'https://github.com/acme/widget/pull/12\nfixed\n' > "$STUB_DIR/message.developer.1"
 printf 'printf bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > "$d/pr-head.12"\n' > "$STUB_DIR/hook.developer.1"
-drv 1
+OUT="$(TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 bash "$RUN" run --max-iterations 2 2>"$ERR")"; RC=$?
 assert_eq "1" "$(journal | grep -c '^agent developer$')" "AC11 control: the fix-round developer ran"
 assert_eq "0" "$(journal | grep -c '^criteria red-check')" "AC11 a developer fix round does not call red-check"
 
