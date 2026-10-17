@@ -134,4 +134,9 @@ if grep -q '^| .*closing-keyword-unverified' "$TALOS_ROOT/docs/reference.md"; th
   pass "AC7 docs/reference.md has a table row for closing-keyword-unverified"
 else fail "AC7 docs/reference.md has a table row for closing-keyword-unverified"; fi
 
+# ── AC8: the gate suite pins the wait, not the old warn ──────────────────────
+gate_suite="$(cat "$TALOS_ROOT/tests/test-talos-gate.sh")"
+assert_contains "$gate_suite" 'wait: any other unverified marker waits' "AC8 test-talos-gate.sh expects the wait for another unverified marker"
+assert_not_contains "$gate_suite" 'warn_ok = {"closing-keyword-unverified"' "AC8 test-talos-gate.sh warn_ok drops closing-keyword-unverified"
+
 finish
