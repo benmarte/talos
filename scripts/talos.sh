@@ -274,8 +274,12 @@
 #         are relayed. So is a QA FAIL whose FAIL lines are all `AC<n> FAIL
 #         flaky` (failed at the head, passed on qa-run's one re-run): PR and
 #         issue blocked, `stop reason=qa-flaky issue=<N> pr=<M>`, exit 0, no
-#         attempt (#717). Other FAIL shapes, or an edited spec, run the fix round. A QA stage that ends
-#         `BLOCKED: spec: <why>` stops the same way (#645).
+#         attempt (#717). So is a QA FAIL whose `qa-run.<pr>` starts `BLOCKED
+#         environment:` (a verify.ready command failed; the code was not judged):
+#         PR and issue blocked, `stop reason=environment issue=<N> pr=<M>`, exit 0,
+#         no attempt, no gate (#751). Other FAIL shapes, or an edited spec, run the fix round. A QA stage that ends
+#         `BLOCKED: spec: <why>` stops the same way (#645); one that ends `BLOCKED:
+#         environment: <why>` stops `reason=environment` (#751).
 #         Right after a first-round developer opens the PR, before any review stage,
 #         the run asks `pipeline-criteria.sh red-check <N> <pr-head>` once per PR
 #         (#747; a fix round never does): a `(test)` green at the red commit or a
@@ -321,7 +325,7 @@
 #         stage's final message never does (stderr has the `note` lines and the
 #         `dispatch-failed ... reason=<why>` line). The playbook's end-state
 #         table (skills/pipeline/SKILL.md) has one action for each end.
-# run-reasons: qa-comment-missing usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable map-failed worktree-unavailable same-verdict-same-head verify-timeout qa-flaky config-mutated
+# run-reasons: qa-comment-missing usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable map-failed worktree-unavailable same-verdict-same-head verify-timeout qa-flaky config-mutated environment
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         state-unavailable ready-pr-failed draft-unverified head-unresolved
 #         merge-failed provider-failed config-mutated worktree-unavailable (exit 1; 2 for usage),
@@ -4308,6 +4312,11 @@ print(min(new) if new else "")' "$_o0" "$_o1")" || _w=""
       if [ "$_role" = qa ] && [ "$_v" = BLOCKED ] \
          && grep -m 1 -v '^[[:space:]]*$' "$_CFG_CACHE_DIR/agent.out" 2>/dev/null | grep -q '^BLOCKED: spec:'; then
         _talos_emit stop "reason=spec-unusable issue=$_n pr=$_pr"
+      # #751: a QA that found the environment broken ends `BLOCKED: environment:
+      # <why>`; the code was not judged, so the stop is not a stage that needs a person.
+      elif [ "$_role" = qa ] && [ "$_v" = BLOCKED ] \
+         && grep -m 1 -v '^[[:space:]]*$' "$_CFG_CACHE_DIR/agent.out" 2>/dev/null | grep -q '^BLOCKED: environment:'; then
+        _talos_emit stop "reason=environment issue=$_n pr=$_pr"
       # #674: a verify that outran the foreground cap is a known end with an action.
       elif [ "$_role" = qa ] && [ "$_v" = BLOCKED ] \
          && grep -m 1 -v '^[[:space:]]*$' "$_CFG_CACHE_DIR/agent.out" 2>/dev/null | grep -q '^BLOCKED: verify: timed out after '; then
@@ -4409,6 +4418,21 @@ _talos_run_qa_spec_fault() {
   _talos_block_labels "$_n" "$_pr"
   _talos_relay spec-unusable "$(head -n 24 <<<"$_fl")"
   _talos_emit stop "reason=spec-unusable issue=$_n pr=$_pr"
+  _talos_flush; exit 0
+}
+
+# _talos_run_qa_environment <pr> <issue> (#751): `qa-run.<pr>` starts `BLOCKED
+# environment:` -- a verify.ready command failed, so the app was not fit to test
+# and the code was never judged. A fix round would change nothing: PR and issue
+# are blocked, the first 31 lines relayed, `stop reason=environment issue=<N>
+# pr=<M>`, exit 0; no attempt is recorded and no gate runs. Only the first line
+# counts, as for QA's own `BLOCKED:` line.
+_talos_run_qa_environment() {
+  local _pr="$1" _n="$2" _f="$_CFG_CACHE_DIR/qa-run.$1"
+  head -n 1 "$_f" 2>/dev/null | grep -q '^BLOCKED environment:' || return 0
+  _talos_block_labels "$_n" "$_pr"
+  _talos_relay environment "$(head -n 31 "$_f" | cut -c1-200)"
+  _talos_emit stop "reason=environment issue=$_n pr=$_pr"
   _talos_flush; exit 0
 }
 
@@ -4545,6 +4569,7 @@ _talos_run_red_check() {
 _talos_run_qa_fail() {
   local _pr="$1" _n="$2" _head _f
   _talos_run_spec_usable "$_pr" "$_n"
+  _talos_run_qa_environment "$_pr" "$_n"
   _talos_run_qa_flaky "$_pr" "$_n"
   _talos_run_qa_spec_fault "$_pr" "$_n"
   _talos_run_qa_comment "$_pr" "$_n"

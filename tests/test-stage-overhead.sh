@@ -71,7 +71,7 @@ budget() {  # role ceiling
   else fail "$1: profile + prompt template is $size bytes (budget $2)" "over by $((size - $2))"; fi
 }
 budget developer 12350  # #648: the placement check before the PR; #716: the verify.targeted_commands rule
-budget qa 10030  # #750: a refused tool call is not a block, post the verdict first; #693: the guard green@head line; #729: the AC<n> FAIL flaky and qa-run e2e lines, less the post-approval "GitHub-only"; #714: the frozen@head column, FAIL weakened and --ack-changed; #715: the (same) result lines; #610: the exit-4 rule (an unusable spec is BLOCKED, not a FAIL); #648: a vacuous FAIL is the spec's; #674: the 600000 ms cap and BLOCKED: verify
+budget qa 10250  # #751: the exit-5 rule (BLOCKED environment is not a FAIL); #750: a refused tool call is not a block, post the verdict first; #693: the guard green@head line; #729: the AC<n> FAIL flaky and qa-run e2e lines, less the post-approval "GitHub-only"; #714: the frozen@head column, FAIL weakened and --ack-changed; #715: the (same) result lines; #610: the exit-4 rule (an unusable spec is BLOCKED, not a FAIL); #648: a vacuous FAIL is the spec's; #674: the 600000 ms cap and BLOCKED: verify
 budget reviewer 4960  # #596: the Change-block rule at Read diff and the prompt's marker line; #661: the mandatory review body file; #710: the talos:reviewed marker line
 budget security 4570  # #596: the same; #661: the mandatory sign-off body file; #710: the talos:reviewed marker line
 budget pm 5340  # #715: the (same) criterion kind; #648: (test) only if red on base; every test file on the Tests: line; #752: the path charset, the bullet list, the open-file phrases and the spec-check self-check

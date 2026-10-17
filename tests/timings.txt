@@ -158,6 +158,7 @@
 0 test-prompt-rules.sh
 14 test-providers.sh
 13 test-python-safe-path.sh
+30 test-qa-environment-751.sh
 26 test-qa-flaky-e2e-717.sh
 15 test-qa-guard-693.sh
 5 test-qa-run-merged-base-658.sh

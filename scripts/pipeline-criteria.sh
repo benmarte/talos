@@ -90,7 +90,24 @@
 #       --ack-changed <reason> (QA, after reading the file's diff between the
 #       red commit and the head) turns FAIL weakened into `weakened-ack`: the
 #       frozen failure is still printed, the verdict can be PASS.
+#       verify.ready (#751, repo-only list, default empty): shell commands run in
+#       order from the repo root through pipeline-verify.sh before every run of
+#       the Tests files (the head run, the re-run, the red run after its checkout,
+#       the frozen run), e.g. restart the app and wait until it answers. The first
+#       one to exit non-zero ends the run: HEAD and the test files are put back,
+#       the verdict is `BLOCKED environment: <cmd> exited <N>` (exit 5), followed
+#       by `environment failure output (data):` and the last 30 lines (200 chars
+#       each); no AC line, no report. TALOS_QA_RESULTS then starts with
+#       `BLOCKED environment: <cmd> exited <N>`; the driver stops `reason=
+#       environment` and starts no fix round (the code is unchanged).
+#       On a FAIL or BLOCKED verdict the run's head.out, rerun.out, red.out and
+#       frozen.out (those that exist) are copied to <repo root>/.talos/qa-run-<pr>/
+#       (replaced each run, removed by a run that passes) and `qa-run: raw output
+#       kept in <path>` is printed before the verdict line. When verify.targeted_commands
+#       loaded entries, `qa-run: targeted_commands from <config file>` says where
+#       they came from.
 #         qa-run: verdict FAIL <why>    exit 1
+#         qa-run: verdict BLOCKED environment: <cmd> exited <N>    exit 5 (#751)
 #         qa-run: verdict BLOCKED spec: <why>    exit 4 (#610): the spec is
 #             unusable (the four faults of spec-usable below) and the PR was
 #             not judged; no test ran
@@ -190,7 +207,7 @@
 #       by the driver after red-check: ...` (the driver posts it). Exit 1 when the spec
 #       is unreadable or a listed criterion is not a flippable line.
 #
-# Exit codes: 0 ok, 1 a failing report or an unreadable/empty input, 2 usage, 3 no usable runner, 4 an unusable spec.
+# Exit codes: 0 ok, 1 a failing report or an unreadable/empty input, 2 usage, 3 no usable runner, 4 an unusable spec, 5 a broken environment (qa-run).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -707,8 +724,62 @@ _qa_exit() { _qa_restore_frozen; _qa_restore; _qa_restore_home; }
 
 # _qa_verdict_fail REASON -- the closing line of a refused or failed run.
 _qa_fail() {
+  _qa_keep_raw
   printf 'qa-run: verdict FAIL %s\n' "$1"
   return 1
+}
+
+# The run's scratch directory and where its raw output is kept (#751); qa-run
+# sets both, so a verb that does not (red-check) keeps nothing.
+_QA_RAW_SRC=""
+_QA_RAW_DST=""
+# _qa_keep_raw: copy the head, rerun, red and frozen outputs that exist to the
+# kept directory and name it, ahead of a FAIL or BLOCKED verdict line.
+_qa_keep_raw() {
+  local f n=0
+  [ -n "$_QA_RAW_SRC" ] && [ -n "$_QA_RAW_DST" ] || return 0
+  for f in head rerun red frozen; do [ ! -f "$_QA_RAW_SRC/$f.out" ] || n=$((n + 1)); done
+  [ "$n" -gt 0 ] || return 0
+  rm -rf "${_QA_RAW_DST:?}"
+  mkdir -p "$_QA_RAW_DST" || return 0
+  for f in head rerun red frozen; do
+    [ ! -f "$_QA_RAW_SRC/$f.out" ] || cp "$_QA_RAW_SRC/$f.out" "$_QA_RAW_DST/$f.out" 2>/dev/null || :
+  done
+  printf 'qa-run: raw output kept in %s\n' "$_QA_RAW_DST"
+}
+
+# verify.ready (#751): the commands that make the environment fit to test, set by
+# qa-run. _qa_ready (below) records the first failure in _QA_ENV_FAIL as
+# `<cmd> exited <N>`; qa-run then ends BLOCKED environment (_qa_env_blocked).
+_QA_READY=()
+_QA_ENV_FAIL=""
+_qa_ready() {
+  local c r
+  for c in ${_QA_READY[@]+"${_QA_READY[@]}"}; do
+    bash "$SCRIPT_DIR/pipeline-verify.sh" --issue "$issue" --worktree "$top" -- \
+      bash -c "$c" > "$tmp/ready.out" 2>&1; r=$?
+    if [ "$r" -ne 0 ]; then
+      _QA_ENV_FAIL="$(printf '%s' "$c" | tr -cd '[:print:]' | cut -c1-120) exited $r"
+      return 1
+    fi
+  done
+}
+
+# _qa_env_blocked: the closing of a run whose verify.ready command failed. HEAD
+# and the Tests files go back first; the verdict, the output tail and the
+# driver's results file follow. Exit 5; no AC line, no report.
+_qa_env_blocked() {
+  local etail
+  _qa_restore_frozen
+  _qa_restore || { _qa_fail "could not return to $_QA_ORIG after the environment failure"; return $?; }
+  etail="$(tail -n 30 "$tmp/ready.out" 2>/dev/null | tr -d '\000-\010\013-\037\177' | cut -c1-200 | sed 's/^/  /')"
+  _qa_keep_raw
+  printf 'qa-run: verdict BLOCKED environment: %s\n' "$_QA_ENV_FAIL"
+  echo "environment failure output (data):"
+  printf '%s\n' "$etail"
+  [ -z "${TALOS_QA_RESULTS:-}" ] \
+    || printf 'BLOCKED environment: %s\n%s\n' "$_QA_ENV_FAIL" "$etail" > "$TALOS_QA_RESULTS" 2>/dev/null || :
+  return 5
 }
 
 # verify.targeted_commands (#716) -> the entries as data: JSON on stdin, one
@@ -788,6 +859,22 @@ EOF
 }
 # The tab-split above reads `E idx ere run pass fail`: with `=` on pass and fail
 # no field is empty, so the tab (whitespace to read) cannot collapse one.
+
+# _tc_origin (#751): after _tc_load took entries, one line names the config file
+# that set verify.targeted_commands, so nobody has to guess the layer.
+_tc_origin() {
+  local layer f
+  [ "${#TC_IDX[@]}" -gt 0 ] || return 0
+  layer="$(bash "$SCRIPT_DIR/pipeline-config.sh" --show --origin-only verify.targeted_commands 2>/dev/null \
+    | awk -F'\t' '$1 == "verify.targeted_commands" { print $2 }')"
+  case "$layer" in
+    repo)
+      f="${PIPELINE_CONFIG:-talos.pipeline.json}"
+      case "$f" in /*) ;; *) f="$PWD/$f" ;; esac ;;
+    *) f="the $layer layer" ;;
+  esac
+  printf 'qa-run: targeted_commands from %s\n' "$f"
+}
 
 # _tc_pick PATH: sets TC_SEL to the index of the first entry whose glob fits, else -1.
 TC_SEL=-1
@@ -891,11 +978,13 @@ EOF
 
 # _qa_exec OUTFILE PATH... -- one run of the Tests files, from the current
 # directory; output (stdout+stderr) to OUTFILE. Reads the caller's tmp, issue,
-# top, spec, runner, vline and filters.
+# top, spec, runner, vline and filters. verify.ready (#751) runs first; when it
+# fails the files do not run and _QA_ENV_FAIL is set (the caller checks it).
 _qa_exec() {
   local out="$1" a=() rest=() q rc=0 r
   shift
   : > "$out"
+  _qa_ready || return 1
   for q in "$@"; do
     if _tc_pick "$q"; then
       _tc_exec "$out" "$TC_SEL" "$q"; r=$?
@@ -947,6 +1036,10 @@ cmd_qa_run() {
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/talos-qa-run.XXXXXX")" && [ -d "$tmp" ] \
     || { echo "pipeline-criteria: qa-run: no scratch directory" >&2; return 1; }
   if type _talos_on_exit >/dev/null 2>&1; then _talos_on_exit "rm -rf \"$tmp\""; fi
+  # The raw outputs of an earlier run of this PR are replaced (#751).
+  _QA_RAW_SRC="$tmp"; _QA_RAW_DST="$top/.talos/qa-run-$pr"
+  rm -rf "${_QA_RAW_DST:?}"
+  _QA_READY=(); _QA_ENV_FAIL=""
 
   # 1. Let the sweeps find this working copy again once the PR is done (#240).
   #    Best effort: the main checkout is refused, a missing script is ignored.
@@ -1027,8 +1120,12 @@ cmd_qa_run() {
 
   # 7. The runner. A Tests file that fits a verify.targeted_commands entry (#716)
   #    runs as that entry; the runner below is for the files that fit none.
-  local runner vline runner_why label runner_rc=0
+  local runner vline runner_why label runner_rc=0 c
   _tc_load
+  _tc_origin
+  while IFS= read -r c; do [ -z "$c" ] || _QA_READY+=("$c"); done <<EOF
+$(cfg verify.ready 2>/dev/null)
+EOF
   _runner_pick . ${present[@]+"${present[@]}"} || runner_rc=$?
   case "$runner_rc" in
     4) printf 'qa-run: verdict BLOCKED spec: %s\n' "$runner_why"; return 4 ;;
@@ -1044,6 +1141,7 @@ cmd_qa_run() {
   local head_rc=0
   if [ "${#present[@]}" -gt 0 ]; then
     _qa_exec "$tmp/head.out" "${present[@]}"; head_rc=$?
+    [ -z "$_QA_ENV_FAIL" ] || { _qa_env_blocked; return $?; }
   fi
   # A failing head run is run once more (#717): the same present Tests files, at
   # the head, before the red run checks anything out. The combined head output
@@ -1052,6 +1150,7 @@ cmd_qa_run() {
   if [ "$head_rc" -ne 0 ] && [ "${#present[@]}" -gt 0 ]; then
     : > "$tmp/rerun.out"
     _qa_exec "$tmp/rerun.out" "${present[@]}"; rerun_rc=$?
+    [ -z "$_QA_ENV_FAIL" ] || { _qa_env_blocked; return $?; }
     rerun_ran=1
   fi
 
@@ -1080,6 +1179,7 @@ cmd_qa_run() {
       if git checkout -q --detach "$red" >/dev/null 2>&1; then
         _QA_MOVED=1
         _qa_exec "$tmp/red.out" "${at_red[@]}"
+        [ -z "$_QA_ENV_FAIL" ] || { _qa_env_blocked; return $?; }
         _qa_restore || { _qa_fail "could not return to $_QA_ORIG after the red run"; return $?; }
         # The frozen run (#714): the red commit's version of each Tests file the
         # PR changed since, against the head code. The head versions go back on
@@ -1092,6 +1192,7 @@ cmd_qa_run() {
           _QA_FROZEN=("${frozen_files[@]}")
           if git checkout -q "$red" -- "${frozen_files[@]}" >/dev/null 2>&1; then
             _qa_exec "$tmp/frozen.out" "${frozen_files[@]}"; frozen_rc=$?
+            [ -z "$_QA_ENV_FAIL" ] || { _qa_env_blocked; return $?; }
           else
             frozen_rc=-1
           fi
