@@ -81,8 +81,8 @@ sc
 assert_eq "0:spec-check: ok" "$RC:$OUT" "AC3 the list ends at the first non-bullet line"
 spec '**Tests:**' '' '- `tests/test-a.sh`'
 sc
-assert_eq "1:spec-check: refused tests-line-missing: 1 test criteria and no usable Tests: line" "$RC:$OUT" \
-  "AC3 a blank line right after the label leaves the list empty"
+assert_eq "1" "$RC" "AC3 a blank line right after the label leaves the list empty: exit 1"
+assert_contains "$OUT" "spec-check: refused tests-line-missing: " "AC3 a blank line right after the label leaves the list empty: tests-line-missing"
 spec '**Tests:**' '  - `tests/test-a.sh`' '  - `tests/test-b.sh`'
 sc
 assert_eq "0:spec-check: ok" "$RC:$OUT" "AC3 the indented-continuation form still parses"

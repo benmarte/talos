@@ -141,10 +141,10 @@ assert_eq "1:AC2 not-in-tests-files
 placement: GAP 1" "$RC:$OUT" "AC3 placement: the same id in a file off the Tests: line does not count"
 
 # ── AC4: spec-check and done pm refuse an open test file ─────────────────────
-OPEN="Note: plus a new or existing file of the developer's choosing for AC2."
+OPEN="plus a new or existing file of the developer's choosing for AC2."
 sc() { OUT="$(bash "$GS/pipeline-criteria.sh" spec-check "$SANDBOX/spec.md" 2>"$ERR")"; RC=$?; }
 reset_stubs
-spec '**Tests:** `tests/test-a.sh`' "$OPEN"
+spec "**Tests:** \`tests/test-a.sh\` $OPEN"
 sc
 case "$RC:$OUT" in
   "1:spec-check: refused tests-line-open: "*) _got=refused ;;
@@ -152,7 +152,7 @@ case "$RC:$OUT" in
 esac
 assert_eq "refused" "$_got" "AC4 spec-check: a line leaving the test file open is tests-line-open, exit 1"
 for phrase in "of the developer's choice" "a New Or Existing File"; do
-  spec '**Tests:** `tests/test-a.sh`' "AC2 goes in $phrase."
+  spec "**Tests:** \`tests/test-a.sh\` AC2 goes in $phrase."
   sc
   assert_eq "1" "$RC" "AC4 spec-check: '$phrase' is refused, any case"
 done
@@ -163,7 +163,7 @@ assert_eq "0:spec-check: ok" "$RC:$OUT" "AC4 spec-check: a closed Tests: line is
 dn() { OUT="$(bash "$RUN" done pm --issue 9 --summary-file "$SANDBOX/summary.txt" 2>"$ERR" < /dev/null)"; RC=$?; }
 printf 'greet\n' > "$SANDBOX/summary.txt"
 reset_stubs
-spec '**Tests:** `tests/test-a.sh`' "$OPEN"
+spec "**Tests:** \`tests/test-a.sh\` $OPEN"
 dn
 assert_contains "$OUT" "spec_check=tests-line-open" "AC4 done pm: spec_check=tests-line-open"
 assert_eq "next=fix-round stage=pm" "$(printf '%s\n' "$OUT" | tail -n 1)" "AC4 done pm: next=fix-round stage=pm"
@@ -171,7 +171,7 @@ assert_contains "$(journal)" "vcs record-attempt 9 pm" "AC4 done pm: the attempt
 assert_contains "$(journal)" "vcs label-issue 9 --add pipeline:confirmed --remove pipeline:dev" "AC4 done pm: the label goes back to pipeline:confirmed"
 assert_contains "$(body | head -n 1)" "**Spec check:**" "AC4 done pm: the Spec check comment is posted"
 reset_stubs
-spec '**Tests:** `tests/test-a.sh`' "$OPEN"
+spec "**Tests:** \`tests/test-a.sh\` $OPEN"
 set_stub record-attempt 1 "" "pipeline-vcs: record-attempt: max_fix_attempts (3) reached for pm"
 dn
 assert_eq "next=stop" "$(printf '%s\n' "$OUT" | tail -n 1)" "AC4 done pm: at the attempt ceiling it ends next=stop"
