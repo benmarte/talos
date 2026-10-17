@@ -224,9 +224,6 @@ assert_contains "$out" "STALE gitlab never-called" "an exception for a verb nobo
 # slice of #753 adds the verb and deletes its line.
 read -r -d '' PARITY_EXCEPTIONS <<'TABLE' || true
 # provider verb PARITY-EXCEPTION: reason
-gitlab upsert-pr-comment PARITY-EXCEPTION: no GitLab arm yet; azure has one
-gitlab mark-needs-owner PARITY-EXCEPTION: no GitLab arm yet; azure has one
-gitlab list-needs-owner PARITY-EXCEPTION: no GitLab arm yet; azure has one
 gitlab conflict-files PARITY-EXCEPTION: github and github-api only; handled before dispatch (#256)
 azure conflict-files PARITY-EXCEPTION: github and github-api only; handled before dispatch (#256)
 file assign-issue PARITY-EXCEPTION: local-only by design
@@ -264,8 +261,8 @@ esac
 for want in "gitlab upsert-pr-comment" \
             "gitlab mark-needs-owner" "gitlab list-needs-owner"; do
   case "$PARITY_EXCEPTIONS" in
-    *"$want PARITY-EXCEPTION:"*) pass "AC5 the table records: $want" ;;
-    *) fail "AC5 the table records: $want" ;;
+    *"$want PARITY-EXCEPTION:"*) fail "AC5 the table no longer records: $want" ;;
+    *) pass "AC5 the table no longer records: $want" ;;
   esac
 done
 

@@ -35,8 +35,7 @@ print(json.dumps({"id": int(i), "body": body, "system": False, "author": {"usern
 }
 # _fresh -- a new stub state dir (notes and labels the stub writes back).
 _fresh() {
-  STUB_GITLAB_STATE_DIR="$(mktemp -d)"
-  [ -d "$STUB_GITLAB_STATE_DIR" ] || { echo "no state dir" >&2; exit 1; }
+  STUB_GITLAB_STATE_DIR="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-gl-owner.XXXXXX")" || exit 1
   export STUB_GITLAB_STATE_DIR
   : > "$GH_LOG"
 }
@@ -58,8 +57,7 @@ for l in sys.stdin:
     print(json.loads(l)["body"].replace("\n", "\\n"))'
 }
 
-FIX="$(mktemp -d)"
-[ -d "$FIX" ] || { echo "no fixture dir" >&2; exit 1; }
+FIX="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-gl-owner-fix.XXXXXX")" || exit 1
 printf 'Spend line' > "$FIX/f"
 MARK='<!-- talos:spend -->'
 BODY_NEW='Spend line\n\n<!-- talos:spend -->'
@@ -220,7 +218,7 @@ assert_eq "0" "$rc" "AC11 the parity test passes"
 [ "$rc" -eq 0 ] || printf '%s\n' "$parity_out" >&2
 
 # ── AC12: azure behaviour unchanged ──────────────────────────────────────────
-azure_out="$(bash "$TALOS_ROOT/tests/test-azure-pr-comment-verbs.sh" 2>&1)"; rc=$?
+azure_out="$(env -u STUB_GITLAB_STATE_DIR -u STUB_GITLAB_POST_AUTHOR -u STUB_CURRENT_USER bash "$TALOS_ROOT/tests/test-azure-pr-comment-verbs.sh" 2>&1)"; rc=$?
 assert_eq "0" "$rc" "AC12 the azure suite stays green"
 [ "$rc" -eq 0 ] || printf '%s\n' "$azure_out" >&2
 

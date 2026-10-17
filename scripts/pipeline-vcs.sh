@@ -371,9 +371,10 @@
 #                                             nothing and exits 1 on any page failure.
 #   upsert-pr-comment <pr> --marker <name> --body-file <path|->
 #                                             Keep ONE marker comment on PR <pr> up to date
-#                                             (#381, epic #334; github, github-api and azure
+#                                             (#381, epic #334; github, github-api, azure
 #                                             (#709: a PATCH of the thread comment, or a
-#                                             new thread); gitlab and file exit 2 with `not
+#                                             new thread) and gitlab (#763: a PUT of the MR
+#                                             note, or a new note); file exits 2 with `not
 #                                             implemented for provider '<p>'`). <name> is a
 #                                             TALOS_MARKERS member without `talos:` (e.g.
 #                                             spend), else exit 2; a bare `-` argument exits
@@ -446,7 +447,9 @@
 #                                             an issue in any state. github, github-api;
 #                                             azure (#709) takes a PR only: the comment
 #                                             is a PR thread, the label a PR label;
-#                                             gitlab and file exit 2 with
+#                                             gitlab (#763) takes a merge request only:
+#                                             the comment is an MR note, the label an MR
+#                                             label; file exits 2 with
 #                                             "not implemented for provider '<p>'".
 #   list-needs-owner [--json] [--clear-answered]
 #                                             One line per OPEN issue or PR carrying
@@ -493,7 +496,9 @@
 #                                             the flag no label is changed. github,
 #                                             github-api; azure (#709: active PRs only,
 #                                             one labels read per PR, the label removed by
-#                                             its id); other providers exit 2 as above.
+#                                             its id); gitlab (#763: open merge requests
+#                                             only, kind=pr, the label removed with glab mr
+#                                             update --unlabel); file exits 2 as above.
 #   check-attempt <issue-n>                   Exit 1 (and print reason) when EITHER
 #                                             ceiling is already reached for the issue;
 #                                             exit 0 otherwise. Does NOT record a new
@@ -5282,6 +5287,73 @@ for a in json.load(sys.stdin).get('assignees') or []:
     glab api user | python3 -I -c "import json, sys; print(json.load(sys.stdin).get('username', ''))"
   }
 
+  # ── Provider calls for upsert-pr-comment and the needs-owner verbs (#763) ──
+  # All three act on merge requests, as on azure: gitlab numbers issues and MRs
+  # separately, and read-comments (which the shared mark and list helpers call)
+  # reads MR notes only.
+  # MR <n>'s notes as the REST comments array _vcs_shared_upsert_pr_comment
+  # reads, oldest first: [{"id": "<n>/<note id>", "user": {"login"}, "body"}].
+  # Non-zero with no stdout on any fetch or parse failure.
+  _gl_upc_read() {
+    local _raw
+    _raw="$(_gl_notes merge_requests "$1")" || return 1
+    printf '%s' "$_raw" | python3 -I -c '
+import json, sys
+print(json.dumps([{"id": "%s/%s" % (sys.argv[1], c["id"]), "user": {"login": c["author"]["login"]}, "body": c["body"]}
+                  for c in json.load(sys.stdin)["comments"]]))
+' "$1" 2>/dev/null
+  }
+  # <METHOD> <issues-relative-path> <payload-file>: the GitHub-shaped request
+  # _vcs_shared_upsert_pr_comment makes, sent to the MR notes API. `POST
+  # issues/<n>/comments` creates a note; `PATCH issues/comments/<n>/<note>`
+  # (the id _gl_upc_read gave) rewrites that note with a PUT. The payload is a
+  # JSON object with a "body" key, sent as the request body, never on argv.
+  _gl_upc_write() {
+    local _uw_n="" _uw_note="" _uw_method="" _uw_path=""
+    case "$1 $2" in
+      "POST issues/"*"/comments")
+        _uw_n="${2#issues/}"; _uw_n="${_uw_n%/comments}"
+        _uw_method=POST; _uw_path="notes" ;;
+      "PATCH issues/comments/"*)
+        IFS=/ read -r _uw_n _uw_note <<EOF
+${2#issues/comments/}
+EOF
+        _uw_method=PUT; _uw_path="notes/$_uw_note" ;;
+      *) return 1 ;;
+    esac
+    case "$_uw_n$_uw_note" in ''|*[!0-9]*) return 1 ;; esac
+    glab api --method "$_uw_method" "projects/$(_gl_api_project)/merge_requests/$_uw_n/$_uw_path" \
+      --input "$3" --header 'Content-Type: application/json'
+  }
+  # <mr> <body>: mark-needs-owner's question, as a new MR note.
+  _gl_no_post_comment() { glab mr note "$1" --message "$2" $RARG; }
+  _gl_no_label_add() { glab mr update "$1" --label "$_TALOS_NEEDS_OWNER_LABEL" $RARG; }
+  _gl_no_label_remove() { glab mr update "$1" --unlabel "$_TALOS_NEEDS_OWNER_LABEL" $RARG; }
+  # The open MRs carrying the label as the REST issues array list-needs-owner
+  # collects: [{"number": <iid>, "state": "open", "labels": [{"name"}],
+  # "pull_request": {}}]. Every page of the opened MRs filtered by the label,
+  # filtered again here, so a server that ignores the filter lists nothing
+  # extra. Non-zero with nothing printed on any failure or a non-array answer.
+  _gl_no_items() {
+    local _raw
+    _raw="$(glab api --paginate "projects/$(_gl_api_project)/merge_requests?state=opened&labels=$_TALOS_NEEDS_OWNER_LABEL_URL&per_page=100")" || return 1
+    printf '%s' "$_raw" | _gh_paginate_merge | python3 -I -c '
+import json, sys
+try:
+    mrs = json.load(sys.stdin)
+    # _gh_paginate_merge wraps an error object into a one-item list, so a
+    # real MR is told by its iid.
+    assert isinstance(mrs, list) and all(isinstance(m, dict) and isinstance(m.get("iid"), int) for m in mrs)
+    out = [{"number": m["iid"], "state": "open",
+            "labels": [{"name": l["name"] if isinstance(l, dict) else l} for l in m.get("labels") or []],
+            "pull_request": {}}
+           for m in mrs if sys.argv[1] in [l["name"] if isinstance(l, dict) else l for l in m.get("labels") or []]]
+except Exception:
+    sys.exit(1)
+print(json.dumps(out))
+' "$_TALOS_NEEDS_OWNER_LABEL"
+  }
+
   # <remote-or-path> -> "<host><TAB><group/sub/project>" (#303). With
   # vcs.repo unset on a self-hosted instance the auto-detect leaves REPO as
   # the whole remote (https://host/g/p.git, ssh://git@host:22/g/p.git or
@@ -5818,6 +5890,26 @@ print((d.get('sha') or (d.get('diff_refs') or {}).get('head_sha') or '').lower()
         || { rm -f "${_eb_tf:?}"; echo "pipeline-vcs: edit-pr-body: glab api PUT failed for MR !$n; nothing changed" >&2; exit 1; }
       rm -f "${_eb_tf:?}"
       echo "edited pr=$n body"
+      ;;
+    upsert-pr-comment)
+      _gl_require_iid upsert-pr-comment "${1:-}" || exit 1
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] glab api --paginate projects/$(_gl_api_project)/merge_requests/$1/notes?per_page=100 (newest own note ending in <!-- talos:$2 -->); then glab api --method PUT projects/$(_gl_api_project)/merge_requests/$1/notes/<note> (body from a file), or --method POST projects/$(_gl_api_project)/merge_requests/$1/notes when there is none; no write when the body is unchanged"; return 0; }
+      _vcs_shared_upsert_pr_comment "${1:-}" "${2:-}" "${3:-}" _gl_upc_read _gl_upc_write _gl_current_user
+      ;;
+    mark-needs-owner)
+      _gl_require_iid mark-needs-owner "${1:-}" || exit 1
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] glab api --paginate projects/$(_gl_api_project)/merge_requests/$1/notes?per_page=100 (read-comments); unless the newest trusted marker note already has this body and is unanswered: glab mr note $1 --message <body>; glab mr update $1 --label $_TALOS_NEEDS_OWNER_LABEL"; return 0; }
+      _vcs_shared_mark_needs_owner "${1:-}" "${2-}" _gl_no_post_comment _gl_no_label_add _gl_current_user
+      ;;
+    list-needs-owner)
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab api --paginate projects/$(_gl_api_project)/merge_requests?state=opened&labels=$_TALOS_NEEDS_OWNER_LABEL_URL&per_page=100; read-comments per MR"
+        case " $* " in
+          *" --clear-answered "*) echo "[dry-run] for each answered MR: glab mr update <n> --unlabel $_TALOS_NEEDS_OWNER_LABEL" ;;
+        esac
+        return 0
+      fi
+      _vcs_shared_list_needs_owner _gl_no_items _gl_no_label_remove _gl_current_user "$@"
       ;;
     pr-mergeable)
       # pr-mergeable <n> (#214) — best-effort: `glab mr view --output json`
@@ -8440,13 +8532,13 @@ if [ "$VERB" = "edit-pr-body" ] && [ -z "$(tr -d '[:space:]' <<<"${ARGS[1]-}")" 
 fi
 
 # mark-needs-owner / list-needs-owner (#345) and upsert-pr-comment (#381) are
-# GitHub and Azure DevOps only (#709); the label and marker verbs have no gitlab
-# or file implementation. Exit 2, before any body is read from stdin or a file,
-# so a caller reads it as "unsupported, skip" and not as the exit 1 of a failed
-# call.
+# GitHub, GitLab (#763, merge requests) and Azure DevOps (#709); the label and
+# marker verbs have no file implementation. Exit 2, before any body is read from
+# stdin or a file, so a caller reads it as "unsupported, skip" and not as the
+# exit 1 of a failed call.
 case "$VERB" in
   mark-needs-owner|list-needs-owner|upsert-pr-comment)
-    if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ] && [ "$PROVIDER" != "azure" ]; then
+    if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ] && [ "$PROVIDER" != "gitlab" ] && [ "$PROVIDER" != "azure" ]; then
       echo "pipeline-vcs: $VERB: not implemented for provider '$PROVIDER'" >&2
       exit 2
     fi

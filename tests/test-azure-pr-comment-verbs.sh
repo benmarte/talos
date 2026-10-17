@@ -230,7 +230,7 @@ bash "$VCS" create-pr feature/x "PR title" body.txt >/dev/null 2>&1
 assert_not_contains "$(cat "$GH_LOG")" "--squash" "AC15 rebase passes no --squash on merge-pr or create-pr"
 assert_contains "$(cat "$GH_LOG")" "[--status] [completed]" "AC15 rebase still completes the PR"
 
-for _p in gitlab file; do
+for _p in file; do
   printf '{"vcs": {"provider": "%s"}}\n' "$_p" > talos.pipeline.json
   for _v in "upsert-pr-comment 9 --marker spend --body-file f" "mark-needs-owner 9 --body-file q" "list-needs-owner"; do
     out="$(bash "$VCS" $_v 2>&1)"; rc=$?

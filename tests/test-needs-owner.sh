@@ -86,7 +86,7 @@ HDR="$(sed -n '1,/^set -/p' "$VCS")"
 assert_contains "$HDR" "mark-needs-owner <n> <text>" "usage header documents mark-needs-owner"
 assert_contains "$HDR" "list-needs-owner [--json] [--clear-answered]" "usage header documents list-needs-owner"
 assert_contains "$HDR" "ALWAYS THE LAST field" "usage header says question= is always the last field"
-assert_contains "$HDR" "gitlab and file exit 2" "usage header documents exit 2 for other providers"
+assert_contains "$HDR" "file exits 2 as above" "usage header documents exit 2 for the file provider"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # mark-needs-owner (github)
@@ -461,7 +461,7 @@ assert_contains "$OUT" "question=Alice asks?" "trust: ... and the marker comment
 # ═══════════════════════════════════════════════════════════════════════════
 # other providers exit 2
 # ═══════════════════════════════════════════════════════════════════════════
-for p in gitlab file; do
+for p in file; do
   set_cfg '{"vcs": {"provider": "'"$p"'"}}'
   reset
   run mark-needs-owner 7 "text"
