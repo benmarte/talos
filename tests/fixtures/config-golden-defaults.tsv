@@ -130,6 +130,8 @@ vcs.token_env		empty	bootstrap-board.sh,pipeline-status.sh,pipeline-vcs.sh
 verify		empty	pipeline-verify.sh
 verify.ci_requeue_stuck	true	table	pipeline-vcs.sh
 verify.ci_wait_s	900	table	docs
+verify.e2e_artifacts.max_files	12	table	pipeline-criteria.sh
+verify.e2e_artifacts.max_mb	25	table	pipeline-criteria.sh
 verify.qa_mode	local	table	pipeline/SKILL.md
 verify.targeted	true	table	docs
 verify.timeout_ms	600000	table	docs

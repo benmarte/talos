@@ -227,6 +227,7 @@ read -r -d '' PARITY_EXCEPTIONS <<'TABLE' || true
 # provider verb PARITY-EXCEPTION: reason
 file assign-issue PARITY-EXCEPTION: local-only by design
 file assign-pr PARITY-EXCEPTION: local-only by design (no PRs)
+file attach-files PARITY-EXCEPTION: local-only by design (no PRs)
 file check-approval-sha PARITY-EXCEPTION: local-only by design (no PRs, no approvals)
 file comment-pr PARITY-EXCEPTION: local-only by design (no PRs)
 file conflict-files PARITY-EXCEPTION: local-only by design (no PRs)

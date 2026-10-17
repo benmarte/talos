@@ -93,6 +93,20 @@
 #       e2e ok` and appends ` e2e ok` to the PASS line; non-zero prints `e2e
 #       failure output (data):` and the last 24 lines (200 chars each) and the
 #       verdict is `FAIL e2e exited <rc>`.
+#       The e2e evidence (#776): verify.e2e_artifacts.{dir,include,max_files,max_mb}
+#       (repo-only; dir is repo-relative, include globs match file names anywhere
+#       under it; max_files 12, max_mb 25 in total; off while dir or include is
+#       empty). Right after each judging run (the head run, the verify.e2e
+#       command) the files of dir that match include and are not older than that
+#       run are copied out of dir, so the re-run, the red run and the frozen run
+#       cannot lose them; a run that wrote some replaces the earlier run's. At the
+#       end of every run that got as far as the head run, PASS or FAIL, one
+#       `pipeline-vcs.sh attach-files <pr> <file>...` posts them as the PR's
+#       `talos:qa-evidence` comment (edited by a later round). More than max_files
+#       keeps the first ones in sorted path order, a file that would push the total
+#       over max_mb is skipped; each case is one `qa-run: e2e artifacts <why>`
+#       line, as are `none found in <dir>` and `upload failed (exit <rc>)`. The
+#       verdict line and the exit code never change. Unset: no change.
 #       --ack-changed <reason> (QA, after reading the file's diff between the
 #       red commit and the head) turns FAIL weakened into `weakened-ack`: the
 #       frozen failure is still printed, the verdict can be PASS.
