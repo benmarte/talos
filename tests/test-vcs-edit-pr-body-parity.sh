@@ -133,5 +133,20 @@ _run edit-pr-body 9 --body-file "$SANDBOX/nope"
 assert_eq "2" "$RC" "AC9 file: edit-pr-body exits 2"
 assert_contains "$ERR" "not implemented for provider 'file'" "AC9 file: says it is not implemented"
 
+# AC10 the parity test's exception table lost the gitlab and azure lines, kept file's
+# (the parity run itself is tests/test-vcs-provider-parity.sh)
+_parity="$TALOS_ROOT/tests/test-vcs-provider-parity.sh"
+_exc() { grep -c "^$1 edit-pr-body PARITY-EXCEPTION" "$_parity" || true; }
+assert_eq "0" "$(_exc gitlab)" "AC10 the gitlab edit-pr-body exception is removed"
+assert_eq "0" "$(_exc azure)" "AC10 the azure edit-pr-body exception is removed"
+assert_eq "1" "$(_exc file)" "AC10 the file edit-pr-body exception is kept"
+
+# AC11 github is unchanged (the full cases stay in test-vcs.sh)
+printf '{"vcs": {"provider": "github", "repo": "acme/widget"}}\n' > talos.pipeline.json
+_run --dry-run edit-pr-body 9 --body-file "$SANDBOX/body.md"
+assert_eq "0" "$RC" "AC11 github: --dry-run exits 0 (err: $ERR)"
+assert_contains "$OUT" "PATCH" "AC11 github: still a PATCH of the pull request"
+assert_contains "$OUT" "pulls/9" "AC11 github: still the pulls/<n> endpoint"
+
 rm -f talos.pipeline.json
 finish

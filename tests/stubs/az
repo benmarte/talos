@@ -154,6 +154,17 @@ print(json.dumps(d))
   "rest --method patch "*"/pullRequests/"*"/threads/"*"/comments/"*)
     # upsert-pr-comment (#709): STUB_AZURE_PATCH_FAIL=1 makes the update fail.
     [ "${STUB_AZURE_PATCH_FAIL:-}" = "1" ] && _stub_fail "TF401027: You need the Git 'PullRequestContribute' permission." ;;
+  "rest --method patch "*"/pullRequests/"*)
+    # edit-pr-body (#762): log the --body @file (the JSON body) to GH_LOG as
+    # `AZ BODY: ...`; STUB_AZURE_PATCH_FAIL=1 makes the update fail.
+    [ "${STUB_AZURE_PATCH_FAIL:-}" = "1" ] && _stub_fail "TF401027: You need the Git 'PullRequestContribute' permission."
+    for _a in "$@"; do
+      case "$_a" in
+        @*) [ -f "${_a#@}" ] || continue
+            if [ -n "${GH_LOG:-}" ]; then { printf 'AZ BODY: '; cat "${_a#@}"; printf '\n'; } >> "$GH_LOG"; fi ;;
+      esac
+    done
+    printf '{}\n'; exit 0 ;;
   "rest --method delete "*"/pullRequests/"*"/labels/"*)
     # list-needs-owner --clear-answered (#709): STUB_AZURE_LABEL_DELETE_FAIL=1 fails the delete.
     [ "${STUB_AZURE_LABEL_DELETE_FAIL:-}" = "1" ] && _stub_fail "TF401027: You need the Git 'PullRequestContribute' permission." ;;

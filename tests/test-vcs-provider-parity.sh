@@ -224,8 +224,6 @@ assert_contains "$out" "STALE gitlab never-called" "an exception for a verb nobo
 # slice of #753 adds the verb and deletes its line.
 read -r -d '' PARITY_EXCEPTIONS <<'TABLE' || true
 # provider verb PARITY-EXCEPTION: reason
-gitlab edit-pr-body PARITY-EXCEPTION: github and github-api only; the pre-dispatch guard exits 2 (#455)
-azure edit-pr-body PARITY-EXCEPTION: github and github-api only; the pre-dispatch guard exits 2 (#455)
 gitlab upsert-pr-comment PARITY-EXCEPTION: no GitLab arm yet; azure has one
 gitlab mark-needs-owner PARITY-EXCEPTION: no GitLab arm yet; azure has one
 gitlab list-needs-owner PARITY-EXCEPTION: no GitLab arm yet; azure has one
@@ -256,7 +254,14 @@ out="$(parity_check "$VCS" "$FIX/exceptions" "${callers[@]}")"; rc=$?
 assert_eq "0" "$rc" "AC5 the real repo has no unrecorded provider gap and no stale exception"
 [ "$rc" -eq 0 ] || printf '%s\n' "$out" >&2
 
-for want in "azure edit-pr-body" "gitlab edit-pr-body" "gitlab upsert-pr-comment" \
+case "$PARITY_EXCEPTIONS" in
+  *"gitlab edit-pr-body PARITY-EXCEPTION:"*|*"azure edit-pr-body PARITY-EXCEPTION:"*)
+    fail "AC10 gitlab and azure edit-pr-body are no longer exceptions" ;;
+  *"file edit-pr-body PARITY-EXCEPTION:"*) pass "AC10 only the file edit-pr-body exception is kept" ;;
+  *) fail "AC10 only the file edit-pr-body exception is kept" ;;
+esac
+
+for want in "gitlab upsert-pr-comment" \
             "gitlab mark-needs-owner" "gitlab list-needs-owner"; do
   case "$PARITY_EXCEPTIONS" in
     *"$want PARITY-EXCEPTION:"*) pass "AC5 the table records: $want" ;;

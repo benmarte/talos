@@ -398,9 +398,11 @@
 #                                             PR. --dry-run prints the planned calls, exit 0.
 #   edit-pr-body <pr> --body-file <path|->    Replace the description of PR <pr> (#455;
 #                                             github, github-api: PATCH pulls/<n>;
-#                                             gitlab, azure
-#                                             and file exit 2 `not implemented for
-#                                             provider '<p>'`). The body comes ONLY from
+#                                             gitlab: PUT merge_requests/<n>; azure:
+#                                             PATCH pullRequests/<n>, which refuses a
+#                                             body over 4000 characters (exit 1, never
+#                                             truncated); file exits 2 `not implemented
+#                                             for provider 'file'`). The body comes ONLY from
 #                                             a file or stdin with `-`, never argv or a
 #                                             positional (exit 2); a non-numeric <pr> or
 #                                             a flag with no value is exit 2. The same
@@ -5796,6 +5798,27 @@ print((d.get('sha') or (d.get('diff_refs') or {}).get('head_sha') or '').lower()
       local n="$1" body="$2"
       _run glab mr note "$n" --message "$body" $RARG
       ;;
+    edit-pr-body)
+      # Replace the MR's description (#762). ARGS is `<n> <body>` here: the
+      # pre-dispatch block validated the flags, the caps and the placeholders.
+      # The body reaches the request through a JSON file, never argv or env.
+      local n="${1:-}" _eb_proj _eb_tf
+      _gl_require_iid edit-pr-body "$n" || exit 1
+      _eb_proj="$(_gl_api_project)"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab api --method PUT projects/$_eb_proj/merge_requests/$n --input <file with {\"description\": <body>}>"
+        return 0
+      fi
+      _eb_tf="$(mktemp)" && [ -n "$_eb_tf" ] \
+        || { echo "pipeline-vcs: edit-pr-body: could not create a temp file; nothing changed" >&2; exit 1; }
+      printf '%s' "$2" | python3 -I -c 'import json,sys; sys.stdout.write(json.dumps({"description": sys.stdin.read()}))' > "$_eb_tf" \
+        || { rm -f "${_eb_tf:?}"; echo "pipeline-vcs: edit-pr-body: could not build the request body; nothing changed" >&2; exit 1; }
+      glab api --method PUT "projects/$_eb_proj/merge_requests/$n" --input "$_eb_tf" \
+        --header 'Content-Type: application/json' >/dev/null \
+        || { rm -f "${_eb_tf:?}"; echo "pipeline-vcs: edit-pr-body: glab api PUT failed for MR !$n; nothing changed" >&2; exit 1; }
+      rm -f "${_eb_tf:?}"
+      echo "edited pr=$n body"
+      ;;
     pr-mergeable)
       # pr-mergeable <n> (#214) — best-effort: `glab mr view --output json`
       # exposes GitLab's own merge_status field (can_be_merged /
@@ -7500,6 +7523,29 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
         --headers "Content-Type=application/json" --body "@$tf" >/dev/null
       local rc=$?; rm -f "$tf"; return $rc
       ;;
+    edit-pr-body)
+      # Replace the PR's description (#762). ARGS is `<n> <body>` here: the
+      # pre-dispatch block validated the flags, the caps and the placeholders.
+      # ADO refuses a description over 4000 characters: refuse it here, never
+      # truncate (also under --dry-run, before any request).
+      local n="${1:-}" _eb_tf
+      local gitbase; gitbase="$(_azure_git_base)" || { echo "pipeline-vcs: azure edit-pr-body needs org/project/repo" >&2; exit 1; }
+      local url="$gitbase/pullRequests/$n?api-version=7.1"
+      if [ "$(printf '%s' "$2" | python3 -I -c 'import sys; print(len(sys.stdin.read()))')" -gt 4000 ]; then
+        echo "pipeline-vcs: edit-pr-body: body is longer than 4000 characters (Azure DevOps' pull request description limit); nothing changed." >&2
+        exit 1
+      fi
+      if [ "$DRY_RUN" = "true" ]; then echo "[dry-run] az rest PATCH $url {\"description\":<body>}"; return 0; fi
+      _eb_tf="$(mktemp)" && [ -n "$_eb_tf" ] \
+        || { echo "pipeline-vcs: edit-pr-body: could not create a temp file; nothing changed" >&2; exit 1; }
+      printf '%s' "$2" | python3 -I -c 'import json,sys; sys.stdout.write(json.dumps({"description": sys.stdin.read()}))' > "$_eb_tf" \
+        || { rm -f "${_eb_tf:?}"; echo "pipeline-vcs: edit-pr-body: could not build the request body; nothing changed" >&2; exit 1; }
+      az rest --method patch --url "$url" --resource "$ADO_RESOURCE" \
+        --headers "Content-Type=application/json" --body "@$_eb_tf" >/dev/null \
+        || { rm -f "${_eb_tf:?}"; echo "pipeline-vcs: edit-pr-body: az rest PATCH failed for PR $n; nothing changed" >&2; exit 1; }
+      rm -f "${_eb_tf:?}"
+      echo "edited pr=$n body"
+      ;;
     upsert-pr-comment)
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] az rest GET .../pullRequests/$1/threads (newest own comment ending in <!-- talos:$2 -->); then PATCH .../pullRequests/$1/threads/<thread>/comments/<comment> (body from a file), or POST .../pullRequests/$1/threads when there is none; no write when the body is unchanged"; return 0; }
       _vcs_shared_upsert_pr_comment "${1:-}" "${2:-}" "${3:-}" _az_upc_read _az_upc_write _az_user_login
@@ -8194,18 +8240,21 @@ _TALOS_COMMENT_MAX=65536   # GitHub rejects longer comment bodies; cap every pro
 # below that limit. Both caps are checked on stdin/file text, before any exec.
 _TALOS_BODY_MAX_BYTES=120000
 
-# edit-pr-body <pr> --body-file <path|-> (#455). github and github-api only (the
-# rest exit 2 `not implemented`, as upsert-pr-comment does); the body comes ONLY
+# edit-pr-body <pr> --body-file <path|-> (#455). Every provider with PRs (the
+# others exit 2 `not implemented`, as upsert-pr-comment does); the body comes ONLY
 # from --body-file (a path, or stdin with `-`), never a positional, so it never
 # sits inside shell quotes. Usage errors exit 2 before any body is read. The
 # comment block below then reads the file, applies both size caps and the
 # placeholder guard, and rewrites ARGS to `<pr> <body>` for the adapters.
 if [ "$VERB" = "edit-pr-body" ]; then
   _epb_usage="Usage: edit-pr-body <pr> --body-file <path|->"
-  if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ]; then
-    echo "pipeline-vcs: edit-pr-body: not implemented for provider '$PROVIDER'" >&2
-    exit 2
-  fi
+  case "$PROVIDER" in
+    github|github-api|gitlab|azure) ;;
+    *)
+      echo "pipeline-vcs: edit-pr-body: not implemented for provider '$PROVIDER'" >&2
+      exit 2
+      ;;
+  esac
   case "${ARGS[0]-}" in
     ''|*[!0-9]*)
       echo "pipeline-vcs: edit-pr-body: <pr> must be a number (got '${ARGS[0]-}'); $_epb_usage" >&2
