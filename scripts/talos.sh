@@ -4466,7 +4466,7 @@ _talos_run_spec_usable() {
 # red-check <issue> <pr-head>` compares each criterion's kind with its state at the
 # red commit.
 #   exit 0, 3 (no runner): the run continues.
-#   exit 1 (kind-mismatch): the spec is re-posted as a new `**PM spec:**` comment
+#   exit 1 with a `red-check: MISMATCH` line (kind-mismatch): the spec is re-posted as a new `**PM spec:**` comment
 #     with just those kinds flipped (`revise-spec`, the body in a file), spec-usable
 #     is asked again, and the run continues. An unreadable spec or a failed post is
 #     `stop reason=state-unavailable`.
@@ -4487,6 +4487,8 @@ _talos_run_red_check() {
   fi
   _talos_run_capture red-check bash "$SCRIPT_DIR/pipeline-criteria.sh" red-check "$_n" "$_head" < /dev/null
   _lines="$(head -n 24 <<<"$_OUT")"
+  # Exit 1 is also the verb's own fault code: only a MISMATCH verdict line is a kind-mismatch.
+  { [ "$_RC" -ne 1 ] || grep -q '^red-check: MISMATCH ' <<<"$_OUT"; } || _RC=fault
   case "$_RC" in
     0) return 0 ;;
     1)
