@@ -75,7 +75,7 @@ Each stage is a fresh agent. Spend is measured per run ([Hooks, events, spend an
 - Issues carrying a label in `issues.skip_labels` (default `pipeline:blocked`, `wontfix`) are not picked up. Any open issue or PR with `pipeline:blocked`, or any open owner question, also makes `next` answer `action=wait reason=owner`, so no new ready issue starts until it is cleared; only in-flight work moves.
 - Order: `p0`, `p1`, `p2`, unlabelled; at the same priority an issue already in flight (`pipeline:confirmed`, `pipeline:dev`) goes before a ready one; then issue number. The ready-queue rules here (the filter, the skip labels, the cap) do not hold back an issue that is already in flight; one another run holds the lease of is skipped for the next issue.
 - `issues.max_parallel` caps issues in flight (`next` answers `wait reason=cap`). Above 1 needs `execution.isolation: worktree`; the adapter path runs stages one at a time.
-- `issues.assignee` (`self`, a login, or `none`) assigns the issue at creation and when it moves to In progress; it never replaces an existing assignee. With `issues.claim` true and an assignee other than `none`, the assignee is the lock between operators: `next` claims an issue before dispatching it and leaves other operators' issues alone (`identity.name` is the login `self` means). See [Isolation, locking and multi-user claims](#isolation-locking-and-multi-user-claims).
+- `issues.assignee` (`self`, a login, or `none`) assigns the issue at creation and when it moves to In progress, and the PR or MR when Talos opens it or resumes it for a fix round (`assign-pr`; Azure DevOps pull requests have no assignee, so it only says so); it never replaces an existing assignee. With `issues.claim` true and an assignee other than `none`, the assignee is the lock between operators: `next` claims an issue before dispatching it and leaves other operators' issues alone (`identity.name` is the login `self` means). See [Isolation, locking and multi-user claims](#isolation-locking-and-multi-user-claims).
 
 ### Retries and attempt counting
 
@@ -815,6 +815,7 @@ Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azu
 | `record-attempt`, `read-attempt` | yes | yes | yes | exception: local-only (no comments) |
 | `read-comments` | yes | yes | yes | exception: local-only (no comments) |
 | `assign-issue` | yes | yes | yes | exception: local-only |
+| `assign-pr` | yes | yes (merge requests) | yes (no-op: a pull request has no assignee, its creator is the account user) | exception: local-only |
 | `comment-pr`, `pr-head`, `pr-head-ref`, `check-approval-sha` | yes | yes | yes | exception: no PRs |
 
 The file provider supports `list-issues`, `view-issue`, `comment-issue` and `close-issue`.
@@ -942,7 +943,7 @@ Several people can run Talos on one repo, each with their own login. The issue a
 | Key | Default | Meaning |
 |---|---|---|
 | `issues.claim` | `true` | `false` turns claiming and the filter off |
-| `issues.assignee` | `self` | Who `create-issue` and the move to `In progress` assign: `self`, a login, or `none`. An existing assignee is never overwritten |
+| `issues.assignee` | `self` | Who `create-issue`, the move to `In progress` and `assign-pr` (a PR or MR Talos opens or resumes) assign: `self`, a login, or `none`. An existing assignee is never overwritten |
 | `identity.name` | unset | The login you claim under; what `self` means when set |
 
 Identity, resolved once per run: `issues.assignee` when it names a login, else `identity.name`, else the authenticated login (`current-user`). Claiming is off when `issues.claim` is false, `issues.assignee` is `none` or empty, or no login resolves (an Actions token, file mode). Set `identity.name` where the authenticated name is not assignable, such as an Azure DevOps UPN. Keep `self` in a shared config; a fixed login makes everyone claim as that person.

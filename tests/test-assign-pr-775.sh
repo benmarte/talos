@@ -37,7 +37,7 @@ run() {  # <verb args...> : sets out / err / rc, with fresh call logs
   out="$(bash "$VCS" "$@" 2>"$SANDBOX/err")"; rc=$?
   err="$(cat "$SANDBOX/err")"
 }
-state() { sort "$STUB_ASSIGNEE_DIR/$1" 2>/dev/null | paste -sd, -; }
+state() { LC_ALL=C sort "$STUB_ASSIGNEE_DIR/$1" 2>/dev/null | paste -sd, -; }
 setstate() {  # <n> <login>...
   local n="$1"; shift
   : > "$STUB_ASSIGNEE_DIR/$n"
@@ -48,6 +48,8 @@ queue_pr() { printf '%s\n' "$PR_JSON" > "$CURL_QUEUE"; }
 # read, an assignees write. glab and az log argv to GH_LOG.
 gh_assignee_calls() { grep -cE '/assignees|/issues/[0-9]+	|/user	' "$CURL_LOG"; }
 gl_assignee_calls() { grep -cE 'GLAB (mr update|mr view|api user)' "$GH_LOG"; }
+# The az calls other than the adapter's own extension probe.
+az_calls() { grep -v '\[extension\]' "$GH_LOG"; }
 
 # ── AC1 / AC2: create-pr leaves the user as the PR's assignee ────────────────
 for L in gh curl; do
@@ -99,7 +101,7 @@ cfg azure
 run assign-pr 5
 assert_eq "0" "$rc" "AC7 azure: assign-pr exits 0"
 assert_contains "$out" "azure pull requests have no assignee" "AC7 azure: assign-pr says it is a no-op"
-assert_eq "" "$(cat "$GH_LOG")" "AC7 azure: no az call at all (no --assigned-to, no work-item update)"
+assert_eq "" "$(az_calls)" "AC7 azure: no az call beyond the extension probe (no --assigned-to, no work-item update)"
 
 # ── AC8: issues.assignee none or empty makes no assignee call ────────────────
 for V in none ""; do
@@ -111,7 +113,7 @@ for V in none ""; do
     case "$L" in
       gh | curl) assert_eq "0" "$(gh_assignee_calls)" "AC8 [$V] $L: assign-pr makes no assignee call" ;;
       gitlab) assert_eq "0" "$(gl_assignee_calls)" "AC8 [$V] $L: assign-pr makes no assignee call" ;;
-      azure) assert_eq "" "$(cat "$GH_LOG")" "AC8 [$V] $L: assign-pr makes no az call" ;;
+      azure) assert_eq "" "$(az_calls)" "AC8 [$V] $L: assign-pr makes no az call" ;;
     esac
     [ -n "$V" ] || assert_contains "$err" "issues.assignee is empty" "AC8 [empty] $L: a stderr notice says assignment is off"
 

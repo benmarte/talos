@@ -4198,6 +4198,10 @@ _talos_run_dispatch() {
   if [ "$_role" = developer ] && [ -n "$_pr" ]; then
     _h0="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head "$_pr" 2>/dev/null)" || _h0=""
     _h0="${_h0%%$'\n'*}"
+    # #775: a PR the round resumes gains the account user next to any other
+    # assignee. A warning on stderr is relayed; a failure never stops the round.
+    _talos_cap _vcs assign-pr "$_pr"
+    _talos_relay assign-pr "$_OUT"
   fi
   # #656: a first-round developer has no head to compare, so the issue's open
   # PRs are listed before and after the agent; a PR that was not there before

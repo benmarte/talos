@@ -80,7 +80,9 @@ set_provider() {  # $1 = github | github-api | gitlab | azure | file
 EOF
       ;;
     *)
-      printf '{"vcs": {"provider": "%s", "repo": "acme/widget"}, "base_branch": "main"}\n' "$1" > talos.pipeline.json
+      # issues.assignee none: this file pins the create call itself; the
+      # assign-pr that follows it (#775) is covered by test-assign-pr-775.sh.
+      printf '{"vcs": {"provider": "%s", "repo": "acme/widget"}, "base_branch": "main", "issues": {"assignee": "none"}}\n' "$1" > talos.pipeline.json
       ;;
   esac
 }
