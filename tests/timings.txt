@@ -42,6 +42,7 @@
 4 test-ci-runs-metric.sh
 0 test-ci-tests-workflow.sh
 79 test-claim.sh
+25 test-claude-hook-neutralise.sh
 73 test-claude-permissions.sh
 61 test-claude-plugin-registration.sh
 14 test-claude-runner-model.sh

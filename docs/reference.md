@@ -1421,6 +1421,10 @@ Start with `bash scripts/pipeline-config.sh --show` (each key, its value and lay
 
 A `pipeline:blocked` issue or PR is skipped until a human removes the label. After a token-budget block, removing it grants one more limit (or raise `limits.tokens_per_issue`).
 
+### A stage waits about 115 s on each refused tool call
+
+A terminal wrapper that puts a `PermissionRequest` hook on `claude` (cmux does, through `--settings`; `--setting-sources project` does not stop it) makes every refused tool call wait about 115 s for an approval no headless stage can give, and the calls batched with it wait too. The refusal itself is the same with or without the hook; only the wait differs. Talos starts the `claude` child of every claude-runner stage with `CMUX_CLAUDE_HOOKS_DISABLED=1`, unless your environment already sets that variable (any value, including `0`, is kept). Another wrapper's hook is not known to Talos: if stages stall in 115 s steps, look for a `PermissionRequest` hook in the settings `claude` is started with, and switch it off for stage runs. The usual fix for the refusal itself is a rule in [Claude permissions on headless stages](#claude-permissions-on-headless-stages).
+
 ### Approvals and merge
 
 - An approval is stale after a new commit that touches a non-waived file; only the affected stages re-run. `bash scripts/pipeline-vcs.sh check-approval-sha <PR> --stale-list` names them, each with the SHA it approved.

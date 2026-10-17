@@ -274,6 +274,9 @@
 #                 CLAUDE_CODE_PROMPT_CACHE_TTL=1h in its environment, unless the
 #                 caller already set that variable; no other role or runner gets it.
 #                 Claude Code reads it from v2.1.242 and ignores it before that.)
+#                (#750: the claude child of every role also gets
+#                 CMUX_CLAUDE_HOOKS_DISABLED=1, unless the caller already set it, so a
+#                 cmux PermissionRequest hook cannot stall a refused tool call ~115 s.)
 #   pi           pi -p [args] <prompt>     # pi print mode, one-shot headless stage
 #   codex        codex exec [args] <prompt>
 #   gemini       gemini [args] -p <prompt>
@@ -1708,6 +1711,11 @@ case "$RUNNER" in
     case "$ROLE" in
       developer | qa) [ -n "${CLAUDE_CODE_PROMPT_CACHE_TTL+x}" ] || local -x CLAUDE_CODE_PROMPT_CACHE_TTL=1h ;;
     esac
+    # #750: a terminal wrapper (cmux) puts a PermissionRequest hook on `claude`
+    # that waits ~115 s for an answer no headless stage can give, once per
+    # refused tool call. The variable switches that hook off, for every role;
+    # kept and scoped the same way as the one above.
+    [ -n "${CMUX_CLAUDE_HOOKS_DISABLED+x}" ] || local -x CMUX_CLAUDE_HOOKS_DISABLED=1
     # #668: the attempt's model goes to the CLI as --model, unless runner_args
     # already names one or the value would not pass _export_model's check.
     _CM_ARGS=()
