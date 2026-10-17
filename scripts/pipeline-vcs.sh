@@ -262,8 +262,9 @@
 #                                             linked to work item <issue> and
 #                                             another active PR is linked to it or
 #                                             on an issue-<issue> branch.
-#                                             Fail-open: exits 0 + stdout marker
-#                                             if data cannot be fetched.
+#                                             Exits 0 + stdout marker when data
+#                                             cannot be fetched or scanned;
+#                                             `talos.sh gate merge` waits on it.
 #   rerun-ci <n>                              Re-run failed CI for the PR head SHA
 #   pr-head <n>                               Print the current head SHA for a PR
 #   pr-head-ref <n>                           Print the PR's head branch name (#607).
@@ -3364,12 +3365,14 @@ _VCS_GITLAB_SCAN_CAP=65536
 #                    REPO is an adapter-side "can we even ask" guard (fail
 #                    open before calling this function) -- not shared logic.
 #   stdout: nothing on the common paths; a `talos:closing-keyword-unverified`
-#           marker when the sibling fetch fails or returns something this
-#           function cannot parse (fail open), or when a capped list shows
-#           no sibling (reason=siblings-capped: a sibling may sit past the
-#           cap, so a human must check before merging).
-#   exit:   0 safe to merge (no closing keyword, no open siblings, or a
-#           fetch failure -- fail open); 1 blocked by an open sibling.
+#           marker when the keyword scan fails (reason=keyword-scan-failed),
+#           the sibling fetch fails or returns something this function cannot
+#           parse, or when a capped list shows no sibling (reason=siblings-
+#           capped: a sibling may sit past the cap, so a human must check).
+#   exit:   0 with no marker is a verified answer (no closing keyword, no open
+#           siblings); 0 with a marker is a skipped check, which `talos.sh gate
+#           merge` turns into a wait (siblings-capped: a block); 1 blocked by
+#           an open sibling.
 #
 # NOTE (#221, filed 2026-09-08): a sibling is currently counted whenever its
 # title/body mentions #<issue_n> in ANY form (Closes, Part of, an unrelated
@@ -3465,10 +3468,16 @@ else:
     print('no')
 " "$issue_n" "$REPO" "$flavor" "$host" 2>/dev/null)"
 
-  # No closing keyword → nothing to check.
-  if [ "$has_closing" != "yes" ]; then
-    return 0
-  fi
+  # No closing keyword → nothing to check. A scan that answered neither word
+  # is not "no": say so, so the gate waits instead of reading it as clean.
+  case "$has_closing" in
+    yes) ;;
+    no) return 0 ;;
+    *)
+      echo "pipeline-vcs: check-closing-keyword: could not scan the PR body for a closing keyword — skipping check" >&2
+      echo "talos:closing-keyword-unverified pr=${pr_number:-$pr_ref} issue=$issue_n reason=keyword-scan-failed"
+      return 0 ;;
+  esac
 
   # Closing keyword found. Fetch open PRs for this issue (lazily -- only now
   # that we know we need them) and filter out the current PR by number.

@@ -73,14 +73,14 @@
 #                                 [never_approved=<roles>]
 #                                 | ci-pending | ci-rerun attempt=<k> | rerun-unsupported
 #                                 | ci-failed | base-synced | conflict-check-unverified
-#                                 | awaiting-human-merge
+#                                 | awaiting-human-merge | closing-keyword-unverified
 #            verdict=block      reason=forbidden-files | closing-keyword | siblings-capped
-# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge forbidden-files closing-keyword siblings-capped
+# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge closing-keyword-unverified forbidden-files closing-keyword siblings-capped
 #   stop: usage unknown-verb scripts-missing python-missing scratch-unavailable config-unreadable
 #         draft-resolve-failed view-failed labels-unreadable approval-sha-failed
 #         unsupported-verb:<verb> draft-unverified ci-unverified head-unresolved
 #         comments-unreadable handoff-label-failed trust-unverified
-#   warn: closing-keyword-unverified ci-runs-unrecorded budget-check-failed
+#   warn: ci-runs-unrecorded budget-check-failed
 #         area-check-failed unblock-failed comment-failed label-failed value-truncated
 #         board-failed
 #
@@ -1329,7 +1329,11 @@ _talos_gate_merge() {
       case "$_OUT" in
         *"talos:closing-keyword-unverified"*"reason=siblings-capped"*)
           _talos_gate_block siblings-capped "$_pr" "$_n" "$_OUT" "closing keyword unverified for PR #$_pr: siblings capped" ;;
-        *"talos:closing-keyword-unverified"*) _talos_emit warn "reason=closing-keyword-unverified" ;;
+        *"talos:closing-keyword-unverified"*)
+          # Unverified: an issue must not close while a sibling PR may be open.
+          # Transient, so wait (no label, no comment); the next run checks again.
+          _talos_emit reason closing-keyword-unverified
+          _talos_verdict wait ;;
       esac ;;
     1) _talos_gate_block closing-keyword "$_pr" "$_n" "$_ERR" "closing keyword in PR #$_pr with sibling PRs open" ;;
     *) _talos_stop "unsupported-verb:check-closing-keyword" ;;

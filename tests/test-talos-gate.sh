@@ -114,7 +114,7 @@ stop_extra = {"usage", "unknown-verb", "scripts-missing", "python-missing", "scr
               "config-unreadable", "draft-resolve-failed", "view-failed", "labels-unreadable",
               "approval-sha-failed", "draft-unverified", "ci-unverified", "head-unresolved",
               "comments-unreadable", "handoff-label-failed", "trust-unverified"}
-warn_ok = {"closing-keyword-unverified", "ci-runs-unrecorded", "budget-check-failed", "unblock-failed",
+warn_ok = {"ci-runs-unrecorded","budget-check-failed", "unblock-failed",
            "comment-failed", "label-failed", "value-truncated", "area-check-failed", "board-failed"}
 kv = re.compile(r"([A-Za-z][A-Za-z0-9_.]*)=")
 sw = re.compile(r"(stop|warn) reason=([a-z:-]+)( key=[A-Za-z0-9_.-]+| issue=[0-9]+)?\Z")
@@ -306,9 +306,11 @@ reason=siblings-capped" "$OUT" "block: siblings-capped blocks even though the ga
 assert_contains "$(bodies)" "talos:closing-keyword-unverified pr=9 issue=42 reason=siblings-capped" "block: the marker line is the PR comment"
 reset_stubs; set_stub check-closing-keyword 0 "talos:closing-keyword-unverified pr=9 issue=42 reason=pr-fetch-failed"
 gm
-assert_eq "verdict=merge
-warn reason=closing-keyword-unverified" "$OUT" "warn: any other unverified marker is logged and the gates go on"
-assert_gate "merge (closing-keyword warn)"
+assert_eq "verdict=wait
+reason=closing-keyword-unverified" "$OUT" "wait: any other unverified marker waits, retryably, and the gates stop"
+assert_eq "0" "$(called pr-checks-required)" "wait: an unverified closing keyword stops before CI"
+assert_eq "0" "$(called label-pr)" "wait: an unverified closing keyword labels nothing"
+assert_gate "wait (closing-keyword-unverified)"
 reset_stubs; set_stub check-closing-keyword 2
 gm
 assert_eq "stop reason=unsupported-verb:check-closing-keyword" "$OUT" "stop: check-closing-keyword exit 2 never merges"

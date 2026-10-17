@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: `talos.sh gate merge` answers `verdict=wait` `reason=closing-keyword-unverified` (no label, no comment, retried next run) instead of merging when the closing-keyword check could not look (a failed sibling or PR fetch, an unresolved repo, or a failed keyword scan, now marked `keyword-scan-failed`) on every provider; `siblings-capped` still blocks.
 - fix: `red-check` no longer stops a run with `detail=id-collision` when an `AC<n>` id is labelled by a `Tests:` file already on the base branch and by one the branch adds: it drops the older file (`drop-file`, `to-prose`, verdict `REVISE`), the driver re-posts the spec with that file on a new `**Regression:**` line, and `qa-run` runs that file whole at the head (`regression run exited <N>` fails the gate; a pass counts toward no criterion); `agents/pm.md` tells the PM to keep such files off the Tests line.
 - feat: `pipeline-vcs.sh conflict-files` works on gitlab (head fetched from `refs/merge-requests/<iid>/head`) and azure (the PR's source branch), and `diff-pr --stat` prints the github-shaped per-file summary on gitlab (counted from the MR diffs) and azure (from `git diff --numstat`); only `file` still exits 1, and the gitlab and azure `conflict-files` parity exceptions are gone.
 - fix(azure): `record-attempt` logs `marker posted at <org>/<project>/_workitems/edit/<id>` instead of `<unknown>`; `comment-issue` and `close-issue` output is unchanged.
