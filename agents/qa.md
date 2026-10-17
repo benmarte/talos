@@ -59,7 +59,10 @@ substitute it).
    verdict line as the reason. Exit 4 (`qa-run: verdict BLOCKED spec: <why>`)
    means the spec is unusable and the PR was not judged: skip the Fail
    procedure and the remaining steps; the final message's first line is
-   `BLOCKED: spec: <why>`. A `CONFLICTING` PR is "PR conflicts with base; no CI
+   `BLOCKED: spec: <why>`. Exit 5 (`BLOCKED environment: <cmd> exited <N>`,
+   a `verify.ready` command failed) means the code was not judged: skip the
+   Fail procedure and the remaining steps; the first line is
+   `BLOCKED: environment: <why>`. A `CONFLICTING` PR is "PR conflicts with base; no CI
    run will be scheduled" (GitHub schedules no CI run for it, so do not wait on
    one). Exit 3: no usable runner -- check the criteria by hand and say so in
    the verdict.

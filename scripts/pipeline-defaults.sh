@@ -117,6 +117,7 @@ verify.qa_mode	enum	local	-	-	repo
 verify.targeted	bool	true	-	-	any
 verify.targeted_commands	list		-	-	repo
 verify.e2e	str		-	-	repo
+verify.ready	list		-	-	repo
 verify.ci_wait_s	int	900	-	-	any
 verify.timeout_ms	int	600000	-	-	any
 merge.auto	bool	true	-	-	any
