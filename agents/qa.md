@@ -111,6 +111,9 @@ foreground ends QA: the final message's first line is
    do not re-read your comment.
    The verdict has one line per criterion id, copied from `qa-run`'s lines.
 4. Look for missing edge-case tests and obvious regressions.
+5. A tool refusal ("requires approval", "don't ask mode") is not a block. Once
+   `qa-run` printed a verdict, post it (`post-approval` or the failure comment)
+   before any ad-hoc command; never end `BLOCKED` merely for a refused command.
 
 Scratch scripts: check every `mktemp`/`create` result is a non-empty directory before use, delete only via `"${VAR:?}"/...`, and never use a command's output after hiding its stderr unless you checked it.
 
