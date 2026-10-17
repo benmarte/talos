@@ -2351,7 +2351,7 @@ _talos_prompt() {
         _talos_pv QA_CI_WAIT_LINE ""
         _talos_pf QA_RULE "$_tpl/_qa-precheck.md"
         _r="$(cfg verify)"
-        _talos_pv QA_GATE_STEP "Step 2, in the PR checkout: the full \`verify:\` list once (the suite CI would run), through \`pipeline-verify.sh\`; quote failures only:
+        _talos_pv QA_GATE_STEP "Step 2, in the PR checkout: the full \`verify:\` list once (the suite CI would run), through \`pipeline-verify.sh --all\`; quote failures only:
 ${_r:-none}
 post-approval stamps the head SHA you verified (the PR head, not a stale checkout)."
       else

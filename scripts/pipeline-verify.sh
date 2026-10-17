@@ -11,7 +11,7 @@
 # it before running anything, so a stage only has to remember one command.
 #
 # Usage:
-#   pipeline-verify.sh [--issue N] [--worktree PATH] [--role ROLE] [-- <cmd...>]
+#   pipeline-verify.sh [--issue N] [--worktree PATH] [--role ROLE] [--all] [-- <cmd...>]
 #
 # Identity resolution (per variable, first match wins):
 #   1. --issue / --worktree flags
@@ -46,6 +46,12 @@
 # command from config is run in order, stopping at the first failure and
 # propagating its exit code.
 #
+# The QA stage (role `qa`: --role qa, or TALOS_ROLE=qa from pipeline-agent.sh)
+# may not make that bare call: the `verify:` list is the full suite, which
+# cannot finish inside verify.timeout_ms (#778). It exits 2 with a hint naming
+# the targeted form instead. `--all` is the explicit opt-in to run the
+# `verify:` list (the pre-CI gate uses it); with a command it is a usage error.
+#
 # Always prints one line to stderr — "talos:verify issue=<N> worktree=<path>"
 # — so a transcript or log shows which identity a verify run actually used.
 #
@@ -64,6 +70,7 @@ fi
 _issue=""
 _worktree=""
 _role=""
+_all=0
 _cmd=()
 
 while [ $# -gt 0 ]; do
@@ -77,6 +84,8 @@ while [ $# -gt 0 ]; do
     --role)
       [ $# -ge 2 ] || { echo "pipeline-verify: --role requires a value" >&2; exit 2; }
       _role="$2"; shift 2 ;;
+    --all)
+      _all=1; shift ;;
     --)
       shift
       _cmd=("$@")
@@ -84,11 +93,16 @@ while [ $# -gt 0 ]; do
       ;;
     *)
       echo "pipeline-verify: unknown argument: $1" >&2
-      echo "usage: pipeline-verify.sh [--issue N] [--worktree PATH] [--role ROLE] [-- <cmd...>]" >&2
+      echo "usage: pipeline-verify.sh [--issue N] [--worktree PATH] [--role ROLE] [--all] [-- <cmd...>]" >&2
       exit 2
       ;;
   esac
 done
+
+if [ "$_all" -eq 1 ] && [ "${#_cmd[@]}" -gt 0 ]; then
+  echo "pipeline-verify: --all runs the verify: list and takes no -- <cmd>" >&2
+  exit 2
+fi
 
 # _parse_talos_env FILE -- parse a .talos/env file line-by-line (never
 # executed as shell — see the header comment). Sets _envfile_issue /
@@ -155,6 +169,12 @@ echo "talos:verify issue=$_issue worktree=$_worktree" >&2
 if [ "${#_cmd[@]}" -gt 0 ]; then
   "${_cmd[@]}"
   exit $?
+fi
+
+# The QA stage's bare call would run the full suite and time out; --all opts in.
+if [ "$_all" -eq 0 ] && [ "${TALOS_ROLE:-}" = "qa" ]; then
+  echo "pipeline-verify: the qa stage needs a command: pipeline-verify.sh ... -- bash tests/run-tests.sh --changed origin/<base> --strict (--all runs the full verify: list)" >&2
+  exit 2
 fi
 
 # No command given — run every verify: command from config, in order,
