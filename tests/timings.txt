@@ -6,6 +6,7 @@
 0 test-agent-skill-refs.sh
 51 test-api-calls.sh
 79 test-api-credits.sh
+15 test-assign-pr-775.sh
 28 test-approval-markers.sh
 67 test-approval-sha.sh
 1 test-assert-sync-worktrees.sh

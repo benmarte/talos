@@ -2332,7 +2332,7 @@ _vcs_shared_assign_pr() {
     return 0
   fi
   id="$(_vcs_assignee_id assign-pr "$n" "$want" "$@")" || return 0
-  if printf '%s\n' "$current" | grep -qixF -- "$id"; then
+  if grep -qixF -- "$id" <<<"$current"; then
     echo "pipeline-vcs: assign-pr: #$n already assigned to $id" >&2
     return 0
   fi
