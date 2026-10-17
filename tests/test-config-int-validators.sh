@@ -36,7 +36,7 @@ BOUNDS="verify.timeout_ms:1:86400000 verify.ci_wait_s:1:86400 hooks.timeout_s:1:
 notifications.cmd_timeout_s:1:86400 notifications.buzz_timeout_s:1:3600
 limits.max_fix_attempts:1:100 limits.max_total_dispatches:1:1000 limits.same_area_rounds:1:100
 execution.worktree_warn_threshold:0:10000 execution.context_budget_tokens:0:100000000 board.project_number:1:2147483647
-agents.stage_timeout_s:60:86400"
+agents.stage_timeout_s:60:86400 verify.e2e_artifacts.max_files:1:1000 verify.e2e_artifacts.max_mb:1:10240"
 BOUNDS="$(printf '%s' "$BOUNDS" | tr '\n' ' ')"
 OWN="limits.tokens_per_issue agents.provider_down_s agents.roles.*.stage_timeout_s"
 CONSUMER="issues.max_parallel limits.max_retries"

@@ -31,6 +31,7 @@ printf '\211PNG\r\n\032\n\000\001binary-a' > "$EV/a.png"
 printf 'WEBM-bytes\000\377end' > "$EV/b.webm"
 ln -s a.png "$EV/link.png"
 export STUB_UPLOAD_DIR="$UP"
+export STUB_GH_FIXTURES=1   # the curl stub answers GitHub from the fixtures too, as it does behind the gh stub
 
 # same_bytes <uploaded-copy> <original> -- the stub received the file byte for byte.
 same_bytes() { [ -f "$1" ] && [ "$(cksum < "$1")" = "$(cksum < "$2")" ]; }
@@ -72,6 +73,7 @@ for LEG in gh curl; do
 
   out="$(bash "$VCS" attach-files 7 "$EV/a.png" "$EV/b.webm" 2>"$SANDBOX/err")"; rc=$?
   assert_eq "0" "$rc" "AC9 [$LEG] attach-files exits 0"
+  [ "$rc" -eq 0 ] || cat "$SANDBOX/err" >&2
   assert_eq "yes" "$(put_check "$CURL_LOG" "$EV/a.png" "$EV/b.webm")" "AC9 [$LEG] each file is committed to talos-evidence at pr-7/01234567/<name>"
   assert_eq "1" "$(awk -F'\t' '$4=="POST" && $1 ~ /\/git\/refs$/' "$CURL_LOG" | wc -l | tr -d ' ')" "AC9 [$LEG] the missing talos-evidence branch is created once"
   assert_contains "$(awk -F'\t' '$4=="POST" && $1 ~ /\/git\/refs$/ {print $2}' "$CURL_LOG")" "refs/heads/talos-evidence" "AC9 [$LEG] the branch ref is refs/heads/talos-evidence"
@@ -131,11 +133,11 @@ az_patches() { count_log "$GH_LOG" '^AZ ARGS: \[rest\] \[--method\] \[patch\].*p
 az_fresh
 out="$(bash "$VCS" attach-files 9 "$EV/a.png" "$EV/b.webm" 2>"$SANDBOX/err")"; rc=$?
 assert_eq "0" "$rc" "AC7 azure attach-files exits 0"
-assert_eq "1" "$(count_log "$CURL_LOG" '/pullRequests/9/attachments/a\.png\?api-version=7\.1-preview\.1')" "AC7 a.png is POSTed to the attachments endpoint"
-assert_eq "1" "$(count_log "$CURL_LOG" '/pullRequests/9/attachments/b\.webm\?api-version=7\.1-preview\.1')" "AC7 b.webm is POSTed to the attachments endpoint"
+assert_eq "1" "$(count_log "$CURL_LOG" '/pullRequests/9/attachments/01234567-a\.png\?api-version=7\.1-preview\.1')" "AC7 a.png is POSTed to the attachments endpoint (named by the head's 8 characters)"
+assert_eq "1" "$(count_log "$CURL_LOG" '/pullRequests/9/attachments/01234567-b\.webm\?api-version=7\.1-preview\.1')" "AC7 b.webm is POSTed to the attachments endpoint (named by the head's 8 characters)"
 assert_eq "2" "$(count_log "$CURL_ARGV_LOG" 'Content-Type: application/octet-stream')" "AC7 each upload is application/octet-stream"
 assert_eq "0" "$(count_log "$CURL_ARGV_LOG" 'stub-ado-token')" "AC7 the token is not on the curl command line"
-if same_bytes "$UP/a.png" "$EV/a.png" && same_bytes "$UP/b.webm" "$EV/b.webm"; then
+if same_bytes "$UP/01234567-a.png" "$EV/a.png" && same_bytes "$UP/01234567-b.webm" "$EV/b.webm"; then
   pass "AC7 the uploaded bytes are the files' bytes"
 else
   fail "AC7 the uploaded bytes are the files' bytes"
@@ -143,8 +145,8 @@ fi
 assert_eq "1" "$(az_posts)" "AC7 exactly one comment thread is posted"
 C="$(az_content 1)"
 assert_contains "$C" 'QA evidence for 01234567' "AC7 the heading names the head sha"
-assert_contains "$C" '![a.png](https://dev.azure.com/acme/proj/_apis/git/repositories/widget/pullRequests/9/attachments/a.png)' "AC7 the image is inline with the full returned URL"
-assert_contains "$C" '[b.webm](https://dev.azure.com/acme/proj/_apis/git/repositories/widget/pullRequests/9/attachments/b.webm)' "AC7 the video is a link with the full returned URL"
+assert_contains "$C" '![a.png](https://dev.azure.com/acme/proj/_apis/git/repositories/widget/pullRequests/9/attachments/01234567-a.png)' "AC7 the image is inline with the full returned URL"
+assert_contains "$C" '[b.webm](https://dev.azure.com/acme/proj/_apis/git/repositories/widget/pullRequests/9/attachments/01234567-b.webm)' "AC7 the video is a link with the full returned URL"
 assert_not_contains "$C" '](a.png)' "AC7 no bare filename is used as a link target"
 assert_eq "$MARK" "$(printf '%s' "$C" | tail -n1)" "AC7 the comment ends with the talos:qa-evidence marker"
 

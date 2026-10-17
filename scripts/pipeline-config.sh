@@ -889,6 +889,8 @@ _INT_KEYS = {
     "execution.context_budget_tokens": ("tokens", 0, 100000000),
     "board.project_number": ("project number", 1, 2147483647),
     "agents.stage_timeout_s": ("seconds", 60, 86400),
+    "verify.e2e_artifacts.max_files": ("files", 1, 1000),
+    "verify.e2e_artifacts.max_mb": ("megabytes", 1, 10240),
 }
 
 def _int_spec(key):

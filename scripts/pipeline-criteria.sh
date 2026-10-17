@@ -767,8 +767,158 @@ _qa_exit() { _qa_restore_frozen; _qa_restore; _qa_restore_home; }
 # _qa_verdict_fail REASON -- the closing line of a refused or failed run.
 _qa_fail() {
   _qa_keep_raw
+  _qa_art_attach
   printf 'qa-run: verdict FAIL %s\n' "$1"
   return 1
+}
+
+# verify.e2e_artifacts (#776, repo-only): the screenshots and videos the repo's
+# own e2e run wrote, attached to the PR as one evidence comment. qa-run calls
+# _qa_art_begin before each judging run (the head run, the verify.e2e command)
+# and _qa_art_collect right after it, which copies the files of `dir` that match
+# `include` and are not older than the run into $tmp/art, before the re-run, the
+# red run and the frozen run can empty `dir`. A run that wrote some replaces the
+# earlier run's files; one that wrote none keeps them. _qa_art_attach, called by
+# both the PASS path and _qa_fail, applies max_files and max_mb and runs
+# `pipeline-vcs.sh attach-files`. Every outcome but a clean attach prints one
+# `qa-run: e2e artifacts ...` line; none of them touches the verdict or the exit
+# code.
+_QA_ART=0 _QA_ART_RAN=0 _QA_ART_DONE=0
+_QA_ART_DIR="" _QA_ART_MAXF=12 _QA_ART_MAXMB=25
+_QA_ART_TMP="" _QA_ART_TOP="" _QA_ART_PR="" _QA_ART_VCS=""
+_QA_ART_INC=()
+
+# _qa_art_init TMP TOP PR VCS -- read the config; the feature is on only with a
+# dir and at least one include glob.
+_qa_art_init() {
+  local dir g
+  _QA_ART=0; _QA_ART_RAN=0; _QA_ART_DONE=0; _QA_ART_INC=()
+  _QA_ART_TMP="$1"; _QA_ART_TOP="$2"; _QA_ART_PR="$3"; _QA_ART_VCS="$4"
+  dir="$(cfg verify.e2e_artifacts.dir 2>/dev/null)"
+  [ -n "$dir" ] || return 0
+  while IFS= read -r g; do
+    [ -z "$g" ] || _QA_ART_INC+=("$g")
+  done <<EOF
+$(cfg verify.e2e_artifacts.include 2>/dev/null)
+EOF
+  [ "${#_QA_ART_INC[@]}" -gt 0 ] || return 0
+  dir="${dir%/}"
+  case "/$dir/" in
+    //*|*/../*|*/./*|*[[:cntrl:]]*)
+      echo "qa-run: e2e artifacts ignored: dir must be a repo-relative path without .. (got '$dir')"
+      return 0 ;;
+  esac
+  _QA_ART_MAXF="$(cfg verify.e2e_artifacts.max_files 2>/dev/null)"
+  _QA_ART_MAXMB="$(cfg verify.e2e_artifacts.max_mb 2>/dev/null)"
+  case "$_QA_ART_MAXF" in ''|*[!0-9]*|0) _QA_ART_MAXF=12 ;; esac
+  case "$_QA_ART_MAXMB" in ''|*[!0-9]*|0) _QA_ART_MAXMB=25 ;; esac
+  _QA_ART_DIR="$dir"
+  _QA_ART=1
+}
+
+# _qa_art_begin -- the stamp a file must not be older than to belong to the next run.
+_qa_art_begin() {
+  [ "$_QA_ART" -eq 1 ] || return 0
+  touch "$_QA_ART_TMP/art.stamp"
+}
+
+# _qa_art_collect -- after a judging run: copy its matching files, flat, into
+# $tmp/art (the name is the path under dir with `/` as `-`), listed in sorted
+# path order in $tmp/art.list. Symlinks and anything outside the repo are skipped.
+_qa_art_collect() {
+  [ "$_QA_ART" -eq 1 ] || return 0
+  _QA_ART_RAN=1
+  local new="$_QA_ART_TMP/art.new"
+  rm -rf "${new:?}" "${_QA_ART_TMP:?}/art.new.list"
+  mkdir -p "$new" || return 0
+  python3 -I -c '
+import fnmatch, os, re, shutil, sys
+top, rel, stamp, dest = sys.argv[1:5]
+globs = sys.argv[5:]
+base = os.path.realpath(top)
+root = os.path.realpath(os.path.join(base, rel))
+if not os.path.isdir(root) or not root.startswith(base + os.sep):
+    sys.exit(0)
+since = os.stat(stamp).st_mtime_ns
+found = []
+for d, dirs, files in os.walk(root, followlinks=False):
+    for f in files:
+        p = os.path.join(d, f)
+        if os.path.islink(p) or not os.path.isfile(p):
+            continue
+        if not any(fnmatch.fnmatchcase(f, g) for g in globs):
+            continue
+        if os.stat(p).st_mtime_ns < since:
+            continue
+        found.append(os.path.relpath(p, root))
+found.sort()
+used, out = set(), []
+for r in found:
+    n = re.sub(r"[^A-Za-z0-9_.-]", "-", r.replace(os.sep, "-")).lstrip(".-") or "file"
+    stem, ext = os.path.splitext(n)
+    k = 2
+    while n.lower() in used:
+        n = "%s-%d%s" % (stem, k, ext)
+        k += 1
+    used.add(n.lower())
+    shutil.copyfile(os.path.join(root, r), os.path.join(dest, n))
+    out.append(n)
+if out:
+    print("\n".join(out))
+' "$_QA_ART_TOP" "$_QA_ART_DIR" "$_QA_ART_TMP/art.stamp" "$new" "${_QA_ART_INC[@]}" > "$_QA_ART_TMP/art.new.list" 2>/dev/null || :
+  if [ -s "$_QA_ART_TMP/art.new.list" ]; then
+    rm -rf "${_QA_ART_TMP:?}/art"
+    mv "$new" "$_QA_ART_TMP/art" && mv "$_QA_ART_TMP/art.new.list" "$_QA_ART_TMP/art.list"
+  else
+    rm -rf "${new:?}" "${_QA_ART_TMP:?}/art.new.list"
+  fi
+}
+
+# _qa_art_attach -- once per qa-run, ahead of the verdict line, for a run that
+# judged the head: the limits, then attach-files.
+_qa_art_attach() {
+  [ "$_QA_ART" -eq 1 ] && [ "$_QA_ART_RAN" -eq 1 ] && [ "$_QA_ART_DONE" -eq 0 ] || return 0
+  _QA_ART_DONE=1
+  local plan line files=() rc=0
+  if [ ! -s "$_QA_ART_TMP/art.list" ]; then
+    echo "qa-run: e2e artifacts none found in $_QA_ART_DIR"
+    return 0
+  fi
+  plan="$(python3 -I -c '
+import os, sys
+art, maxf, maxmb = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+names = [l.rstrip("\n") for l in open(art + ".list") if l.strip()]
+notes = []
+if len(names) > maxf:
+    notes.append("kept the first %d of %d files (max_files %d)" % (maxf, len(names), maxf))
+    names = names[:maxf]
+cap, total, keep, skipped = maxmb * 1024 * 1024, 0, [], 0
+for n in names:
+    size = os.path.getsize(os.path.join(art, n))
+    if total + size > cap:
+        skipped += 1
+        continue
+    total += size
+    keep.append(n)
+if skipped:
+    notes.append("skipped %d file(s) over the %d MB total (max_mb)" % (skipped, maxmb))
+for n in notes:
+    print("N " + n)
+for n in keep:
+    print("F " + n)
+' "$_QA_ART_TMP/art" "$_QA_ART_MAXF" "$_QA_ART_MAXMB" 2>/dev/null)" || plan=""
+  while IFS= read -r line; do
+    case "$line" in
+      "N "*) printf 'qa-run: e2e artifacts %s\n' "${line#N }" ;;
+      "F "*) files+=("$_QA_ART_TMP/art/${line#F }") ;;
+    esac
+  done <<EOF
+$plan
+EOF
+  [ "${#files[@]}" -gt 0 ] || return 0
+  bash "$_QA_ART_VCS" attach-files "$_QA_ART_PR" "${files[@]}" >/dev/null || rc=$?
+  [ "$rc" -eq 0 ] || printf 'qa-run: e2e artifacts upload failed (exit %s)\n' "$rc"
+  return 0
 }
 
 # The run's scratch directory and where its raw output is kept (#751); qa-run
@@ -1082,6 +1232,7 @@ cmd_qa_run() {
   _QA_RAW_SRC="$tmp"; _QA_RAW_DST="$top/.talos/qa-run-$pr"
   rm -rf "${_QA_RAW_DST:?}"
   _QA_READY=(); _QA_ENV_FAIL=""
+  _qa_art_init "$tmp" "$top" "$pr" "$vcs"
 
   # 1. Let the sweeps find this working copy again once the PR is done (#240).
   #    Best effort: the main checkout is refused, a missing script is ignored.
@@ -1191,8 +1342,10 @@ EOF
   : > "$tmp/head.out"; : > "$tmp/red.out"
   local head_rc=0
   if [ "${#present[@]}" -gt 0 ]; then
+    _qa_art_begin
     _qa_exec "$tmp/head.out" "${present[@]}"; head_rc=$?
     [ -z "$_QA_ENV_FAIL" ] || { _qa_env_blocked; return $?; }
+    _qa_art_collect
   fi
   # A failing head run is run once more (#717): the same present Tests files, at
   # the head, before the red run checks anything out. The combined head output
@@ -1324,8 +1477,10 @@ EOF
   local e2e e2e_rc=0 e2e_s=""
   e2e="$(cfg verify.e2e 2>/dev/null)"
   if [ -n "$e2e" ] && [ "${#present[@]}" -gt 0 ]; then
+    _qa_art_begin
     bash "$SCRIPT_DIR/pipeline-verify.sh" --issue "$issue" --worktree "$top" -- \
       bash -c "$e2e" > "$tmp/e2e.out" 2>&1; e2e_rc=$?
+    _qa_art_collect
     if [ "$e2e_rc" -ne 0 ]; then
       echo "e2e failure output (data):"
       tail -n 24 "$tmp/e2e.out" | cut -c1-200 | sed 's/^/  /'
@@ -1335,6 +1490,7 @@ EOF
     echo "qa-run: e2e ok"
     e2e_s=" e2e ok"
   fi
+  _qa_art_attach
   printf 'qa-run: verdict PASS (%s test criteria green,%s %s prose to hand-check)%s\n' "$n_test" "$([ "$n_same" -eq 0 ] || printf ' %s same,' "$n_same")" "$n_prose" "$e2e_s"
   return 0
 }

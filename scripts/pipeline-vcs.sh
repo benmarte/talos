@@ -411,6 +411,27 @@
 #                                             unreadable comment list or a failed write is exit
 #                                             1 and never a blind duplicate. Works on a merged
 #                                             PR. --dry-run prints the planned calls, exit 0.
+#   attach-files <pr> <file>...               Upload the files and keep ONE `talos:qa-evidence`
+#                                             comment on PR <pr> up to date (#776; github,
+#                                             github-api, gitlab, azure; file exits 2 `not
+#                                             implemented for provider 'file'`). Each file is a
+#                                             regular, non-symlink file (else exit 1 before any
+#                                             call); its uploaded name keeps only
+#                                             [A-Za-z0-9_.-] and is made unique. azure: POST
+#                                             pullRequests/<pr>/attachments/<name>
+#                                             (application/octet-stream), linked by the URL the
+#                                             upload returns; gitlab: POST /projects/:id/uploads
+#                                             (multipart), using the markdown it returns;
+#                                             github: no attachment API, so each file is
+#                                             committed to the `talos-evidence` branch at
+#                                             pr-<n>/<sha8>/<name> and linked ?raw=true. The
+#                                             comment (a `QA evidence for <sha8>` heading,
+#                                             images inline, other files as links, the marker)
+#                                             goes through upsert-pr-comment's rules, so a later
+#                                             round edits it. Prints the comment URL, then
+#                                             `upserted ...`. Any failed upload is exit 1 and
+#                                             nothing is posted. --dry-run prints the planned
+#                                             calls, exit 0.
 #   edit-pr-body <pr> --body-file <path|->    Replace the description of PR <pr> (#455;
 #                                             github, github-api: PATCH pulls/<n>;
 #                                             gitlab: PUT merge_requests/<n>; azure:
@@ -2113,6 +2134,44 @@ except Exception:
   fi
   [ -n "${_uc_url:-}" ] && printf '%s\n' "$_uc_url"
   printf 'upserted pr=%s comment=%s\n' "$_uc_n" "$_uc_state"
+}
+
+# _vcs_shared_attach_md <name> <url> -- the markdown for one uploaded file: an
+# inline image for an image extension, a plain link for anything else (a video).
+_vcs_shared_attach_md() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    *.png|*.jpg|*.jpeg|*.gif|*.webp) printf '![%s](%s)\n' "$1" "$2" ;;
+    *) printf '[%s](%s)\n' "$1" "$2" ;;
+  esac
+}
+
+# _vcs_shared_attach_post <pr> <sha8> <manifest-file> <read-fn> <write-fn> <user-cmd> [args...]
+#   `attach-files` (#776), once for the three providers: <manifest-file> holds one
+#   markdown line per uploaded file (_vcs_shared_attach_md, or the markdown GitLab
+#   returned). Builds the comment (a `QA evidence for <sha8>` heading, images
+#   inline, the rest as list items, then the marker) and hands it to
+#   _vcs_shared_upsert_pr_comment, so a later round edits the same comment.
+_TALOS_ATTACH_BODY_FILE=""
+_vcs_shared_attach_post() {
+  local _ap_pr="$1" _ap_sha8="$2" _ap_manifest="$3" _ap_md; shift 3
+  _TALOS_ATTACH_BODY_FILE="$(mktemp)" && [ -n "$_TALOS_ATTACH_BODY_FILE" ] || {
+    echo "pipeline-vcs: attach-files: could not create a temp file; nothing posted" >&2
+    exit 1
+  }
+  _talos_on_exit 'rm -f "$_TALOS_ATTACH_BODY_FILE"'
+  {
+    printf '### QA evidence for %s\n' "$_ap_sha8"
+    while IFS= read -r _ap_md; do
+      [ -n "$_ap_md" ] || continue
+      case "$_ap_md" in
+        '!'*) printf '\n%s\n' "$_ap_md" ;;
+        *) printf '\n- %s\n' "$_ap_md" ;;
+      esac
+    done < "$_ap_manifest"
+    printf '\n<!-- talos:qa-evidence -->'
+  } > "$_TALOS_ATTACH_BODY_FILE"
+  _check_body_caps "$(cat "$_TALOS_ATTACH_BODY_FILE")"
+  _vcs_shared_upsert_pr_comment "$_ap_pr" qa-evidence "$_TALOS_ATTACH_BODY_FILE" "$@"
 }
 
 # _vcs_shared_mark_needs_owner <n> <text> <post-fn> <label-fn> <user-fn>
@@ -4527,6 +4586,66 @@ _gh_post_comment() {
   printf '%s' "$_pc_resp" | _gh_field html_url
 }
 
+# _gh_attach_files <pr> <file>... -- attach-files (#776). GitHub has no API for
+# comment attachments, so each file is committed through the contents API to the
+# `talos-evidence` branch (created from the default branch's head when absent) at
+# pr-<n>/<sha8>/<name>, and the comment links its ?raw=true blob URL. _ATT_NAMES
+# holds the upload names. A failed upload exits 1 before anything is posted.
+_TALOS_EVIDENCE_BRANCH="talos-evidence"
+_gh_attach_files() {
+  local _af_pr="$1" _af_sha _af_sha8 _af_repo _af_def _af_root _af_base _af_i=0
+  local _af_f _af_name _af_path _af_old _af_pl _af_manifest
+  shift
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] GET $_GH_API/pulls/$_af_pr (.head.sha); GET $_GH_API/git/ref/heads/$_TALOS_EVIDENCE_BRANCH, else POST $_GH_API/git/refs from the default branch; for each file PUT $_GH_API/contents/pr-$_af_pr/<sha8>/<name> (branch $_TALOS_EVIDENCE_BRANCH, body from a file); then upsert-pr-comment's calls for <!-- talos:qa-evidence -->"
+    return 0
+  fi
+  _af_sha="$(_gh_pull_cached "$_af_pr" | _gh_field head.sha)"
+  [ -n "$_af_sha" ] || { echo "pipeline-vcs: attach-files: could not resolve head SHA for PR #$_af_pr" >&2; exit 1; }
+  _af_sha8="${_af_sha:0:8}"
+  _af_repo="$(_gh_try GET "$_GH_API")" || exit 1
+  _af_def="$(printf '%s' "$_af_repo" | _gh_field default_branch)"
+  _af_root="$(printf '%s' "$_af_repo" | _gh_field html_url)"
+  if [ -z "$_af_def" ] || [ -z "$_af_root" ]; then
+    echo "pipeline-vcs: attach-files: could not read the repository's default branch and URL; nothing posted" >&2
+    exit 1
+  fi
+  if ! _gh_try GET "$_GH_API/git/ref/heads/$_TALOS_EVIDENCE_BRANCH" >/dev/null 2>&1; then
+    _af_base="$(_gh_try GET "$_GH_API/git/ref/heads/$(_gh_urlenc "$_af_def" /)" | _gh_field object.sha)"
+    if [ -z "$_af_base" ]; then
+      echo "pipeline-vcs: attach-files: could not read the head of '$_af_def' to create $_TALOS_EVIDENCE_BRANCH; nothing posted" >&2
+      exit 1
+    fi
+    _gh_try POST "$_GH_API/git/refs" "$(python3 -I -c 'import json, sys; print(json.dumps({"ref": "refs/heads/" + sys.argv[1], "sha": sys.argv[2]}))' "$_TALOS_EVIDENCE_BRANCH" "$_af_base")" >/dev/null \
+      || { echo "pipeline-vcs: attach-files: could not create the $_TALOS_EVIDENCE_BRANCH branch; nothing posted" >&2; exit 1; }
+  fi
+  _af_manifest="$(mktemp)" && [ -n "$_af_manifest" ] || { echo "pipeline-vcs: attach-files: could not create a temp file; nothing posted" >&2; exit 1; }
+  _af_pl="$(mktemp)" && [ -n "$_af_pl" ] || { rm -f "${_af_manifest:?}"; echo "pipeline-vcs: attach-files: could not create a temp file; nothing posted" >&2; exit 1; }
+  for _af_f in "$@"; do
+    _af_name="${_ATT_NAMES[$_af_i]}"
+    _af_i=$((_af_i + 1))
+    _af_path="pr-$_af_pr/$_af_sha8/$_af_name"
+    # A file already at that path (a retried round at the same head) needs its blob sha.
+    _af_old="$(_gh_try GET "$_GH_API/contents/$_af_path?ref=$_TALOS_EVIDENCE_BRANCH" 2>/dev/null | _gh_field sha)" || _af_old=""
+    # The JSON is staged in a file that reaches the transport on stdin: a video is
+    # far over the 128 KiB a single argument can carry.
+    python3 -I -c '
+import base64, json, sys
+path, msg, branch, old, out = sys.argv[1:6]
+body = {"message": msg, "branch": branch, "content": base64.b64encode(open(path, "rb").read()).decode("ascii")}
+if old:
+    body["sha"] = old
+open(out, "w").write(json.dumps(body))
+' "$_af_f" "QA evidence for PR #$_af_pr at $_af_sha8: $_af_name" "$_TALOS_EVIDENCE_BRANCH" "$_af_old" "$_af_pl" \
+      && _with_retry "$VERB" _gh_once PUT "$_GH_API/contents/$_af_path" "$_GH_JSON" "$_af_pl" >/dev/null \
+      || { rm -f "${_af_manifest:?}" "${_af_pl:?}"; echo "pipeline-vcs: attach-files: could not upload '$_af_name'; nothing posted" >&2; exit 1; }
+    _vcs_shared_attach_md "$_af_name" "$_af_root/blob/$_TALOS_EVIDENCE_BRANCH/$_af_path?raw=true" >> "$_af_manifest"
+  done
+  rm -f "${_af_pl:?}"
+  _talos_on_exit 'rm -f "'"$_af_manifest"'"'
+  _vcs_shared_attach_post "$_af_pr" "$_af_sha8" "$_af_manifest" _gh_upc_read _gh_upc_write _gh_user_login
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GITHUB ADAPTER  (providers `github` and `github-api`)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4561,6 +4680,9 @@ _github() {
     upsert-pr-comment)
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/issues/$1/comments?per_page=100 (paginated; newest own comment ending in <!-- talos:$2 -->); then PATCH $_GH_API/issues/comments/<id> (body on stdin), or POST $_GH_API/issues/$1/comments when there is none; no write when the body is unchanged"; return 0; }
       _vcs_shared_upsert_pr_comment "${1:-}" "${2:-}" "${3:-}" _gh_upc_read _gh_upc_write _gh_user_login
+      ;;
+    attach-files)
+      _gh_attach_files "$@"
       ;;
     mark-needs-owner)
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/issues/$1/comments (read-comments); unless the newest trusted marker comment already has this body and is unanswered: POST $_GH_API/issues/$1/comments; POST $_GH_API/issues/$1/labels ($_TALOS_NEEDS_OWNER_LABEL)"; return 0; }
@@ -6066,6 +6188,62 @@ print((d.get('sha') or (d.get('diff_refs') or {}).get('head_sha') or '').lower()
       _gl_require_iid upsert-pr-comment "${1:-}" || exit 1
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] glab api --paginate projects/$(_gl_api_project)/merge_requests/$1/notes?per_page=100 (newest own note ending in <!-- talos:$2 -->); then glab api --method PUT projects/$(_gl_api_project)/merge_requests/$1/notes/<note> (body from a file), or --method POST projects/$(_gl_api_project)/merge_requests/$1/notes when there is none; no write when the body is unchanged"; return 0; }
       _vcs_shared_upsert_pr_comment "${1:-}" "${2:-}" "${3:-}" _gl_upc_read _gl_upc_write _gl_current_user
+      ;;
+    attach-files)
+      # attach-files <iid> <file>... (#776): each file is a multipart upload to
+      # /projects/:id/uploads (glab api sends --input as the body, so the multipart
+      # body is built in a file); the note uses the markdown the upload returns.
+      local _af_pr="${1:-}" _af_sha _af_sha8 _af_i=0 _af_f _af_name _af_body _af_bound _af_resp _af_md _af_manifest
+      _gl_require_iid attach-files "$_af_pr" || exit 1
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] glab mr view $_af_pr --output json (head sha); for each file glab api --method POST projects/$(_gl_api_project)/uploads --input <multipart file> (the returned markdown); then upsert-pr-comment's calls for <!-- talos:qa-evidence -->"; return 0; }
+      _af_sha="$(glab mr view "$_af_pr" --output json $RARG 2>/dev/null | python3 -I -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+print((d.get('sha') or (d.get('diff_refs') or {}).get('head_sha') or '').lower())
+" 2>/dev/null)"
+      [ -n "$_af_sha" ] || { echo "pipeline-vcs: attach-files: could not resolve head SHA for MR !$_af_pr" >&2; exit 1; }
+      _af_sha8="${_af_sha:0:8}"
+      _af_manifest="$(mktemp)" && [ -n "$_af_manifest" ] || { echo "pipeline-vcs: attach-files: could not create a temp file; nothing posted" >&2; exit 1; }
+      _af_body="$(mktemp)" && [ -n "$_af_body" ] || { rm -f "${_af_manifest:?}"; echo "pipeline-vcs: attach-files: could not create a temp file; nothing posted" >&2; exit 1; }
+      shift
+      for _af_f in "$@"; do
+        _af_name="${_ATT_NAMES[$_af_i]}"
+        _af_i=$((_af_i + 1))
+        _af_bound="$(python3 -I -c '
+import mimetypes, secrets, sys
+path, name, out = sys.argv[1:4]
+boundary = "talos" + secrets.token_hex(16)
+ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
+with open(out, "wb") as f:
+    f.write(("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\nContent-Type: %s\r\n\r\n" % (boundary, name, ctype)).encode("ascii"))
+    f.write(open(path, "rb").read())
+    f.write(("\r\n--%s--\r\n" % boundary).encode("ascii"))
+print(boundary)
+' "$_af_f" "$_af_name" "$_af_body")" || _af_bound=""
+        _af_resp=""
+        [ -z "$_af_bound" ] || _af_resp="$(glab api --method POST "projects/$(_gl_api_project)/uploads" --input "$_af_body" \
+          --header "Content-Type: multipart/form-data; boundary=$_af_bound")"
+        _af_md="$(printf '%s' "$_af_resp" | python3 -I -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(" ".join(str(d.get("markdown") or "").split()))
+except Exception:
+    print("")
+' 2>/dev/null)"
+        if [ -z "$_af_md" ]; then
+          rm -f "${_af_manifest:?}" "${_af_body:?}"
+          echo "pipeline-vcs: attach-files: could not upload '$_af_name'; nothing posted" >&2
+          exit 1
+        fi
+        printf '%s\n' "$_af_md" >> "$_af_manifest"
+      done
+      rm -f "${_af_body:?}"
+      _talos_on_exit 'rm -f "'"$_af_manifest"'"'
+      _vcs_shared_attach_post "$_af_pr" "$_af_sha8" "$_af_manifest" _gl_upc_read _gl_upc_write _gl_current_user
       ;;
     mark-needs-owner)
       _gl_require_iid mark-needs-owner "${1:-}" || exit 1
@@ -7869,6 +8047,59 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] az rest GET .../pullRequests/$1/threads (newest own comment ending in <!-- talos:$2 -->); then PATCH .../pullRequests/$1/threads/<thread>/comments/<comment> (body from a file), or POST .../pullRequests/$1/threads when there is none; no write when the body is unchanged"; return 0; }
       _vcs_shared_upsert_pr_comment "${1:-}" "${2:-}" "${3:-}" _az_upc_read _az_upc_write _az_user_login
       ;;
+    attach-files)
+      # attach-files <id> <file>... (#776): POST each file to the PR's attachments
+      # endpoint as application/octet-stream and link the full URL the response
+      # returns (a bare filename does not render). `az rest` reads a --body file
+      # as text and would damage an image or a video, so curl sends the bytes with
+      # an Azure DevOps access token; the token travels in a curl config on stdin,
+      # never on argv. The upload name carries the head's 8 characters, so a later
+      # round's file of the same name cannot collide with this one.
+      local _af_pr="${1:-}" _af_sha _af_sha8 _af_i=0 _af_f _af_name _af_gb _af_tok _af_url _af_cfg _af_resp _af_status _af_link _af_manifest
+      _az_require_id attach-files "$_af_pr" || exit 1
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] az repos pr show --id $_af_pr (head sha); az account get-access-token --resource $ADO_RESOURCE; for each file curl POST .../pullRequests/$_af_pr/attachments/<sha8>-<name>?api-version=7.1-preview.1 (application/octet-stream, body from the file); then upsert-pr-comment's calls for <!-- talos:qa-evidence -->"; return 0; }
+      _af_sha="$(az repos pr show --id "$_af_pr" $ORG_ARG --output json 2>/dev/null | python3 -I -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
+" 2>/dev/null)"
+      [ -n "$_af_sha" ] || { echo "pipeline-vcs: attach-files: could not resolve head SHA for PR #$_af_pr" >&2; exit 1; }
+      _af_sha8="${_af_sha:0:8}"
+      _af_gb="$(_azure_git_base)" || {
+        echo "pipeline-vcs: attach-files: needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2
+        exit 1; }
+      _af_tok="$(az account get-access-token --resource "$ADO_RESOURCE" --query accessToken --output tsv 2>/dev/null)"
+      [ -n "$_af_tok" ] || { echo "pipeline-vcs: attach-files: could not get an Azure DevOps access token (az login?); nothing posted" >&2; exit 1; }
+      _af_manifest="$(mktemp)" && [ -n "$_af_manifest" ] || { echo "pipeline-vcs: attach-files: could not create a temp file; nothing posted" >&2; exit 1; }
+      shift
+      for _af_f in "$@"; do
+        _af_name="${_ATT_NAMES[$_af_i]}"
+        _af_i=$((_af_i + 1))
+        _af_url="$_af_gb/pullRequests/$_af_pr/attachments/$_af_sha8-$_af_name?api-version=7.1-preview.1"
+        _af_cfg="url = \"${_af_url//\\/\\\\}\"
+header = \"Authorization: Bearer $_af_tok\""
+        _af_resp="$(printf '%s\n' "$_af_cfg" | curl -sS -w '\n%{http_code}' -X POST -K - \
+          -H 'Content-Type: application/octet-stream' --data-binary "@$_af_f")" || _af_resp=""
+        _af_status="${_af_resp##*$'\n'}"
+        _af_link=""
+        case "$_af_status" in
+          2[0-9][0-9]) _af_link="$(printf '%s' "${_af_resp%$'\n'*}" | _gh_field url)" ;;
+        esac
+        case "$_af_link" in
+          https://*) ;;
+          *)
+            rm -f "${_af_manifest:?}"
+            echo "pipeline-vcs: attach-files: could not upload '$_af_name' (HTTP ${_af_status:-none}); nothing posted" >&2
+            exit 1 ;;
+        esac
+        _vcs_shared_attach_md "$_af_name" "$_af_link" >> "$_af_manifest"
+      done
+      _talos_on_exit 'rm -f "'"$_af_manifest"'"'
+      _vcs_shared_attach_post "$_af_pr" "$_af_sha8" "$_af_manifest" _az_upc_read _az_upc_write _az_user_login
+      ;;
     mark-needs-owner)
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] az rest GET .../pullRequests/$1/threads (read-comments); unless the newest trusted marker comment already has this body and is unanswered: POST .../pullRequests/$1/threads; POST .../pullRequests/$1/labels ($_TALOS_NEEDS_OWNER_LABEL)"; return 0; }
       _vcs_shared_mark_needs_owner "${1:-}" "${2-}" _az_no_post_comment _az_no_label_add _az_user_login
@@ -8827,13 +9058,13 @@ if [ "$VERB" = "edit-pr-body" ] && [ -z "$(tr -d '[:space:]' <<<"${ARGS[1]-}")" 
   exit 1
 fi
 
-# mark-needs-owner / list-needs-owner (#345) and upsert-pr-comment (#381) are
-# GitHub, GitLab (#763, merge requests) and Azure DevOps (#709); the label and
-# marker verbs have no file implementation. Exit 2, before any body is read from
+# mark-needs-owner / list-needs-owner (#345), upsert-pr-comment (#381) and
+# attach-files (#776) are GitHub, GitLab (#763, merge requests) and Azure DevOps
+# (#709); the label, marker and upload verbs have no file implementation. Exit 2, before any body is read from
 # stdin or a file, so a caller reads it as "unsupported, skip" and not as the
 # exit 1 of a failed call.
 case "$VERB" in
-  mark-needs-owner|list-needs-owner|upsert-pr-comment)
+  mark-needs-owner|list-needs-owner|upsert-pr-comment|attach-files)
     if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ] && [ "$PROVIDER" != "gitlab" ] && [ "$PROVIDER" != "azure" ]; then
       echo "pipeline-vcs: $VERB: not implemented for provider '$PROVIDER'" >&2
       exit 2
@@ -9001,6 +9232,61 @@ if [ "$VERB" = "upsert-pr-comment" ]; then
   printf '%s' "$_uc_body" > "$_TALOS_UPSERT_BODY_FILE"
   ARGS=("$_uc_pr" "$_uc_marker" "$_TALOS_UPSERT_BODY_FILE")
   unset _uc_usage _uc_pr _uc_marker _uc_src _uc_have_marker _uc_have_src _uc_i _uc_known _uc_m _uc_body
+fi
+
+# attach-files <pr> <file>... (#776). Every file is checked here, before any call
+# and for every provider: a regular file that is not a symlink, else exit 1 with
+# nothing uploaded. _ATT_NAMES holds each file's upload name, in argument order:
+# only [A-Za-z0-9_.-] survive (a path separator becomes `-`, a leading `.` or `-`
+# is dropped) and a name already taken (compared without case) gets `-2`, `-3` ...
+# before its extension. The adapters upload and post the comment.
+_ATT_NAMES=()
+if [ "$VERB" = "attach-files" ]; then
+  _af_usage="Usage: attach-files <pr> <file>..."
+  case "${ARGS[0]-}" in
+    ''|*[!0-9]*)
+      echo "pipeline-vcs: attach-files: <pr> must be a number (got '${ARGS[0]-}'); $_af_usage" >&2
+      exit 1
+      ;;
+  esac
+  if [ "${#ARGS[@]}" -lt 2 ]; then
+    echo "pipeline-vcs: attach-files: at least one file is required; $_af_usage" >&2
+    exit 1
+  fi
+  for _af_f in "${ARGS[@]:1}"; do
+    if [ -L "$_af_f" ]; then
+      echo "pipeline-vcs: attach-files: '$_af_f' is a symlink; nothing uploaded" >&2
+      exit 1
+    elif [ ! -e "$_af_f" ]; then
+      echo "pipeline-vcs: attach-files: '$_af_f' does not exist; nothing uploaded" >&2
+      exit 1
+    elif [ ! -f "$_af_f" ]; then
+      echo "pipeline-vcs: attach-files: '$_af_f' is not a regular file; nothing uploaded" >&2
+      exit 1
+    fi
+  done
+  while IFS= read -r _af_f; do
+    _ATT_NAMES+=("$_af_f")
+  done <<EOF
+$(python3 -I -c '
+import os, re, sys
+seen, out = set(), []
+for p in sys.argv[1:]:
+    n = os.path.basename(p) if os.path.isabs(p) else p
+    while n.startswith("./"):
+        n = n[2:]
+    n = re.sub(r"[^A-Za-z0-9_.-]", "-", n)[-120:].lstrip(".-") or "file"
+    stem, ext = os.path.splitext(n)
+    k = 2
+    while n.lower() in seen:
+        n = "%s-%d%s" % (stem, k, ext)
+        k += 1
+    seen.add(n.lower())
+    out.append(n)
+print("\n".join(out))
+' "${ARGS[@]:1}")
+EOF
+  unset _af_usage _af_f
 fi
 
 # ── assert-sync: working-tree precondition (provider-agnostic) ───────────────
