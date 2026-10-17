@@ -28,8 +28,9 @@ _rec() {
 _evals() { printf '{"count":0,"value":[%s]}' "$1"; }
 _run() { STUB_AZURE_PR_EVALUATIONS="$(_evals "$1")" bash "$VCS" pr-checks-required 9 2>&1; }
 _patches() { grep -c "\[--method\] \[patch\].*policy/evaluations/$EVAL_ID" "$GH_LOG" || true; }
-_markers() { find "$(git rev-parse --git-common-dir)/talos/azure-requeue" -type f 2>/dev/null | wc -l | tr -d ' '; }
-_reset() { : > "$GH_LOG"; rm -rf "$(git rev-parse --git-common-dir)/talos/azure-requeue"; }
+MARKER_DIR="$(git rev-parse --git-common-dir)/talos/azure-requeue"
+_markers() { find "$MARKER_DIR" -type f 2>/dev/null | wc -l | tr -d ' '; }
+_reset() { : > "$GH_LOG"; rm -rf "${MARKER_DIR:?}"; }
 
 # AC1 -- the first stuck read requeues once and stays pending.
 _reset

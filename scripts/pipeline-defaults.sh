@@ -119,6 +119,7 @@ verify.targeted_commands	list		-	-	repo
 verify.e2e	str		-	-	repo
 verify.ready	list		-	-	repo
 verify.ci_wait_s	int	900	-	-	any
+verify.ci_requeue_stuck	bool	true	-	-	any
 verify.timeout_ms	int	600000	-	-	any
 merge.auto	bool	true	-	-	any
 merge.method	enum	squash	-	-	any

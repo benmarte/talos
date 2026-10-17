@@ -21,6 +21,7 @@
 7 test-azure-normalised-shapes.sh
 6 test-azure-pr-checks-fallback.sh
 10 test-azure-pr-checks.sh
+5 test-azure-stuck-policy-764.sh
 19 test-azure-pr-comment-verbs.sh
 5 test-azure-pr-labels.sh
 5 test-azure-repo-name.sh

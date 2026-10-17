@@ -59,7 +59,7 @@ print("\n".join(bad))
 print("ROWS=%d" % len(rows))
 TALOS_PYtab7Gw3Nd5Xk
 )"
-assert_eq "ROWS=126" "$(printf '%s\n' "$_out" | tail -n1)" "AC10 the table has one row per config key (126 rows)"
+assert_eq "ROWS=127" "$(printf '%s\n' "$_out" | tail -n1)" "AC10 the table has one row per config key (127 rows)"
 assert_eq "" "$(printf '%s\n' "$_out" | sed '$d')" \
   "every row has six fields, a unique key, a valid type/derived/env/scope column, and a default of the right shape"
 
@@ -69,7 +69,7 @@ vcs.azure.project vcs.azure.work_item_type vcs.azure.area_path vcs.file.source.p
 board.enabled board.project_number board.owner board.status_field board.statuses.*
 board.status_map.* board.azure_team board.azure_board board.azure_columns.* board.azure_states.* board.azure_states.ready board.azure_states.in_progress
 board.azure_states.in_review board.azure_states.done verify verify.commands verify.qa_mode
-verify.targeted verify.targeted_commands verify.e2e verify.ready verify.ci_wait_s verify.timeout_ms merge.auto merge.method
+verify.targeted verify.targeted_commands verify.e2e verify.ready verify.ci_wait_s verify.ci_requeue_stuck verify.timeout_ms merge.auto merge.method
 merge.required_checks merge.forbidden_files
 merge.forbidden_files_replace merge.forbidden_files_allow merge.approval_waiver_paths
 merge.union_paths merge.auto_sync issues.label_filter issues.skip_labels
