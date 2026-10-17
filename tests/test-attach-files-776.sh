@@ -236,4 +236,11 @@ out="$(bash "$VCS" attach-files 9 "$EV/a.png" 2>&1)"; rc=$?
 assert_eq "2" "$rc" "AC11 the file provider exits 2"
 assert_contains "$out" "not implemented for provider 'file'" "AC11 the file provider says not implemented"
 
+# ── AC12 (same): the suites that pin verbs, parity, config keys and markers stay green ─
+for T in test-verb-parity.sh test-vcs-provider-parity.sh test-config-defaults-table.sh test-marker-contract.sh; do
+  bash "$TALOS_ROOT/tests/$T" > "$SANDBOX/ac12.out" 2>&1; rc=$?
+  assert_eq "0" "$rc" "AC12 tests/$T stays green"
+  [ "$rc" -eq 0 ] || tail -n 5 "$SANDBOX/ac12.out" >&2
+done
+
 finish
