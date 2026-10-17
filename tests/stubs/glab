@@ -47,6 +47,54 @@ _as_add() {
   grep -qixF -- "$2" "$1" 2>/dev/null || printf '%s\n' "$2" >> "$1"
 }
 
+# _assignee_write <n> [flags...]: the --assignee half of `issue update` and
+# `mr update` (#775 shares it). Real glab --assignee semantics (#305,
+# cmdutils.ParseAssignees): comma-separated and repeatable; "+u" adds to the
+# current assignees, "-u"/"!u" removes, a bare "u" replaces them all, and mixing
+# bare with prefixed names is an error. The state is one assignee per line in
+# _as_path <n>. STUB_ASSIGN_FAIL / STUB_ASSIGN_DROP as in the gh stub. No
+# --assignee (label-issue) = nothing happens.
+_assignee_write() {
+  local _as_n="$1" _as_vals="" _as_prev="" _as_a _as_cur="" _as_f _as_new
+  for _as_a in "$@"; do
+    case "$_as_prev" in -a|--assignee) _as_vals="$_as_vals,$_as_a" ;; esac
+    case "$_as_a" in --assignee=*) _as_vals="$_as_vals,${_as_a#--assignee=}" ;; esac
+    _as_prev="$_as_a"
+  done
+  [ -z "$_as_vals" ] && return 0
+  if [ "${STUB_ASSIGN_FAIL:-}" = "1" ]; then
+    echo "ERROR: 422 {message: {assignee_ids: [not a member]}}" >&2
+    exit 1
+  fi
+  _as_f="$(_as_path "$_as_n")"
+  [ -n "$_as_f" ] && [ -s "$_as_f" ] && _as_cur="$(cat "$_as_f")"
+  _as_new="$(CUR="$_as_cur" VALS="$_as_vals" python3 -I -c "
+import os, sys
+cur = [u for u in os.environ['CUR'].splitlines() if u.strip()]
+add, rm, rep = [], [], []
+for v in os.environ['VALS'].split(','):
+    if not v:
+        continue
+    if v[0] == '+':
+        add.append(v[1:])
+    elif v[0] in '-!':
+        rm.append(v[1:])
+    else:
+        rep.append(v)
+if rep and (add or rm):
+    sys.exit('ERROR: --assignee: mixing relative (+,!,-) and absolute assignments is forbidden')
+out = rep if rep else [u for u in cur if u not in rm] + [u for u in add if u not in cur]
+print('\n'.join(out))
+")" || exit 1
+  if [ "${STUB_ASSIGN_DROP:-}" != "1" ] && [ -n "$_as_f" ]; then
+    printf '%s\n' "$_as_new" > "$_as_f"
+    # STUB_ASSIGNEE_RACER=<login> (#560): another operator's write lands at
+    # the same moment, so both are on the issue at the read-back.
+    [ -n "${STUB_ASSIGNEE_RACER:-}" ] && _as_add "$_as_f" "$STUB_ASSIGNEE_RACER"
+  fi
+  return 0
+}
+
 # Note write-back (#736). With STUB_GITLAB_STATE_DIR set, `issue note` and
 # `mr note` append the note to <dir>/{issue,mr}_notes_<n> (one JSON object per
 # line, authored by STUB_GITLAB_POST_AUTHOR, else STUB_CURRENT_USER) and the
@@ -93,7 +141,7 @@ _msg_of() {
 args="$*"
 case "$args" in
   "mr create "*)
-    printf 'https://gitlab.com/acme/widget/-/merge_requests/7\n' ;;
+    printf 'https://gitlab.com/acme/widget/-/merge_requests/%s\n' "${STUB_NEW_MR_NUMBER:-7}" ;;
   "repo view --format="*"default_branch"*)
     printf 'main\n' ;;
   "issue create "*)
@@ -169,46 +217,8 @@ print(json.dumps(d))
     # holds one assignee per line. STUB_ASSIGN_FAIL / STUB_ASSIGN_DROP as in
     # the gh stub. No --assignee (label-issue) = silent success.
     shift 2
-    _as_n="$1"
     _stub_flags "$_GL_UPDATE_VF" "$_GL_UPDATE_BF" "$@"
-    _as_vals="" _as_prev=""
-    for _as_a in "$@"; do
-      case "$_as_prev" in -a|--assignee) _as_vals="$_as_vals,$_as_a" ;; esac
-      case "$_as_a" in --assignee=*) _as_vals="$_as_vals,${_as_a#--assignee=}" ;; esac
-      _as_prev="$_as_a"
-    done
-    [ -z "$_as_vals" ] && exit 0
-    if [ "${STUB_ASSIGN_FAIL:-}" = "1" ]; then
-      echo "ERROR: 422 {message: {assignee_ids: [not a member]}}" >&2
-      exit 1
-    fi
-    _as_cur=""
-    _as_f="$(_as_path "$_as_n")"
-    [ -n "$_as_f" ] && [ -s "$_as_f" ] && _as_cur="$(cat "$_as_f")"
-    _as_new="$(CUR="$_as_cur" VALS="$_as_vals" python3 -I -c "
-import os, sys
-cur = [u for u in os.environ['CUR'].splitlines() if u.strip()]
-add, rm, rep = [], [], []
-for v in os.environ['VALS'].split(','):
-    if not v:
-        continue
-    if v[0] == '+':
-        add.append(v[1:])
-    elif v[0] in '-!':
-        rm.append(v[1:])
-    else:
-        rep.append(v)
-if rep and (add or rm):
-    sys.exit('ERROR: --assignee: mixing relative (+,!,-) and absolute assignments is forbidden')
-out = rep if rep else [u for u in cur if u not in rm] + [u for u in add if u not in cur]
-print('\n'.join(out))
-")" || exit 1
-    if [ "${STUB_ASSIGN_DROP:-}" != "1" ] && [ -n "$_as_f" ]; then
-      printf '%s\n' "$_as_new" > "$_as_f"
-      # STUB_ASSIGNEE_RACER=<login> (#560): another operator's write lands at
-      # the same moment, so both are on the issue at the read-back.
-      [ -n "${STUB_ASSIGNEE_RACER:-}" ] && _as_add "$_as_f" "$STUB_ASSIGNEE_RACER"
-    fi
+    _assignee_write "$@"
     exit 0 ;;
   "api --paginate projects/"*"/issues/"*"/notes"*)
     # view-issue's notes (#735): STUB_GITLAB_ISSUE_NOTES is the raw output,
@@ -379,6 +389,18 @@ open(os.environ["F"], "w").write("".join(json.dumps(r) + "\n" for r in rows))
       _mv_json='{"iid":7,"title":"fix: guard","state":"opened"}'
       [ -n "${STUB_GITLAB_MR_VIEW:-}" ] && _mv_json="$STUB_GITLAB_MR_VIEW"
       _mv_n="$3"
+      # The MR's assignees (#775), one entry per line of its assignee file, as
+      # `issue view` reports them: only when the test keeps assignee state.
+      if [ -n "$(_as_path "$_mv_n")" ]; then
+        _mv_cur=""
+        [ -s "$(_as_path "$_mv_n")" ] && _mv_cur="$(cat "$(_as_path "$_mv_n")")"
+        _mv_json="$(JSON="$_mv_json" CUR="$_mv_cur" python3 -I -c "
+import json, os
+d = json.loads(os.environ['JSON'])
+d['assignees'] = [{'username': u} for u in os.environ['CUR'].splitlines() if u.strip()]
+print(json.dumps(d))
+")"
+      fi
       if [ -n "${STUB_GITLAB_STATE_DIR:-}" ] && [ -s "$STUB_GITLAB_STATE_DIR/labels_$_mv_n" ]; then
         JSON="$_mv_json" LABELS="$STUB_GITLAB_STATE_DIR/labels_$_mv_n" python3 -I -c '
 import json, os
@@ -408,6 +430,7 @@ print(json.dumps(d))
     # glab mr update <n> --label <l>: recorded when STUB_GITLAB_STATE_DIR is set.
     shift 2
     _mu_n="$1" _mu_prev=""
+    _assignee_write "$@"
     for _mu_a in "$@"; do
       case "$_mu_prev" in
         -l|--label) [ -n "${STUB_GITLAB_STATE_DIR:-}" ] && printf '%s\n' "$_mu_a" >> "$STUB_GITLAB_STATE_DIR/labels_$_mu_n" ;;

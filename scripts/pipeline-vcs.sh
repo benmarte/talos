@@ -31,6 +31,13 @@
 #                                             write is confirmed. Every failure is
 #                                             a stderr WARNING + exit 0. github,
 #                                             github-api, gitlab, azure (not file).
+#   assign-pr <n>                             Add the issues.assignee identity to PR/MR
+#                                             <n> next to any other assignee (#775);
+#                                             no write when it is already there. Run
+#                                             by create-pr and before a fix round.
+#                                             azure prints a no-op line (a pull
+#                                             request has no assignee); same WARNING
+#                                             + exit 0 failures as assign-issue.
 #   issue-assignees <n>                       Print issue <n>'s assignee logins, one per
 #                                             line (nothing when unassigned; #560).
 #                                             Exit 1 on a failed read. github,
@@ -2211,22 +2218,8 @@ _vcs_shared_list_needs_owner() {
 #   line on verified success, nothing otherwise.
 _vcs_shared_assign_issue() {
   local n="$1" get_fn="$2" add_fn="$3"; shift 3
-  local want want_lc
-  want="$(cfg issues.assignee)"
-  # Trim leading/trailing whitespace (spaces, tabs, newlines) once, up
-  # front, so "  " is "none" (not a literal identity), "self " is "self",
-  # and a literal identity is never passed to the provider with surrounding
-  # whitespace (#321).
-  want="$(printf '%s' "$want" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-  want_lc="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')"
-  # An explicit empty value means "none" (#305), never "self": clearing the
-  # key is read as switching assignment off, and assigning is a visible
-  # write. It is no longer silent -- one notice, then the "none" path.
-  if [ -z "$want" ]; then
-    echo "pipeline-vcs: assign-issue: issues.assignee is empty -- treating it as 'none' (not assigning); remove the key for 'self'" >&2
-    return 0
-  fi
-  [ "$want_lc" = "none" ] && return 0
+  local want
+  want="$(_vcs_assignee_want assign-issue)" || return 0
 
   case "$n" in
     ''|*[!0-9]*)
@@ -2250,29 +2243,100 @@ _vcs_shared_assign_issue() {
     return 0
   fi
 
+  local id
+  id="$(_vcs_assignee_id assign-issue "$n" "$want" "$@")" || return 0
+  _vcs_assignee_write assign-issue "$n" "$id" "$get_fn" "$add_fn"
+}
+
+# _vcs_assignee_want <verb>
+#   The policy half shared by assign-issue and assign-pr (#775), so the two
+#   cannot drift: prints issues.assignee trimmed of surrounding whitespace
+#   (#321), so "  " is "none" and a literal identity never reaches the
+#   provider padded -- "self", or the identity to assign literally -- and
+#   returns 1 when assignment is off. "none" is off silently; an explicit
+#   empty value is off too (#305), never "self": clearing the key is read as
+#   switching assignment off, with a one-line stderr notice.
+_vcs_assignee_want() {
+  local want
+  want="$(cfg issues.assignee | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  if [ -z "$want" ]; then
+    echo "pipeline-vcs: $1: issues.assignee is empty -- treating it as 'none' (not assigning); remove the key for 'self'" >&2
+    return 1
+  fi
+  [ "$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')" = "none" ] && return 1
+  printf '%s\n' "$want"
+}
+
+# _vcs_assignee_id <verb> <n> <want> [self-resolver-cmd args...]
+#   The identity to assign: <want> itself, or for "self" identity.name (#560)
+#   when it is set -- the login this operator claims under -- else the
+#   authenticated login. Returns 1 with a stderr WARNING when "self" cannot
+#   be resolved.
+_vcs_assignee_id() {
+  local verb="$1" n="$2" want="$3"; shift 3
   local id="$want"
-  if [ "$want_lc" = "self" ]; then
-    # identity.name (#560) is what `self` means when it is set: the login this
-    # operator claims issues under. Otherwise the authenticated login.
+  if [ "$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')" = "self" ]; then
     id="$(cfg identity.name | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
     [ -n "$id" ] || id="$(_vcs_shared_current_user fail-open "$@")"
     if [ -z "$id" ]; then
-      echo "pipeline-vcs: assign-issue: WARNING -- could not resolve the operator identity (issues.assignee: self); #$n left unassigned" >&2
-      return 0
+      echo "pipeline-vcs: $verb: WARNING -- could not resolve the operator identity (issues.assignee: self); #$n left unassigned" >&2
+      return 1
     fi
   fi
+  printf '%s\n' "$id"
+}
 
-  local add_err
+# _vcs_assignee_write <verb> <n> <id> <get-fn> <add-fn>
+#   Add <id>, read the field back, and print "<verb>: #<n> assigned to <id>"
+#   only when the read-back holds it. Every failure is a stderr WARNING and
+#   return 0.
+_vcs_assignee_write() {
+  local verb="$1" n="$2" id="$3" get_fn="$4" add_fn="$5" add_err
   if ! add_err="$("$add_fn" "$n" "$id" 2>&1 >/dev/null)"; then
-    echo "pipeline-vcs: assign-issue: WARNING -- could not assign #$n to '$id': $(printf '%s' "$add_err" | tail -1)" >&2
+    echo "pipeline-vcs: $verb: WARNING -- could not assign #$n to '$id': $(printf '%s' "$add_err" | tail -1)" >&2
     return 0
   fi
   if "$get_fn" "$n" 2>/dev/null | grep -qixF -- "$id"; then
-    echo "assign-issue: #$n assigned to $id"
+    echo "$verb: #$n assigned to $id"
   else
-    echo "pipeline-vcs: assign-issue: WARNING -- '$id' is not #$n's assignee on read-back (not assignable in this project?); left unassigned" >&2
+    echo "pipeline-vcs: $verb: WARNING -- '$id' is not #$n's assignee on read-back (not assignable in this project?); left unassigned" >&2
   fi
   return 0
+}
+
+# _vcs_shared_assign_pr <n> <get-fn> <add-fn> <self-resolver-cmd> [args...]
+#   The assign-pr verb (#775): the same policy and provider calls as
+#   assign-issue, except that a PR with another assignee gains the user next
+#   to them -- <add-fn> adds, never replaces -- and a PR the user is already
+#   on (case-insensitive) makes no write. Every failure is a stderr WARNING
+#   and return 0, so opening or resuming a PR never stops on it.
+_vcs_shared_assign_pr() {
+  local n="$1" get_fn="$2" add_fn="$3"; shift 3
+  local want
+  want="$(_vcs_assignee_want assign-pr)" || return 0
+
+  case "$n" in
+    ''|*[!0-9]*)
+      echo "pipeline-vcs: assign-pr: WARNING -- PR number must be an integer, got '$n'; not assigned" >&2
+      return 0
+      ;;
+  esac
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] assign-pr #$n: read the assignees; unless '$want' is one, add it and read it back"
+    return 0
+  fi
+
+  local current id
+  if ! current="$("$get_fn" "$n" 2>/dev/null)"; then
+    echo "pipeline-vcs: assign-pr: WARNING -- could not read #$n's assignees; leaving them untouched" >&2
+    return 0
+  fi
+  id="$(_vcs_assignee_id assign-pr "$n" "$want" "$@")" || return 0
+  if grep -qixF -- "$id" <<<"$current"; then
+    echo "pipeline-vcs: assign-pr: #$n already assigned to $id" >&2
+    return 0
+  fi
+  _vcs_assignee_write assign-pr "$n" "$id" "$get_fn" "$add_fn"
 }
 
 # _vcs_shared_issue_assignees <n> <get-fn>
@@ -2374,6 +2438,13 @@ print(json.dumps(out))
 # nothing, which _vcs_shared_assign_issue turns into a warning.
 _vcs_issue_number_from_url() {
   printf '%s\n' "$1" | grep -oE '/issues/[0-9]+' | tail -1 | sed 's|.*/||'
+}
+
+# _vcs_mr_number_from_url <create-pr output> -- the <n> of the last
+# ".../merge_requests/<n>" URL in it (glab prints the new MR's URL), or
+# nothing, which _vcs_shared_assign_pr turns into a warning (#775).
+_vcs_mr_number_from_url() {
+  printf '%s\n' "$1" | grep -oE '/merge_requests/[0-9]+' | tail -1 | sed 's|.*/||'
 }
 
 # _vcs_shared_attempt_blocked <verb> <count> <total> <max-count> <max-total> <stage>
@@ -4466,6 +4537,10 @@ _github() {
     assign-issue)
       _vcs_shared_assign_issue "${1:-}" _gh_assignees_get _gh_assignee_add _gh_user_login
       ;;
+    assign-pr)
+      # A PR is an issue on the issues API, so the issue calls serve it (#775).
+      _vcs_shared_assign_pr "${1:-}" _gh_assignees_get _gh_assignee_add _gh_user_login
+      ;;
     current-user)
       _vcs_shared_print_current_user _gh_user_login
       exit $?
@@ -4635,7 +4710,7 @@ print(d.get('html_url') or d.get('url') or d.get('number', ''))
       _gh_board_add_new "$(printf '%s' "$_ci_resp" | _gh_field number 2>/dev/null)" ${label_args[@]+"${label_args[@]}"}
       ;;
     create-pr)
-      local branch="$1" title="$2" body_file="$3" _cp_draft=false _cp_payload
+      local branch="$1" title="$2" body_file="$3" _cp_draft=false _cp_payload _cp_line _cp_n
       [ "$_PR_DRAFT" = "true" ] && _cp_draft=true
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] POST $_GH_API/pulls head=$branch base=${BASE_BRANCH:-<default branch>} title=$title draft=$_cp_draft"; return 0; }
       [ -r "$body_file" ] || { echo "pipeline-vcs: create-pr: cannot read '$body_file'" >&2; exit 1; }
@@ -4650,7 +4725,7 @@ print(json.dumps({"title": sys.argv[1], "head": sys.argv[2], "base": sys.argv[3]
       # (#549) One line, `PR #<n> <url>`: the caller needs no view-pr to learn
       # either. The number is the API's own, else the URL's tail; an answer with
       # neither is a failure, never a guessed PR.
-      _gh_req POST "$_GH_API/pulls" "$_cp_payload" | python3 -I -c '
+      _cp_line="$(_gh_req POST "$_GH_API/pulls" "$_cp_payload" | python3 -I -c '
 import json, re, sys
 try:
     d = json.load(sys.stdin)
@@ -4666,7 +4741,11 @@ if not isinstance(num, int) or isinstance(num, bool):
 if not url or num is None:
     sys.stderr.write("pipeline-vcs: create-pr: the API answer carries no PR number or URL\n")
     sys.exit(1)
-print("PR #%d %s" % (num, url))' || exit 1
+print("PR #%d %s" % (num, url))')" || exit 1
+      printf '%s\n' "$_cp_line"
+      # Assign the new PR (#775) -- stdout stays the one PR line.
+      _cp_n="${_cp_line#PR #}"
+      _vcs_shared_assign_pr "${_cp_n%% *}" _gh_assignees_get _gh_assignee_add _gh_user_login >&2
       ;;
     ready-pr|draft-pr)
       # (#332) GraphQL is the one thing REST cannot do here: a PR's draft state
@@ -5300,6 +5379,21 @@ for a in json.load(sys.stdin).get('assignees') or []:
   _gl_assignee_remove() {
     glab issue update "$1" --assignee "!$2" $RARG
   }
+  # The same two calls on a merge request (#775): `mr view --output json`
+  # carries `assignees` as [{username, ...}], and `mr update --assignee +<u>`
+  # adds without replacing.
+  _gl_mr_assignees_get() {
+    local _ag_json
+    _ag_json="$(glab mr view "$1" --output json $RARG)" || return 1
+    printf '%s' "$_ag_json" | python3 -I -c "
+import json, sys
+for a in json.load(sys.stdin).get('assignees') or []:
+    print(a.get('username', ''))
+"
+  }
+  _gl_mr_assignee_add() {
+    glab mr update "$1" --assignee "+$2" $RARG
+  }
   _gl_current_user() {
     glab api user | python3 -I -c "import json, sys; print(json.load(sys.stdin).get('username', ''))"
   }
@@ -5583,6 +5677,9 @@ print(json.dumps(out))
     assign-issue)
       _vcs_shared_assign_issue "${1:-}" _gl_assignees_get _gl_assignee_add _gl_current_user
       ;;
+    assign-pr)
+      _vcs_shared_assign_pr "${1:-}" _gl_mr_assignees_get _gl_mr_assignee_add _gl_current_user
+      ;;
     current-user)
       _vcs_shared_print_current_user _gl_current_user
       exit $?
@@ -5711,8 +5808,18 @@ print(json.dumps(d))
       local branch="$1" title="$2" body_file="$3"
       [ -z "$BASE_BRANCH" ] && BASE_BRANCH="$(glab repo view --format='%{default_branch}' 2>/dev/null || echo main)"
       local _draft_arg=""; [ "$_PR_DRAFT" = "true" ] && _draft_arg="--draft"
-      _run glab mr create --head "$branch" --target-branch "$BASE_BRANCH" \
-        --title "$title" --description "$(cat "$body_file")" $RARG $_draft_arg
+      if [ "$DRY_RUN" = "true" ]; then
+        _run glab mr create --head "$branch" --target-branch "$BASE_BRANCH" \
+          --title "$title" --description "$(cat "$body_file")" $RARG $_draft_arg
+        return 0
+      fi
+      local _cp_url
+      _cp_url="$(glab mr create --head "$branch" --target-branch "$BASE_BRANCH" \
+        --title "$title" --description "$(cat "$body_file")" $RARG $_draft_arg)" || return
+      [ -n "$_cp_url" ] && printf '%s\n' "$_cp_url"
+      # Assign the new MR (#775) -- stdout stays glab's own output.
+      _vcs_shared_assign_pr "$(_vcs_mr_number_from_url "$_cp_url")" \
+        _gl_mr_assignees_get _gl_mr_assignee_add _gl_current_user >&2
       ;;
     ready-pr|draft-pr)
       # (#332) `glab mr update <n> --ready|--draft`.
@@ -7158,6 +7265,18 @@ json.dump({"headRefOid": sha,
       _vcs_shared_assign_issue "${1:-}" _az_assignee_get _az_assignee_set \
         az account show --query user.name --output tsv
       ;;
+    assign-pr)
+      # An ADO pull request has no assignee field and its creator is the
+      # signed-in account, so there is nothing to write (#775). issues.assignee
+      # none (or empty) still switches the line off, as everywhere else.
+      _vcs_assignee_want assign-pr >/dev/null || return 0
+      case "${1:-}" in
+        ''|*[!0-9]*)
+          echo "pipeline-vcs: assign-pr: WARNING -- PR number must be an integer, got '${1:-}'; not assigned" >&2
+          ;;
+        *) echo "assign-pr: #$1 azure pull requests have no assignee; the creator is the account user" ;;
+      esac
+      ;;
     current-user)
       _vcs_shared_print_current_user az account show --query user.name --output tsv
       exit $?
@@ -8188,6 +8307,10 @@ _file() {
     current-user)
       # No identity in file mode: nothing printed, exit 1 (not resolved).
       exit 1
+      ;;
+    assign-pr) # PARITY-EXCEPTION: local-only by design (no PRs)
+      echo "file mode: assign-pr not applicable — no PRs in file mode" >&2
+      return 0
       ;;
     issue-assignees|unassign-issue|list-assignees)
       # No assignees in file mode (#560): exit 2, nothing on stdout.

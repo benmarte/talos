@@ -72,7 +72,7 @@ export STUB_PR_COMMENTS_JSON="[{\"body\":\"<!-- talos:approval sha=${SHA_GH} rol
 # queued, and resolves to the stub's default login, so the assignee write
 # follows: POST assignees + read-back, #455) label-issue(POST labels)
 # view-issue--spec(meta+comments)
-# create-pr(1) post-approval(pr-head, dup-check comments, comment-pr POST
+# create-pr(1 + the #775 assign-pr: assignee read, write, read-back) post-approval(pr-head, dup-check comments, comment-pr POST
 # [its state check is the PR pr-head read: the pass shares its reads, #554],
 # label-pr POST, then PR + comments once, which label-pr's missing-marker
 # check and the self-check, check-approval-sha, share)
@@ -89,6 +89,9 @@ printf '%s\n' \
   '{"title":"canary","body":"canary run body","labels":[]}' \
   '[]' \
   '{"html_url":"https://github.com/acme/widget-canary/pull/402"}' \
+  '{"number":402,"assignees":[]}' \
+  '{}' \
+  '{"number":402,"assignees":[{"login":"talos-test-bot"}]}' \
   "{\"head\":{\"sha\":\"${SHA_API}\"},\"state\":\"open\",\"merged_at\":null}" \
   '[]' \
   '{"id":900,"html_url":"https://github.com/acme/widget-canary/pull/402#issuecomment-900"}' \
