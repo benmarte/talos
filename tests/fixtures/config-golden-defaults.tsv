@@ -128,6 +128,7 @@ vcs.provider	github	table	bootstrap-board.sh,setup/SKILL.md,pipeline-status.sh,p
 vcs.repo		empty	pipeline-board-shared.sh,pipeline-hooks.sh,pipeline-status.sh,pipeline-vcs.sh
 vcs.token_env		empty	bootstrap-board.sh,pipeline-status.sh,pipeline-vcs.sh
 verify		empty	pipeline-verify.sh
+verify.ci_requeue_stuck	true	table	pipeline-vcs.sh
 verify.ci_wait_s	900	table	docs
 verify.qa_mode	local	table	pipeline/SKILL.md
 verify.targeted	true	table	docs

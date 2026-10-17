@@ -357,6 +357,7 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `verify.e2e` | str | - | - | repo |
 | `verify.ready` | list | - | - | repo |
 | `verify.ci_wait_s` | int | `900` | - | any |
+| `verify.ci_requeue_stuck` | bool | `true` | - | any |
 | `verify.timeout_ms` | int | `600000` | - | any |
 
 #### merge.*
@@ -980,6 +981,7 @@ An unreadable gate answers `stop reason=<r>` (fail closed). Gates 3 and 4 set `p
 | `verify.ready` | none | Shell commands `qa-run` runs in order, one at a time, from the repo root through `pipeline-verify.sh` (so `verify.timeout_ms` applies), before every run of the `Tests:` files: the head run, the flaky re-run, the red run (after the checkout of the red commit) and the frozen run. Use it to make the environment fit to test, for example to restart or reload the dev server and wait until it answers, so a checkout that restarts the app does not fail the criterion. Repo file only; the commands are never read from the spec or the issue, and Talos does not retry them. The first one to exit non-zero ends the run as `qa-run: verdict BLOCKED environment: <cmd> exited <N>` ([Criteria first](#criteria-first)). Empty or absent: nothing runs. |
 | `verify.qa_mode` | derived | `ci` when `merge.required_checks` is non-empty, else `local`. Explicit `ci` with no required checks becomes `local` (stderr warning). Repo file only. |
 | `verify.ci_wait_s` | `900` | CI wait budget, 1 to 86400 s |
+| `verify.ci_requeue_stuck` | `true` | Azure only. `pr-checks-required` requeues a Build policy evaluation that is `queued` with no build attached, once per PR, evaluation and source commit, then reports it `stuck` (exit 1) on the next read so the driver stops waiting. `false`: a stuck evaluation stays plain pending. |
 | `verify.timeout_ms` | `600000` | Foreground timeout for each verify and CI-wait call, 1 to 86400000. The claude harness stops a foreground command at 600000 ms, so under the claude runner the stage prompts state `min(verify.timeout_ms, 600000)` and `talos.sh prompt` warns on stderr when the configured value is over the cap; other runners get it unchanged. A suite that needs longer goes in several `verify.commands` (for example `bash tests/run-tests.sh --quiet --shard 1/4` to `4/4`) or `qa_mode: ci`. Shards are balanced on `tests/timings.txt`, so a new `tests/test-*.sh` needs an entry there (`bash tests/update-timings.sh`); `tests/test-shard-weights.sh` fails without one |
 
 - Verify runs in the foreground only, through `scripts/pipeline-verify.sh [--issue N] [--worktree P] [-- cmd]`, which exports the stage identity and prints `talos:verify issue=.. worktree=..`.

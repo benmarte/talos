@@ -6515,7 +6515,8 @@ if not isinstance(d, list) or not all(isinstance(r, dict) for r in d):
     printf '%s' "$_azpp_json"
   }
   # PR <id>'s policy evaluations for pr-checks-required (#328), printed as
-  # {"source": <the PR's lastMergeSourceCommit id, or "">, "records": [...]}.
+  # {"source": <the PR's lastMergeSourceCommit id, or "">, "project": <the
+  # project id>, "records": [...]}.
   # `az repos pr policy list` has no includeNotApplicable flag, so this is
   # the REST call (Policy - Evaluations - List, api-version 7.1-preview.1):
   # GET {org}/{projectId}/_apis/policy/evaluations?artifactId=vstfs:///
@@ -6553,8 +6554,8 @@ import json, sys
 v = json.load(sys.stdin)["value"]
 if not isinstance(v, list) or not all(isinstance(r, dict) for r in v) or len(v) >= 1000:
     sys.exit(1)
-print(json.dumps({"source": sys.argv[1], "records": v}))
-' "${_azpe_meta#* }" 2>/dev/null || {
+print(json.dumps({"source": sys.argv[1], "project": sys.argv[2], "records": v}))
+' "${_azpe_meta#* }" "$_azpe_proj" 2>/dev/null || {
       echo "pipeline-vcs: $VERB: could not parse the policies of PR #$1 (not a list of evaluations, or a full page of 1000 that may be truncated)" >&2
       return 1; }
   }
@@ -7906,7 +7907,18 @@ for r in builds:
       # (configuration.isBlocking true) stand in for the list, named by
       # display name, else evaluationId; none at all is pending (exit 2),
       # never a pass. Any fetch or parse failure exits 1.
-      local n="${1:-}" _required _azpc_json _azpc_norm _azpc_fallback=""
+      # Stuck policy (#764): a Build evaluation that feeds the verdict and is
+      # queued with no context.buildId never started a build. The first read
+      # requeues it (PATCH .../policy/evaluations/<id>, api-version
+      # 7.1-preview.1) and still reports it pending; the once-state is a
+      # marker file <state dir>/azure-requeue/pr<N>-<evaluationId>-<source
+      # commit>, written only after the PATCH succeeds (a new push gets its
+      # own requeue). A later read that finds the marker sends no PATCH and
+      # counts the check as failed (`stuck: <name>`, exit 1), so the driver
+      # stops waiting. verify.ci_requeue_stuck false, or no resolvable state
+      # dir, leaves it plain pending; a failed PATCH exits 1, no marker.
+      local n="${1:-}" _required _azpc_json _azpc_norm _azpc_fallback="" _azpc_py
+      local _azpc_stuck _azpc_hdr _azpc_proj _azpc_src _azpc_sd _azpc_id _azpc_name _azpc_marker _azpc_org _azpc_fail=""
       _az_require_id pr-checks-required "$n" || exit 1
       _required="$(cfg merge.required_checks)"
       if [ "$DRY_RUN" = "true" ]; then
@@ -7915,11 +7927,25 @@ for r in builds:
       fi
       [ -z "$_required" ] && _azpc_fallback=1
       _azpc_json="$(_az_pr_evaluations "$n")" || exit 1
-      _azpc_norm="$(printf '%s' "$_azpc_json" | python3 -I -c '
-import json, sys
+      # One script, two modes: argv[3] is the newline-separated ids of stuck
+      # evaluations already requeued once (they count as failed), argv[4]
+      # "stuck" prints "<project>\t<source>" and then "<id>\t<name>" for each
+      # stuck evaluation that feeds the verdict, instead of the verdicts.
+      IFS= read -r -d '' _azpc_py <<'TALOS_hQ4vNz8cXp1Rw' || true
+import json, re, sys
+BUILD = "0609b952-1397-4640-95ec-e00a01b2c241"
+GUID = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 STATUS = {"approved": "pass", "notapplicable": "pass", "rejected": "fail",
           "broken": "fail", "queued": "pending", "running": "pending"}
 RANK = {"pass": 0, "pending": 1, "fail": 2}
+def is_stuck(r):
+    if str(((r.get("configuration") or {}).get("type") or {}).get("id")).lower() != BUILD:
+        return False
+    if str(r.get("status")).lower() != "queued":
+        return False
+    ctx = r.get("context")
+    bid = ctx.get("buildId") if isinstance(ctx, dict) else None
+    return (bid is None or str(bid).strip() == "") and bool(GUID.fullmatch(str(r.get("evaluationId"))))
 def out_of_date(r, source):
     ctx = r.get("context")
     if not isinstance(ctx, dict):
@@ -7930,6 +7956,11 @@ def out_of_date(r, source):
     return seen is not None and str(seen).lower() != source.lower()
 d = json.load(sys.stdin)
 fallback = sys.argv[2] == "1"
+failed_ids = set(sys.argv[3].split())
+stuck_mode = sys.argv[4] == "stuck"
+wanted = {x.strip().casefold() for x in sys.argv[1].splitlines() if x.strip()}
+if stuck_mode:
+    print(d["project"] + "\t" + d["source"])
 worst = {}
 shown = {}
 for r in d["records"]:
@@ -7944,11 +7975,17 @@ for r in d["records"]:
         continue
     name = " ".join(name.split())
     key = name.casefold()
+    if stuck_mode:
+        if is_stuck(r) and (fallback or key in wanted):
+            print(r["evaluationId"] + "\t" + name)
+        continue
     shown.setdefault(key, name)
     raw = str(r.get("status")).lower()
     status = STATUS.get(raw, "fail")
     if raw == "approved" and out_of_date(r, d["source"]):
         status = "pending"
+    if r.get("evaluationId") in failed_ids:
+        status = "fail"
     if RANK[status] >= RANK[worst.get(key, "pass")]:
         worst[key] = status
 if fallback:
@@ -7959,7 +7996,36 @@ for req in sys.argv[1].splitlines():
     req = req.strip()
     if req and req.casefold() in worst:
         print(req + "\t" + worst[req.casefold()])
-' "$_required" "$_azpc_fallback" 2>/dev/null)" || {
+TALOS_hQ4vNz8cXp1Rw
+      if [ "$(cfg verify.ci_requeue_stuck | tr '[:upper:]' '[:lower:]')" != "false" ]; then
+        . "$SCRIPT_DIR/pipeline-paths.sh"
+        _azpc_sd="$(_talos_state_dir 2>/dev/null)" || _azpc_sd=""
+        _azpc_stuck="$(printf '%s' "$_azpc_json" | python3 -I -c "$_azpc_py" "$_required" "$_azpc_fallback" "" stuck 2>/dev/null)" || {
+          echo "pipeline-vcs: pr-checks-required: could not parse the policies of PR #$n" >&2; exit 1; }
+        _azpc_hdr="$(printf '%s\n' "$_azpc_stuck" | sed -n 1p)"
+        _azpc_proj="${_azpc_hdr%%$'\t'*}"
+        _azpc_src="${_azpc_hdr#*$'\t'}"
+        # No state dir: no marker could be kept, so never requeue (no loop).
+        [ -n "$_azpc_sd" ] || _azpc_stuck=""
+        while IFS=$'\t' read -r _azpc_id _azpc_name; do
+          [ -n "$_azpc_id" ] || continue
+          _azpc_marker="$_azpc_sd/azure-requeue/pr$n-$_azpc_id-$_azpc_src"
+          if [ -f "$_azpc_marker" ]; then
+            echo "pr-checks-required: stuck: $_azpc_name (queued without a build after one requeue)" >&2
+            _azpc_fail="$_azpc_fail $_azpc_id"
+            continue
+          fi
+          _azpc_org="$(_azure_org)" || {
+            echo "pipeline-vcs: pr-checks-required: needs the organization (vcs.azure.org_url)" >&2; exit 1; }
+          az rest --method patch --resource "$ADO_RESOURCE" \
+            --url "$_azpc_org/$_azpc_proj/_apis/policy/evaluations/$_azpc_id?api-version=7.1-preview.1" >/dev/null || {
+            echo "pipeline-vcs: pr-checks-required: requeue of policy evaluation $_azpc_id failed" >&2; exit 1; }
+          mkdir -p "$_azpc_sd/azure-requeue" && : > "$_azpc_marker" || {
+            echo "pipeline-vcs: pr-checks-required: could not record the requeue of policy evaluation $_azpc_id" >&2; exit 1; }
+          echo "pr-checks-required: requeued stuck policy evaluation $_azpc_id ($_azpc_name)" >&2
+        done < <(printf '%s\n' "$_azpc_stuck" | sed 1d)
+      fi
+      _azpc_norm="$(printf '%s' "$_azpc_json" | python3 -I -c "$_azpc_py" "$_required" "$_azpc_fallback" "$_azpc_fail" "" 2>/dev/null)" || {
         echo "pipeline-vcs: pr-checks-required: could not parse the policies of PR #$n" >&2; exit 1; }
       if [ -n "$_azpc_fallback" ]; then
         if [ -z "$_azpc_norm" ]; then

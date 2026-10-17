@@ -50,6 +50,10 @@ case "$args" in
   "rest "*"/pullRequests/"*"/iterations?"*)
     [ "${STUB_AZURE_PR_ITERATIONS_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found."
     if [ -n "${STUB_AZURE_PR_ITERATIONS:-}" ]; then printf '%s\n' "$STUB_AZURE_PR_ITERATIONS"; exit 0; fi ;;
+  "rest --method patch "*"/_apis/policy/evaluations/"*)
+    # pr-checks-required requeue (#764): STUB_AZURE_REQUEUE_FAIL=1 makes it fail.
+    [ "${STUB_AZURE_REQUEUE_FAIL:-}" = "1" ] && _stub_fail "TF401027: You need the Policy 'Manage' permission."
+    printf '{}\n'; exit 0 ;;
   "rest "*"/_apis/policy/evaluations?"*)
     # pr-checks-required (#328): STUB_AZURE_PR_EVALUATIONS is the raw REST
     # body ({"count": n, "value": [records...]}).
