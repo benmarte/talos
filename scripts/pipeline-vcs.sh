@@ -168,10 +168,12 @@
 #                                             whether they need the full diff at
 #                                             all (#201). Derived from the same
 #                                             paginated PR-files endpoint pr-files
-#                                             (#200) uses. GitHub only
-#                                             (github/github-api parity); other
-#                                             providers print the full diff (flag
-#                                             ignored).
+#                                             (#200) uses; gitlab counts the +/-
+#                                             lines of the MR diffs, azure converts
+#                                             `git diff --numstat` (#766). Same
+#                                             output on all three; the file
+#                                             provider has no PRs. There is no
+#                                             --files flag: use pr-files.
 #   checkout-pr <n>                           Check out PR branch locally
 #   approve-pr <n> <body>                     Approve a PR with a comment
 #              <n> --body-file <path|->       ...or read the comment from a file / stdin
@@ -295,9 +297,13 @@
 #                                             output when conflicting, exit 0 with no
 #                                             output when clean, exit 2 when it cannot
 #                                             be determined (fetch/worktree failure).
-#                                             GitHub only (github/github-api parity),
-#                                             backed by one shared implementation
-#                                             (same pattern as has-spec/post-approval).
+#                                             github, gitlab and azure (#766), backed
+#                                             by one shared implementation (same
+#                                             pattern as has-spec/post-approval): the
+#                                             head comes from refs/pull/<n>/head,
+#                                             refs/merge-requests/<n>/head, or the
+#                                             PR's source branch on azure. `file`
+#                                             exits 1 (no PRs).
 #                                             Used by the Step 3c mergeability gate to
 #                                             decide whether a CONFLICTING PR qualifies
 #                                             for pipeline-mergebase.sh's mechanical
@@ -3668,7 +3674,7 @@ _vcs_shared_pr_mergeable() {
   return 2
 }
 
-# _vcs_shared_conflict_files <pr-number> <base-branch>
+# _vcs_shared_conflict_files <pr-number> <base-branch> [<head-ref>]
 #   (#256) Provider-agnostic conflict detection for the Step 3c mergeability
 #   gate: is a CONFLICTING PR's only conflict something mechanical (e.g.
 #   CHANGELOG.md) that pipeline-mergebase.sh can resolve without a developer
@@ -3676,7 +3682,9 @@ _vcs_shared_pr_mergeable() {
 #   `refs/pull/<n>/head` ref -- a plain git ref exposed for every PR
 #   regardless of gh-CLI vs REST auth, so this needs no adapter-specific API
 #   call; `_github` calls this directly with just the PR number and its
-#   resolved base branch.
+#   resolved base branch. <head-ref> (#766) is the ref to fetch the head from
+#   when it is not GitHub's: gitlab passes `refs/merge-requests/<iid>/head`,
+#   azure `refs/heads/<source branch>`.
 #
 #   The actual merge attempt runs in a throwaway DETACHED worktree created
 #   OUTSIDE the caller's own checkout (mktemp -d under ${TMPDIR:-/tmp}) --
@@ -3701,7 +3709,7 @@ _vcs_shared_pr_mergeable() {
 #               merge/worktree machinery itself failed for a reason other
 #               than a content conflict.
 _vcs_shared_conflict_files() {
-  local pr_n="$1" base="$2"
+  local pr_n="$1" base="$2" head_ref="${3:-refs/pull/$1/head}"
   if [ -z "$pr_n" ] || [ -z "$base" ]; then
     echo "pipeline-vcs: conflict-files: missing PR number or base branch" >&2
     return 2
@@ -3715,8 +3723,8 @@ _vcs_shared_conflict_files() {
     echo "pipeline-vcs: conflict-files: origin/$base does not resolve after fetch" >&2
     return 2
   fi
-  if ! git fetch -q origin "refs/pull/$pr_n/head" 2>/dev/null; then
-    echo "pipeline-vcs: conflict-files: git fetch origin refs/pull/$pr_n/head failed" >&2
+  if ! git fetch -q origin "$head_ref" 2>/dev/null; then
+    echo "pipeline-vcs: conflict-files: git fetch origin $head_ref failed" >&2
     return 2
   fi
   local pr_head
@@ -5517,16 +5525,48 @@ json.dump({"headRefOid": sha,
   # empty/unparseable response -- never a short or empty "no files" list.
   # GitLab itself truncates MRs above its instance diff limits.
   _gl_pr_files() {
-    local _raw
-    _raw="$(glab api --paginate "projects/$(_gl_api_project)/merge_requests/$1/diffs?per_page=100")" || return 1
-    [ -n "$_raw" ] || return 1
+    local _diffs
+    _diffs="$(_gl_mr_diffs "$1")" || return 1
     # Strict parse: an entry without new_path (e.g. an error object) is a
     # failure, not an MR with no files -- raises before anything is printed.
-    printf '%s' "$_raw" | _gh_paginate_merge | python3 -I -c '
+    printf '%s' "$_diffs" | python3 -I -c '
 import json, sys
 paths = [d["new_path"] for d in json.load(sys.stdin)]
 for p in paths:
     print(p)
+' 2>/dev/null
+  }
+  # MR <iid>'s diffs (#766), every page merged into one JSON array; the fetch
+  # _gl_pr_files and `diff-pr --stat` share. Non-zero with no stdout on an API
+  # failure or an empty response.
+  _gl_mr_diffs() {
+    local _raw
+    _raw="$(glab api --paginate "projects/$(_gl_api_project)/merge_requests/$1/diffs?per_page=100")" || return 1
+    [ -n "$_raw" ] || return 1
+    printf '%s' "$_raw" | _gh_paginate_merge
+  }
+  # MR <iid>'s per-file additions and deletions in _diff_stat_format's input
+  # shape (#766): the +/- lines of each file's hunks (the diff field has no
+  # ---/+++ header, so a deleted line starting `--` still counts), path =
+  # new_path. Strict like _gl_pr_files: an entry without new_path fails.
+  _gl_pr_stat_json() {
+    local _diffs
+    _diffs="$(_gl_mr_diffs "$1")" || return 1
+    printf '%s' "$_diffs" | python3 -I -c '
+import json, sys
+out = []
+for d in json.load(sys.stdin):
+    add = dele = 0
+    in_hunk = False
+    for line in (d.get("diff") or "").split("\n"):
+        if line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and line.startswith("+"):
+            add += 1
+        elif in_hunk and line.startswith("-"):
+            dele += 1
+    out.append({"filename": d["new_path"], "additions": add, "deletions": dele})
+print(json.dumps(out))
 ' 2>/dev/null
   }
 
@@ -5834,7 +5874,22 @@ print((d.get('sha') or (d.get('diff_refs') or {}).get('head_sha') or '').lower()
       printf '%s\n' "$_glp_out" | _gl_normalise prs || exit 1
       ;;
     diff-pr)
-      _run glab mr diff "$1" $RARG
+      local _dp_stat=false _dp_json _dp_n="$1"
+      [ "${2:-}" = "--stat" ] && _dp_stat=true
+      if [ "$_dp_stat" = "true" ]; then
+        _gl_require_iid diff-pr "$_dp_n" || exit 1
+        if [ "$DRY_RUN" = "true" ]; then
+          echo "[dry-run] glab api --paginate projects/$(_gl_api_project)/merge_requests/$_dp_n/diffs?per_page=100 | git-diff-stat-style summary"
+          return 0
+        fi
+        _dp_json="$(_gl_pr_stat_json "$_dp_n")" || {
+          echo "pipeline-vcs: diff-pr: could not fetch the diffs of MR !$_dp_n" >&2
+          exit 1
+        }
+        printf '%s' "$_dp_json" | _diff_stat_format
+        return
+      fi
+      _run glab mr diff "$_dp_n" $RARG
       ;;
     checkout-pr)
       _run glab mr checkout "$1" $RARG
@@ -6577,6 +6632,29 @@ for r in json.load(sys.stdin).get("relations") or []:
         if pid.isdigit():
             print(pid)
 ' 2>/dev/null
+  }
+  # `git diff --numstat <range>` as _diff_stat_format's input (#766). -z keeps
+  # paths unquoted and gives a rename as `<a>\t<d>\t\0<old>\0<new>\0`, so it
+  # shows under its new path; a binary file's `-` counts become 0.
+  # Non-zero with no stdout when git fails.
+  _az_numstat_json() {
+    python3 -I -c '
+import json, subprocess, sys
+r = subprocess.run(["git", "diff", "--numstat", "-z", sys.argv[1]], capture_output=True)
+if r.returncode != 0:
+    sys.exit(1)
+num = lambda v: 0 if v == "-" else int(v)
+parts = r.stdout.decode("utf-8", "surrogateescape").split("\0")
+out, i = [], 0
+while i < len(parts) and parts[i]:
+    add, dele, path = parts[i].split("\t", 2)
+    i += 1
+    if not path:
+        path = parts[i + 1]
+        i += 2
+    out.append({"filename": path, "additions": num(add), "deletions": num(dele)})
+print(json.dumps(out))
+' "$1"
   }
   # PR <id>'s changed paths, one per line without ADO's leading "/" (#304):
   # the last iteration's changes against the common commit ($compareTo
@@ -7506,10 +7584,26 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
       tgt="$(az repos pr show --id "$n" $ORG_ARG --query targetRefName -o tsv 2>/dev/null | sed 's|refs/heads/||')"
       [ -z "$tgt" ] && tgt="${BASE_BRANCH:-main}"
       if [ -z "$src" ]; then echo "pipeline-vcs: could not resolve PR #$n source branch" >&2; return 1; fi
+      local _dp_stat=false
+      [ "${2:-}" = "--stat" ] && _dp_stat=true
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] git fetch origin $tgt $src && git diff origin/$tgt...origin/$src"; return 0
+        if [ "$_dp_stat" = "true" ]; then
+          echo "[dry-run] git fetch origin $tgt $src && git diff --numstat origin/$tgt...origin/$src | git-diff-stat-style summary"
+        else
+          echo "[dry-run] git fetch origin $tgt $src && git diff origin/$tgt...origin/$src"
+        fi
+        return 0
       fi
       git fetch -q origin "$tgt" "$src" 2>/dev/null
+      if [ "$_dp_stat" = "true" ]; then
+        local _dp_json
+        _dp_json="$(_az_numstat_json "origin/$tgt...origin/$src")" || {
+          echo "pipeline-vcs: diff-pr: git diff --numstat origin/$tgt...origin/$src failed" >&2
+          return 1
+        }
+        printf '%s' "$_dp_json" | _diff_stat_format
+        return
+      fi
       git diff "origin/$tgt...origin/$src"
       ;;
     checkout-pr)
@@ -9385,16 +9479,20 @@ print('none')
 fi
 
 # ── conflict-files: mechanical-merge eligibility check (#256) ────────────────
-# GitHub-only (github and github-api providers), single shared implementation
-# -- see _vcs_shared_conflict_files's header comment. Same top-level-gated-
-# block shape as has-spec/post-approval above (a verb backed by one shared
-# helper, reachable from both providers without duplicating a case arm into
-# each provider's own dispatch function).
+# github, gitlab and azure share one implementation -- see
+# _vcs_shared_conflict_files's header comment; only the ref the PR head is
+# fetched from differs. Same top-level-gated-block shape as has-spec/
+# post-approval above (a verb backed by one shared helper, reachable from every
+# provider without duplicating a case arm into each provider's own dispatch
+# function).
 if [ "$VERB" = "conflict-files" ]; then
-  if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ]; then
-    echo "pipeline-vcs: conflict-files: not implemented for provider '$PROVIDER'" >&2
-    exit 1
-  fi
+  case "$PROVIDER" in
+    github|github-api|gitlab|azure) ;;
+    *)
+      echo "pipeline-vcs: conflict-files: not implemented for provider '$PROVIDER'" >&2
+      exit 1
+      ;;
+  esac
   _cf_n="${ARGS[0]:-}"
   if [ -z "$_cf_n" ]; then
     echo "pipeline-vcs: conflict-files: missing PR number" >&2
@@ -9415,13 +9513,28 @@ if [ "$VERB" = "conflict-files" ]; then
   fi
   [ -z "$_cf_base" ] && _cf_base="main"
 
+  # The ref the PR head is fetched from. azure has no per-PR ref: it is the
+  # source branch, resolved as azure diff-pr does (exit 2 when it is not).
+  case "$PROVIDER" in
+    gitlab) _cf_ref="refs/merge-requests/$_cf_n/head" ;;
+    azure)
+      _cf_src="$(az repos pr show --id "$_cf_n" ${AZURE_ORG:+--org "$AZURE_ORG"} --query sourceRefName -o tsv 2>/dev/null | sed 's|refs/heads/||')"
+      if [ -z "$_cf_src" ]; then
+        echo "pipeline-vcs: conflict-files: could not resolve PR #$_cf_n source branch" >&2
+        exit 2
+      fi
+      _cf_ref="refs/heads/$_cf_src"
+      ;;
+    *) _cf_ref="refs/pull/$_cf_n/head" ;;
+  esac
+
   if [ "$DRY_RUN" = "true" ]; then
-    printf '[dry-run] conflict-files: git fetch origin refs/pull/%s/head %s; attempt a throwaway merge in a detached temp worktree; print conflicting paths\n' \
-      "$_cf_n" "$_cf_base"
+    printf '[dry-run] conflict-files: git fetch origin %s %s; attempt a throwaway merge in a detached temp worktree; print conflicting paths\n' \
+      "$_cf_ref" "$_cf_base"
     exit 0
   fi
 
-  _vcs_shared_conflict_files "$_cf_n" "$_cf_base"
+  _vcs_shared_conflict_files "$_cf_n" "$_cf_base" "$_cf_ref"
   exit $?
 fi
 

@@ -75,11 +75,13 @@
 3 test-config-unknown-keys.sh
 8 test-config-user-layer.sh
 10 test-config.sh
+5 test-conflict-files-gitlab-azure-766.sh
 5 test-conflict-files.sh
 3 test-context-budget.sh
 1 test-contract.sh
 2 test-criteria-first.sh
 6 test-criteria-same-715.sh
+4 test-diff-pr-stat-gitlab-azure-766.sh
 2 test-docs-149-config-examples.sh
 0 test-docs-662-release-gaps.sh
 0 test-docs-667-prose-audit.sh

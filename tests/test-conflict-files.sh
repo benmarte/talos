@@ -176,7 +176,7 @@ assert_file_absent "$_lock_dir" "conflict-files: lock dir is released, not left 
 
 # ── (h) unsupported provider -> exit 1 ──────────────────────────────────────
 cat > talos.pipeline.json <<EOF
-{"vcs": {"provider": "gitlab"}, "base_branch": "main"}
+{"vcs": {"provider": "file"}, "base_branch": "main"}
 EOF
 out="$(bash "$VCS" conflict-files 42 2>&1)"; rc=$?
 assert_eq "1" "$rc" "conflict-files: exits 1 for an unsupported provider"
