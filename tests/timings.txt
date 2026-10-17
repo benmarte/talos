@@ -30,6 +30,7 @@
 5 test-azure-repo-name.sh
 18 test-azure-view-issue-comments.sh
 9 test-azure-wi-line-breaks.sh
+7 test-azure-write-verbs-quiet-783.sh
 27 test-bare-path-guard-721.sh
 1 test-bash3-lint.sh
 0 test-blocked-label-ownership.sh
