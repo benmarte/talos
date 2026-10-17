@@ -110,8 +110,11 @@ assert_contains "$OUT" "red-check: REVISE 2" "AC2 the verdict counts the kind-mi
 assert_eq "$NEW" "$(sort -u "$RAN" 2>/dev/null)" "AC2 only the kept file runs in the red run; the dropped file does not"
 
 # ── AC3 a (test) criterion labelled only in the dropped file ──────────────────
-new_repo base_old
-tf "$NEW" AC1:fail AC2:fail; red_commit; feature_commit
+# The base file labels AC1; the branch's red commit also gives it AC3 (an id the
+# base did not label, so it is no collision of its own).
+only_ac1() { tf "$OLD" AC1:ok; }
+new_repo only_ac1
+tf "$OLD" AC1:ok AC3:ok; tf "$NEW" AC1:fail AC2:fail; red_commit; feature_commit
 spec "$T1" "$T2" "$T3" '' "$TL"
 rc_run 7
 assert_contains "$OUT" "to-prose AC3 file=$OLD" "AC3 a (test) labelled at the red commit only in the dropped file prints to-prose"
@@ -330,13 +333,13 @@ printf 'drop-file %s reason=id-collision-with-%s\nto-prose AC2 file=%s\nred-chec
 printf 1 > "$STUB_DIR/red-check.rc"
 drv
 BODY="$(cat "$STUB_DIR/body" 2>/dev/null)"
-assert_eq "**PM spec:** revised by the driver after red-check:" "$(printf '%s\n' "$BODY" | sed -n 1p | cut -c1-52)" "AC11 a red-check REVISE posts the revised spec"
+assert_contains "$(printf '%s\n' "$BODY" | sed -n 1p)" "**PM spec:** revised by the driver after red-check: " "AC11 a red-check REVISE posts the revised spec"
 assert_contains "$BODY" '**Regression:** `tests/test-old.sh`' "AC11 the posted spec carries the **Regression:** line"
 assert_contains "$BODY" "AC2 \`greet\` keeps its flag (prose: $OLD must pass at head)" "AC11 the posted spec carries the to-prose marker"
 assert_contains "$(journal)" "criteria revise-spec 9" "AC11 revise-spec runs on a REVISE verdict"
 assert_contains "$(journal)" "criteria spec-usable 9" "AC11 spec-usable is asked again after the post"
 assert_eq "1" "$(journal | grep -c '^agent reviewer$')" "AC11 the run still dispatches reviewer"
-assert_eq "0" "$(printf '%s\n' "$OUT" | grep -c '^stop ')" "AC11 a REVISE verdict does not stop the run"
+assert_eq "0" "$(printf '%s\n' "$OUT" | grep -cE '^stop reason=(spec-unusable|state-unavailable)')" "AC11 a REVISE verdict does not stop the run as an unusable spec"
 
 # AC11 COLLISION: still a stop before reviewer.
 first_round

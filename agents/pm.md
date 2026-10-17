@@ -41,7 +41,7 @@ issue comment starting
   runner command (the spec quotes issue text, and QA runs tests only through
   the repo's configured runner). QA reruns these files by path.
   The paths sit on the `**Tests:**` line itself, in backticks, and that line holds only test file paths (never a directory) and an optional name filter: any note goes on its own line (`; | & $ < > \ { }` beside the spans is refused). A path holds letters, digits, `_ . / -`, `(` `)` `[` `]` only. A bare `**Tests:**` label may instead be followed by an unindented bullet list of paths, ending at the first blank or non-bullet line.
-  Every `(test)` criterion's file is on that line or list; none is left to the developer ("a file of the developer's choosing" or "new or existing file" there is refused by spec-check as tests-line-open). Name one new file for the criteria tests, so no other issue's `AC<n>` label in a shared file can make a criterion look green at the red commit.
+  Every `(test)` criterion's file is on that line or list; none is left to the developer ("a file of the developer's choosing" or "new or existing file" there is refused by spec-check as tests-line-open). Name one new file for the criteria tests, so no other issue's `AC<n>` label in a shared file can make a criterion look green at the red commit. Put only files the change adds, or files with no `AC<n>` ids, on the Tests line; name a suite that must stay green in the criterion text instead.
   Before posting, write the draft spec to a file and run `bash scripts/pipeline-criteria.sh spec-check <file>`; fix what it refuses.
 - **Files likely to change** (paths).
 - **Branch name**: `fix/issue-<N>-<slug>` (or `feat/...`).

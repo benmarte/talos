@@ -81,6 +81,12 @@
 #       re-run)`, and the verdict names it: `FAIL <n> test criteria FAIL (<k>
 #       flaky)`. The driver sends a flaky-only verdict to the owner, not to a
 #       fix round.
+#       The regression run (#773): a `**Regression:**` line (same path parse as
+#       `Tests:`; a missing file counts like a missing Tests file) names files that
+#       must stay green. Each runs whole at the head, apart from the Tests run, with
+#       the same runner choice; a non-zero exit is `qa-run: verdict FAIL regression
+#       run exited <N>` (its FAIL lines shown). A pass adds nothing: no id in that
+#       output is mapped to a criterion.
 #       The e2e step (#717): verify.e2e (repo-only, default empty) is one command
 #       run once from the repo root through pipeline-verify.sh, at the head, only
 #       on an otherwise green verdict with tests to run. Exit 0 prints `qa-run:
@@ -189,11 +195,26 @@
 #         id-collision AC<n> file=<f>     pure text: <f> is a `Tests:` file that exists
 #                                         at the merge-base and already labels AC<n>
 #                                         (an earlier issue's id), or AC<n> is labelled
-#                                         by two `Tests:` files at the red commit
+#                                         by two `Tests:` files at the red commit; not
+#                                         printed for the droppable case below
+#         drop-file <f> reason=id-collision-with-<g>   (#773) exactly two `Tests:` files label
+#                                         an id, <f> exists at the merge-base and <g>
+#                                         (a file the branch adds) does not: <f> is left out
+#                                         of the red run, so its results reach no
+#                                         kind-mismatch, and qa-run runs it whole at the head
+#         to-prose AC<n> file=<f>         a (test)/(same) criterion labelled at the red
+#                                         commit in a dropped file <f> and in no kept file
 #         red-check: ok                           exit 0
 #         red-check: MISMATCH <k>                 exit 1 (kind-mismatch lines only)
+#         red-check: REVISE <k>                   exit 1: k = kind-mismatch + drop-file +
+#                                                 to-prose lines, at least one drop-file
+#                                                 and no remaining collision
 #         red-check: COLLISION <k>                exit 4 (wins over a mismatch, whose
-#                                                 lines are still printed)
+#                                                 lines are still printed, and over a
+#                                                 droppable collision, whose drop-file
+#                                                 lines are then not printed: both files
+#                                                 new, both on the base, a lone
+#                                                 pre-existing file, or three or more)
 #         red-check: skipped <why>                exit 0: no `Tests:` line or no test
 #                                                 criteria, no red commit, the red commit
 #                                                 is not tests-only, or no test file there
@@ -202,10 +223,13 @@
 #       non-numeric issue is usage (exit 2); no usable runner is exit 3. `talos.sh
 #       run` calls it once per PR after the first-round developer opens it.
 #   pipeline-criteria.sh revise-spec <issue>
-#       Reads `kind-mismatch` lines on stdin and prints the issue's spec comment with
-#       just those criteria's final kind markers flipped, led by `**PM spec:** revised
-#       by the driver after red-check: ...` (the driver posts it). Exit 1 when the spec
-#       is unreadable or a listed criterion is not a flippable line.
+#       Reads `kind-mismatch`, `drop-file` and `to-prose` lines on stdin and prints the
+#       issue's spec comment with just those criteria's final kind markers flipped, led
+#       by `**PM spec:** revised by the driver after red-check: ...` (the driver posts
+#       it). A `to-prose` criterion's marker becomes `(prose: <f> must pass at head)`;
+#       a `drop-file` file leaves the `Tests:` line (or its bullet) for a `**Regression:**`
+#       line of the dropped files in backticks, right after it (#773). Exit 1 when the spec is unreadable, a listed
+#       criterion is not a flippable line, or a dropped file is not on the Tests: line.
 #
 # Exit codes: 0 ok, 1 a failing report or an unreadable/empty input, 2 usage, 3 no usable runner, 4 an unusable spec, 5 a broken environment (qa-run).
 set -uo pipefail
@@ -464,6 +488,8 @@ sys.stdout.write(text)
 _QA_TESTS_PY='
 import re, sys
 text = sys.stdin.read()
+# The label parsed: Tests by default, Regression (#773) when qa-run asks for it.
+LABEL = "Regression" if sys.argv[1:] == ["Regression"] else "Tests"
 PATH_RE = re.compile(r"^[A-Za-z0-9_./()\[\]-]+$")
 OPEN_RE = re.compile(r"developer.{1,3}s (choosing|choice)|new or existing file", re.I)
 FILT_RE = re.compile(r"^[A-Za-z0-9_|. -]+$")
@@ -481,7 +507,7 @@ lines = text.splitlines()
 rest = None
 block = []
 for i, l in enumerate(lines):
-    m = re.match(r"^\s*(?:[-*+]\s+)?(?:\[[ xX]\]\s+)?\**Tests\**:\**\s*(.*)$", l)
+    m = re.match(r"^\s*(?:[-*+]\s+)?(?:\[[ xX]\]\s+)?\**" + LABEL + r"\**:\**\s*(.*)$", l)
     if m:
         rest = m.group(1).strip()
         block = [l]
@@ -572,6 +598,22 @@ _tests_line() {
     esac
   done <<EOF
 $(python3 -I -c "$_QA_TESTS_PY" < "$1")
+EOF
+}
+
+# _regression_line SPEC (#773): the spec's `**Regression:**` line, the same parse
+# as `Tests:` (_QA_TESTS_PY). Sets the caller's reg_paths and reg_refused (the
+# parser's reason). Filters and a missing line are no regression files.
+_regression_line() {
+  local tag val
+  reg_paths=(); reg_refused=""
+  while IFS="$(printf '\t')" read -r tag val; do
+    case "$tag" in
+      P) reg_paths+=("$val") ;;
+      B) reg_refused="$val" ;;
+    esac
+  done <<EOF
+$(python3 -I -c "$_QA_TESTS_PY" Regression < "$1")
 EOF
 }
 
@@ -738,11 +780,11 @@ _QA_RAW_DST=""
 _qa_keep_raw() {
   local f n=0
   [ -n "$_QA_RAW_SRC" ] && [ -n "$_QA_RAW_DST" ] || return 0
-  for f in head rerun red frozen; do [ ! -f "$_QA_RAW_SRC/$f.out" ] || n=$((n + 1)); done
+  for f in head rerun regression red frozen; do [ ! -f "$_QA_RAW_SRC/$f.out" ] || n=$((n + 1)); done
   [ "$n" -gt 0 ] || return 0
   rm -rf "${_QA_RAW_DST:?}"
   mkdir -p "$_QA_RAW_DST" || return 0
-  for f in head rerun red frozen; do
+  for f in head rerun regression red frozen; do
     [ ! -f "$_QA_RAW_SRC/$f.out" ] || cp "$_QA_RAW_SRC/$f.out" "$_QA_RAW_DST/$f.out" 2>/dev/null || :
   done
   printf 'qa-run: raw output kept in %s\n' "$_QA_RAW_DST"
@@ -1106,8 +1148,14 @@ cmd_qa_run() {
   fi
 
   # 6. Paths must be tracked files at the PR head.
-  local p present=() missing=()
-  for p in ${paths[@]+"${paths[@]}"}; do
+  #    The `**Regression:**` files (#773) are held to the same rules.
+  local p present=() missing=() reg_paths reg_refused reg_present=()
+  _regression_line "$spec"
+  if [ -n "$reg_refused" ]; then
+    printf 'qa-run: verdict BLOCKED spec: Regression: line refused (%s)\n' "$reg_refused"
+    return 4
+  fi
+  for p in ${paths[@]+"${paths[@]}"} ${reg_paths[@]+"${reg_paths[@]}"}; do
     if [ -d "$p" ]; then
       printf 'qa-run: verdict BLOCKED spec: Tests: path is a directory: %s\n' "$p"
       return 4
@@ -1115,6 +1163,9 @@ cmd_qa_run() {
   done
   for p in ${paths[@]+"${paths[@]}"}; do
     if [ -f "$p" ] && git cat-file -e "$head:$p" 2>/dev/null; then present+=("$p"); else missing+=("$p"); fi
+  done
+  for p in ${reg_paths[@]+"${reg_paths[@]}"}; do
+    if [ -f "$p" ] && git cat-file -e "$head:$p" 2>/dev/null; then reg_present+=("$p"); else missing+=("$p"); fi
   done
   for p in ${missing[@]+"${missing[@]}"}; do echo "qa-run: missing test file: $p"; done
 
@@ -1126,7 +1177,7 @@ cmd_qa_run() {
   while IFS= read -r c; do [ -z "$c" ] || _QA_READY+=("$c"); done <<EOF
 $(cfg verify.ready 2>/dev/null)
 EOF
-  _runner_pick . ${present[@]+"${present[@]}"} || runner_rc=$?
+  _runner_pick . ${present[@]+"${present[@]}"} ${reg_present[@]+"${reg_present[@]}"} || runner_rc=$?
   case "$runner_rc" in
     4) printf 'qa-run: verdict BLOCKED spec: %s\n' "$runner_why"; return 4 ;;
     3)
@@ -1152,6 +1203,15 @@ EOF
     _qa_exec "$tmp/rerun.out" "${present[@]}"; rerun_rc=$?
     [ -z "$_QA_ENV_FAIL" ] || { _qa_env_blocked; return $?; }
     rerun_ran=1
+  fi
+  # The **Regression:** files (#773), whole, at the head and apart from the Tests
+  # run. Nothing from this output reaches the report: a pass is no evidence for a
+  # criterion; a non-zero exit fails the gate below.
+  local reg_rc=0
+  if [ "${#reg_present[@]}" -gt 0 ]; then
+    : > "$tmp/regression.out"
+    _qa_exec "$tmp/regression.out" "${reg_present[@]}"; reg_rc=$?
+    [ -z "$_QA_ENV_FAIL" ] || { _qa_env_blocked; return $?; }
   fi
 
   # 9. Red run: the first commit after the merge-base, when its own change is tests-only.
@@ -1233,6 +1293,10 @@ EOF
       grep -E -A2 '^FAIL' "$tmp/head.out" | cut -c1-200 | head -n 24 | sed 's/^/  /'
     fi
   fi
+  if [ "$reg_rc" -ne 0 ] && grep -qE '^FAIL' "$tmp/regression.out" 2>/dev/null; then
+    echo "regression run failures (test output, data):"
+    grep -E -A2 '^FAIL' "$tmp/regression.out" | cut -c1-200 | head -n 24 | sed 's/^/  /'
+  fi
   # The frozen failure is always shown (#714), also when --ack-changed lets it pass.
   if [ "${#frozen_files[@]}" -gt 0 ] && grep -q 'weakened' <<<"$lines" && grep -qE '^FAIL' "$tmp/frozen.out" 2>/dev/null; then
     echo "frozen run failures (test output, data):"
@@ -1249,6 +1313,7 @@ EOF
   # A head run that failed only by a flake (the re-run was clean) is already named.
   [ "$head_rc" -eq 0 ] || [ "${#present[@]}" -eq 0 ] || { [ "$n_flaky" -gt 0 ] && [ "$rerun_rc" -eq 0 ]; } \
     || why="${why:+$why; }head run exited $head_rc"
+  [ "$reg_rc" -eq 0 ] || why="${why:+$why; }regression run exited $reg_rc"
   [ "$rep_rc" -eq 0 ] || [ -n "$why" ] || why="report failed"
   if [ -n "$why" ]; then
     _qa_fail "$why"
@@ -1284,30 +1349,46 @@ _rc_exit() {
   _RC_WT=""
 }
 
-# _rc_collisions: lines `id-collision AC<n> file=<f>` on stdout for the criteria
-# (table) whose id is already labelled in a Tests file before this branch (the
-# file exists at the merge-base mb and labels it there) or labelled by two Tests
-# files at the red commit. Pure text, one `git show` per file and commit. The
-# label is the placement parse: the id first in a quoted string or after ok/FAIL.
+# _rc_label_re ID: the ERE for a label of ID, the placement parse: the id first
+# in a quoted string or after ok/FAIL.
+_rc_label_re() { printf '%s' "([\"']|(ok|FAIL)[[:space:]]+)$1([^A-Za-z0-9_]|\$)"; }
+
+# _rc_collisions: lines on stdout for the criteria (table) whose id is already
+# labelled in a Tests file before this branch (the file exists at the merge-base
+# mb and labels it there) or labelled by two Tests files at the red commit. Pure
+# text, one `git show` per file and commit. `id-collision AC<n> file=<f>` for a
+# collision a human settles; `droppable AC<n> old=<f> new=<g>` (#773) when exactly
+# two Tests files label the id, <f> exists at the merge-base and <g> does not.
 _rc_collisions() {
-  local id p i re at_mb at_red n_red hit
-  local red_txt=() mb_txt=()
+  local id p i re n_red n_lab n_old o_i n_i hit
+  local red_txt=() mb_txt=() on_mb=() lab_r=() lab_m=()
   for p in ${paths[@]+"${paths[@]}"}; do
     red_txt+=("$(git show "$red:$p" 2>/dev/null)")
     mb_txt+=("$([ -z "$mb" ] || git show "$mb:$p" 2>/dev/null)")
+    if [ -n "$mb" ] && git cat-file -e "$mb:$p" 2>/dev/null; then on_mb+=(1); else on_mb+=(0); fi
   done
   for id in $(printf '%s\n' "$table" | awk '$2 == "test" || $2 == "same" { print $1 }'); do
-    re="([\"']|(ok|FAIL)[[:space:]]+)$id([^A-Za-z0-9_]|\$)"
-    n_red=0; i=0
+    re="$(_rc_label_re "$id")"
+    n_red=0; n_lab=0; n_old=0; o_i=-1; n_i=-1; i=0
+    lab_r=(); lab_m=()
     for p in ${paths[@]+"${paths[@]}"}; do
-      if grep -qE "$re" <<<"${red_txt[$i]}"; then n_red=$((n_red + 1)); fi
+      lab_r+=(0); lab_m+=(0)
+      grep -qE "$re" <<<"${red_txt[$i]}" && { lab_r[$i]=1; n_red=$((n_red + 1)); }
+      grep -qE "$re" <<<"${mb_txt[$i]}" && lab_m[$i]=1
+      if [ "${lab_r[$i]}" -eq 1 ] || [ "${lab_m[$i]}" -eq 1 ]; then
+        n_lab=$((n_lab + 1))
+        if [ "${on_mb[$i]}" -eq 1 ]; then n_old=$((n_old + 1)); o_i=$i; else n_i=$i; fi
+      fi
       i=$((i + 1))
     done
+    if [ "$n_lab" -eq 2 ] && [ "$n_old" -eq 1 ]; then
+      printf 'droppable %s old=%s new=%s\n' "$id" "${paths[$o_i]}" "${paths[$n_i]}"
+      continue
+    fi
     i=0
     for p in ${paths[@]+"${paths[@]}"}; do
-      hit=0
-      grep -qE "$re" <<<"${mb_txt[$i]}" && hit=1
-      if [ "$n_red" -ge 2 ] && grep -qE "$re" <<<"${red_txt[$i]}"; then hit=1; fi
+      hit="${lab_m[$i]}"
+      if [ "$n_red" -ge 2 ] && [ "${lab_r[$i]}" -eq 1 ]; then hit=1; fi
       [ "$hit" -eq 0 ] || printf 'id-collision %s file=%s\n' "$id" "$p"
       i=$((i + 1))
     done
@@ -1364,9 +1445,44 @@ cmd_red_check() {
   if [ "${#at_red[@]}" -eq 0 ]; then echo "red-check: skipped no test file exists at the red commit $red8"; return 0; fi
 
   # 3. The id collisions (text), then the red run in a detached worktree.
-  local out="" n_col=0 n_mis=0 line
+  local out="" cols drop_c n_col=0 n_mis=0 line
   out="$(_rc_collisions)"
-  [ -z "$out" ] || n_col="$(printf '%s\n' "$out" | wc -l | tr -d ' ')"
+  cols="$(printf '%s\n' "$out" | grep '^id-collision ')"
+  drop_c="$(printf '%s\n' "$out" | grep '^droppable ')"
+  [ -z "$cols" ] || n_col="$(printf '%s\n' "$cols" | wc -l | tr -d ' ')"
+  # A droppable collision (#773): the pre-existing file leaves the criteria run
+  # and is run whole at the head by qa-run; no drop-file line beside a real collision.
+  local dropped=() drops="" n_drop=0 i q id_d old_d new_d kept=()
+  if [ "$n_col" -eq 0 ] && [ -n "$drop_c" ]; then
+    while read -r _ id_d old_d new_d; do
+      old_d="${old_d#old=}"; new_d="${new_d#new=}"
+      i=0
+      for q in ${dropped[@]+"${dropped[@]}"}; do [ "$q" != "$old_d" ] || i=1; done
+      [ "$i" -eq 0 ] || continue
+      dropped+=("$old_d")
+      drops="${drops}drop-file $old_d reason=id-collision-with-$new_d"$'\n'; n_drop=$((n_drop + 1))
+    done <<EOF
+$drop_c
+EOF
+    for p in "${at_red[@]}"; do
+      i=0
+      for q in "${dropped[@]}"; do [ "$q" != "$p" ] || i=1; done
+      [ "$i" -eq 1 ] || kept+=("$p")
+    done
+    at_red=("${kept[@]}")
+    # A (test)/(same) criterion labelled at the red commit in a dropped file and in no kept file.
+    local re hit_d hit_k
+    for id_d in $(printf '%s\n' "$table" | awk '$2 == "test" || $2 == "same" { print $1 }'); do
+      re="$(_rc_label_re "$id_d")"; hit_d=""; hit_k=0
+      for p in ${paths[@]+"${paths[@]}"}; do
+        git show "$red:$p" 2>/dev/null | grep -qE "$re" || continue
+        i=0
+        for q in "${dropped[@]}"; do [ "$q" != "$p" ] || i=1; done
+        if [ "$i" -eq 1 ]; then hit_d="${hit_d:-$p}"; else hit_k=1; fi
+      done
+      [ -z "$hit_d" ] || [ "$hit_k" -eq 1 ] || { drops="${drops}to-prose $id_d file=$hit_d"$'\n'; n_drop=$((n_drop + 1)); }
+    done
+  fi
   local runner vline runner_why runner_rc=0 top="$tmp/wt"
   git worktree add -q --detach "$top" "$red" >/dev/null 2>&1 \
     || { echo "red-check: skipped could not check out the red commit $red8"; return 0; }
@@ -1391,27 +1507,39 @@ cmd_red_check() {
 $(cmd_map "$tmp/red.out" --spec "$spec")
 EOF
   [ -z "$mis" ] || printf '%s' "$mis"
-  [ -z "$out" ] || printf '%s\n' "$out"
+  [ -z "$cols" ] || printf '%s\n' "$cols"
+  [ -z "$drops" ] || printf '%s' "$drops"
   if [ "$n_col" -gt 0 ]; then echo "red-check: COLLISION $n_col"; return 4; fi
+  if [ "$n_drop" -gt 0 ]; then echo "red-check: REVISE $((n_mis + n_drop))"; return 1; fi
   if [ "$n_mis" -gt 0 ]; then echo "red-check: MISMATCH $n_mis"; return 1; fi
   echo "red-check: ok"
 }
 
 # The spec text on argv[1] with the red-check findings on stdin applied: each
 # `kind-mismatch AC<n> want=same|test` flips the final kind marker of that
-# criterion's checklist line, and the spec's leading `**PM spec:**` is followed
-# by a line saying the driver revised it. Every other byte is unchanged. Exit 1
-# when a listed criterion is not a flippable line of the spec.
+# criterion's checklist line. `to-prose AC<n> file=<f>` (#773) rewrites it to
+# `(prose: <f> must pass at head)`; `drop-file <f> ...` moves <f> from the
+# `Tests:` line (backtick span or bullet) to a `**Regression:**` line right after
+# it. The spec's leading `**PM spec:**` is followed by a line saying the driver
+# revised it. Every other byte is unchanged. Exit 1 when a listed criterion is
+# not a flippable line of the spec or a dropped file is not on the Tests: line.
 _REVISE_PY='
 import re, sys
 text = open(sys.argv[1], encoding="utf-8", newline="").read()
-want, order = {}, []
+want, order, prose, drops = {}, [], {}, []
 for ln in sys.stdin:
-    m = re.match(r"^kind-mismatch (AC[0-9]+) want=(same|test)$", ln.strip())
+    ln = ln.strip()
+    m = re.match(r"^kind-mismatch (AC[0-9]+) want=(same|test)$", ln)
     if m and m.group(1) not in want:
         want[m.group(1)] = m.group(2)
         order.append(m.group(1))
-if not want:
+    m = re.match(r"^to-prose (AC[0-9]+) file=(\S+)$", ln)
+    if m and m.group(1) not in prose:
+        prose[m.group(1)] = m.group(2)
+    m = re.match(r"^drop-file (\S+)( reason=\S+)?$", ln)
+    if m and m.group(1) not in drops:
+        drops.append(m.group(1))
+if not want and not prose and not drops:
     sys.exit(1)
 item = re.compile(r"^[ \t]*[-*][ \t]+\[[ xX]\][ \t]+[*`]*(AC[0-9]+)")
 marker = re.compile(r"\((test|prose|same)[:)]")
@@ -1419,24 +1547,67 @@ done = set()
 lines = text.split("\n")
 for i, ln in enumerate(lines):
     m = item.match(ln)
-    if not m or m.group(1) not in want or m.group(1) in done:
+    if not m or (m.group(1) not in want and m.group(1) not in prose) or m.group(1) in done:
         continue
     ms = list(marker.finditer(ln))
     if not ms:
         continue
     start = ms[-1].start()
     end = ln.find(")", start)
-    # (test) is flipped to (same), (same...) to (test); anything else is not a kind to flip.
-    if end < 0 or ms[-1].group(1) != ("test" if want[m.group(1)] == "same" else "same"):
+    if end < 0:
         continue
-    new = "(same: green at the red commit, found by red-check)" if want[m.group(1)] == "same" else "(test)"
+    if m.group(1) in prose:
+        # A (test) or (same) whose evidence was only in a dropped file is prose.
+        if ms[-1].group(1) == "prose":
+            continue
+        new = "(prose: %s must pass at head)" % prose[m.group(1)]
+    else:
+        # (test) is flipped to (same), (same...) to (test); anything else is not a kind to flip.
+        if ms[-1].group(1) != ("test" if want[m.group(1)] == "same" else "same"):
+            continue
+        new = "(same: green at the red commit, found by red-check)" if want[m.group(1)] == "same" else "(test)"
     lines[i] = ln[:start] + new + ln[end + 1:]
     done.add(m.group(1))
-if len(done) != len(order):
-    sys.stderr.write("revise-spec: not a flippable criterion line: " + " ".join(a for a in order if a not in done) + "\n")
+if len(done) != len(order) + len(prose):
+    sys.stderr.write("revise-spec: not a flippable criterion line: " + " ".join(a for a in order + list(prose) if a not in done) + "\n")
     sys.exit(1)
+if drops:
+    label = re.compile(r"^\s*(?:[-*+]\s+)?(?:\[[ xX]\]\s+)?\**Tests\**:\**\s*(.*)$")
+    at = [(i, label.match(l)) for i, l in enumerate(lines) if label.match(l)]
+    if not at:
+        sys.stderr.write("revise-spec: no Tests: line to drop from\n")
+        sys.exit(1)
+    first, m = at[0]
+    # The same block the Tests: parse reads: a bare label takes the bullets right under it.
+    bullet = r"^\s*[-*+]\s+(?!\[[ xX]\]\s)(.*)$" if not m.group(1).strip().strip("* ") else r"^\s+[-*+]\s+(.*)$"
+    last = first + 1
+    while last < len(lines) and re.match(bullet, lines[last]):
+        last += 1
+    block = lines[first:last]
+    ch = r"A-Za-z0-9_./()\[\]-"
+    for f in drops:
+        hit = False
+        for k, l in enumerate(block):
+            tok = re.escape("`" + f + "`") if "`" in l else "(?<![" + ch + "])" + re.escape(f) + "(?![" + ch + "])"
+            for pat in (",[ \t]*" + tok, "[ \t]*" + tok + ",?"):
+                new = re.sub(pat, "", l, count=1)
+                if new != l:
+                    block[k], hit = new, True
+                    break
+            if hit:
+                break
+        if not hit:
+            sys.stderr.write("revise-spec: not on the Tests: line: " + f + "\n")
+            sys.exit(1)
+    # A bullet that held only the dropped file goes with it.
+    block = [l for k, l in enumerate(block) if k == 0 or re.sub(r"^\s*[-*+]\s*", "", l).strip("*`, \t")]
+    block.append("**Regression:** " + " ".join("`%s`" % f for f in drops))
+    lines[first:last] = block
 text = "\n".join(lines)
-why = ", ".join(("%s is (same) (green at the red commit)" if want[a] == "same" else "%s is (test) (red at the red commit)") % a for a in order)
+why = [("%s is (same) (green at the red commit)" if want[a] == "same" else "%s is (test) (red at the red commit)") % a for a in order]
+why += ["%s is (prose: %s must pass at head)" % (a, prose[a]) for a in prose]
+why += ["%s is dropped from Tests: (it shares an id with a file the branch adds) and runs as a regression check" % f for f in drops]
+why = ", ".join(why)
 lead = "**PM spec:**"
 note = lead + " revised by the driver after red-check: " + why + "\n\n"
 at = text.find(lead)
