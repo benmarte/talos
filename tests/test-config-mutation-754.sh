@@ -47,7 +47,7 @@ for _t in "user:$USER_CFG" "project:$PROJ_CFG" "repo:$REPO_CFG"; do
   # An in-place sed rewrite, in the portable form (the lint refuses sed -i).
   export STUB_CLAUDE_HOOK="sed 's/}\$/, \"x\": 1}/' '$_file' > '$_file.new' && mv '$_file.new' '$_file'"
   run_role developer
-  _ac=AC2; [ "$_name" != user ] || _ac=AC1
+  case "$_name" in user) _ac="AC1" ;; project) _ac="AC2" ;; *) _ac="AC2" ;; esac
   assert_eq "78" "$RC" "$_ac $_name config rewritten by the stage: the agent exits 78"
   assert_contains "$STDERR" "pipeline-agent: reason=config-mutated role=developer file=$_file" \
     "$_ac $_name config: the stop line names the role and the file"
