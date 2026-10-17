@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # pipeline-criteria.sh -- map a spec's acceptance criteria to test results by
 # id (#421). ids, map and report are pure text processing: no network, no LLM,
-# no git. qa-run (#549) is the one verb that drives git and the test runner.
+# no git. qa-run (#549) and red-check (#747) are the verbs that drive git and the
+# test runner.
 #
 # The PM numbers each criterion `AC<n>` and marks it `(test)`,
 # `(same: <why>)` (behaviour that must not change: green at the red commit and
@@ -149,6 +150,36 @@
 #         AC<n> not-in-tests-files            one per missing id, then
 #         placement: GAP <n>                  exit 1
 #         placement: BLOCKED spec: <why>      exit 4 (the spec-usable reasons)
+#   pipeline-criteria.sh red-check <issue> [<ref>]
+#       Is each criterion's kind right at the red commit (#747)? The red proof
+#       qa-run takes (the first commit after the merge-base with the base branch,
+#       only when it is tests-only), with the same runner choice, `Tests:` parse and
+#       verify.targeted_commands, but run in a throwaway detached worktree: the
+#       caller's checkout, HEAD and branch are never touched. <ref> (default HEAD)
+#       is the branch tip or SHA whose red commit is used. Findings first, one per
+#       line, then one verdict line:
+#         kind-mismatch AC<n> want=same   a (test) that is pass at the red commit
+#         kind-mismatch AC<n> want=test   a (same) that is fail at the red commit
+#         id-collision AC<n> file=<f>     pure text: <f> is a `Tests:` file that exists
+#                                         at the merge-base and already labels AC<n>
+#                                         (an earlier issue's id), or AC<n> is labelled
+#                                         by two `Tests:` files at the red commit
+#         red-check: ok                           exit 0
+#         red-check: MISMATCH <k>                 exit 1 (kind-mismatch lines only)
+#         red-check: COLLISION <k>                exit 4 (wins over a mismatch, whose
+#                                                 lines are still printed)
+#         red-check: skipped <why>                exit 0: no `Tests:` line or no test
+#                                                 criteria, no red commit, the red commit
+#                                                 is not tests-only, or no test file there
+#         red-check: BLOCKED spec: <why>          exit 4 (the spec-usable reasons)
+#       A `missing` state at the red commit (no per-id output) is no finding. A
+#       non-numeric issue is usage (exit 2); no usable runner is exit 3. `talos.sh
+#       run` calls it once per PR after the first-round developer opens it.
+#   pipeline-criteria.sh revise-spec <issue>
+#       Reads `kind-mismatch` lines on stdin and prints the issue's spec comment with
+#       just those criteria's final kind markers flipped, led by `**PM spec:** revised
+#       by the driver after red-check: ...` (the driver posts it). Exit 1 when the spec
+#       is unreadable or a listed criterion is not a flippable line.
 #
 # Exit codes: 0 ok, 1 a failing report or an unreadable/empty input, 2 usage, 3 no usable runner, 4 an unusable spec.
 set -uo pipefail
@@ -709,6 +740,7 @@ for i, e in enumerate(d):
 # _tc_load: sets the TC_* arrays (idx, glob ERE, run, pass, fail) from the config,
 # and prints one stderr note per skipped entry. Absent key: no entries.
 TC_IDX=(); TC_ERE=(); TC_RUN=(); TC_PASS=(); TC_FAIL=()
+_VERB=qa-run  # the verb whose stderr notes _tc_load writes (red-check sets its own)
 _tc_load() {
   local raw tag a b c d e
   TC_IDX=(); TC_ERE=(); TC_RUN=(); TC_PASS=(); TC_FAIL=()
@@ -716,14 +748,14 @@ _tc_load() {
   [ -n "$raw" ] || return 0
   while IFS=$'\t' read -r tag a b c d e; do
     case "$tag" in
-      W) printf 'qa-run: verify.targeted_commands ignored: %s\n' "$a" >&2 ;;
-      S) printf 'qa-run: verify.targeted_commands entry %s skipped: %s\n' "$a" "$b" >&2 ;;
+      W) printf '%s: verify.targeted_commands ignored: %s\n' "$_VERB" "$a" >&2 ;;
+      S) printf '%s: verify.targeted_commands entry %s skipped: %s\n' "$_VERB" "$a" "$b" >&2 ;;
       E)
         c="${c#=}"; d="${d#=}"; e="${e#=}"
         if { [ -z "$d" ] || _re_valid "$d"; } && { [ -z "$e" ] || _re_valid "$e"; }; then
           TC_IDX+=("$a"); TC_ERE+=("$b"); TC_RUN+=("$c"); TC_PASS+=("$d"); TC_FAIL+=("$e")
         else
-          printf 'qa-run: verify.targeted_commands entry %s skipped: pass or fail is not a valid regex\n' "$a" >&2
+          printf '%s: verify.targeted_commands entry %s skipped: pass or fail is not a valid regex\n' "$_VERB" "$a" >&2
         fi ;;
     esac
   done <<EOF
@@ -743,6 +775,120 @@ _tc_pick() {
     i=$((i + 1))
   done
   return 1
+}
+
+# _red_commit REF BASE (#747): the red proof qa-run and red-check share. Sets the
+# caller's bref (BASE, else base_branch, else origin/HEAD, else main), mb (the
+# merge-base of REF with it), red (the first commit after it, empty when it
+# cannot be used), red8 (its short sha, set once a commit was found) and red_why
+# (empty for a usable red commit, else the reason: no commit, or not tests-only).
+_red_commit() {
+  local ref="$1" f bad_path=""
+  bref="${2:-$(cfg base_branch 2>/dev/null)}"
+  [ -n "$bref" ] || bref="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
+  [ -n "$bref" ] || bref=main
+  red=""; red8=""; red_why=""
+  mb="$(git merge-base "$ref" "origin/$bref" 2>/dev/null || git merge-base "$ref" "$bref" 2>/dev/null)"
+  [ -z "$mb" ] || red="$(git rev-list --reverse "$mb".."$ref" 2>/dev/null | head -n 1)"
+  if [ -z "$red" ]; then
+    red_why="no red commit found after the merge-base with $bref"
+    return 0
+  fi
+  red8="${red:0:8}"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    _qa_is_test_path "$f" || { bad_path="$f"; break; }
+  done <<EOF
+$(git diff-tree --no-commit-id --name-only -r --root "$red" 2>/dev/null)
+EOF
+  if [ -n "$bad_path" ]; then
+    red_why="red commit $red8 is not tests-only ($(printf '%s' "$bad_path" | tr -cd '[:print:]' | head -c 80))"
+    red=""
+  fi
+}
+
+# _runner_pick DIR FILE... (#747): the runner for the Tests files FILE... (the
+# ones present), looked for under DIR. Sets the caller's runner (talos|verify|
+# empty: only verify.targeted_commands entries run), vline and runner_why, and
+# returns 0, 4 (a path no entry may take: runner_why is the spec fault) or 3 (no
+# usable runner). Needs paths and the _tc_load entries.
+_runner_pick() {
+  local dir="$1" p n_entry=0
+  shift
+  runner=""; vline=""; runner_why=""
+  for p in ${paths[@]+"${paths[@]}"}; do
+    _tc_pick "$p" || continue
+    case "$p" in
+      *[!A-Za-z0-9_./-]*)
+        runner_why="$(printf 'Tests: path outside [A-Za-z0-9_./-] fits verify.targeted_commands entry %s: %s' \
+          "${TC_IDX[$TC_SEL]}" "$(printf '%s' "$p" | tr -cd '[:print:]' | head -c 60)")"
+        return 4 ;;
+    esac
+  done
+  for p in "$@"; do _tc_pick "$p" && n_entry=$((n_entry + 1)); done
+  if [ -f "$dir/tests/run-tests.sh" ]; then
+    runner=talos
+  else
+    vline="$(cfg verify 2>/dev/null | grep -i 'test' | head -n 1)"
+    [ -z "$vline" ] || runner=verify
+  fi
+  if [ -z "$runner" ] && { [ "$n_entry" -eq 0 ] || [ "$n_entry" -lt "$#" ]; }; then
+    return 3
+  fi
+  return 0
+}
+
+# _tc_exec OUTFILE SEL FILE -- one run of a verify.targeted_commands entry; its
+# lines are appended to OUTFILE. Reads the caller's tmp, issue, top and spec.
+_tc_exec() {
+  local out="$1" sel="$2" f="$3" cmd base cls dir raw rc id st
+  base="${f##*/}"; cls="${base%.*}"; [ -n "$cls" ] || cls="$base"
+  dir="${f%/*}"; [ "$dir" != "$f" ] || dir="."
+  cmd="${TC_RUN[$sel]}"
+  cmd="${cmd//\{file\}/$f}"; cmd="${cmd//\{class\}/$cls}"; cmd="${cmd//\{dir\}/$dir}"
+  raw="$tmp/entry.out"
+  bash "$SCRIPT_DIR/pipeline-verify.sh" --issue "$issue" --worktree "$top" -- \
+    bash -c "$cmd" > "$raw" 2>&1; rc=$?
+  cat "$raw" >> "$out"
+  if [ -n "${TC_PASS[$sel]}${TC_FAIL[$sel]}" ]; then
+    while read -r id st; do
+      case "$st" in
+        pass) printf '  ok  %s (verify.targeted_commands entry %s)\n' "$id" "${TC_IDX[$sel]}" >> "$out" ;;
+        fail) printf 'FAIL  %s (verify.targeted_commands entry %s)\n' "$id" "${TC_IDX[$sel]}" >> "$out" ;;
+      esac
+    done <<EOF
+$(cmd_map "$raw" --spec "$spec" --pass-re "${TC_PASS[$sel]}" --fail-re "${TC_FAIL[$sel]}")
+EOF
+  fi
+  return "$rc"
+}
+
+# _qa_exec OUTFILE PATH... -- one run of the Tests files, from the current
+# directory; output (stdout+stderr) to OUTFILE. Reads the caller's tmp, issue,
+# top, spec, runner, vline and filters.
+_qa_exec() {
+  local out="$1" a=() rest=() q rc=0 r
+  shift
+  : > "$out"
+  for q in "$@"; do
+    if _tc_pick "$q"; then
+      _tc_exec "$out" "$TC_SEL" "$q"; r=$?
+      [ "$rc" -ne 0 ] || rc="$r"
+    else
+      rest+=("$q")
+    fi
+  done
+  [ "${#rest[@]}" -gt 0 ] || return "$rc"
+  if [ "$runner" = talos ]; then
+    for q in "${rest[@]}"; do a+=(--for "$q"); done
+    bash "$SCRIPT_DIR/pipeline-verify.sh" --issue "$issue" --worktree "$top" -- \
+      bash tests/run-tests.sh "${a[@]}" --strict --no-cache >> "$out" 2>&1; r=$?
+  else
+    bash "$SCRIPT_DIR/pipeline-verify.sh" --issue "$issue" --worktree "$top" -- \
+      bash -c "$vline \"\$@\"" talos-qa "${rest[@]}" ${filters[@]+"${filters[@]}"} >> "$out" 2>&1; r=$?
+  fi
+  [ "$rc" -ne 0 ] || rc="$r"
+  return "$rc"
 }
 
 cmd_qa_run() {
@@ -855,78 +1001,17 @@ cmd_qa_run() {
 
   # 7. The runner. A Tests file that fits a verify.targeted_commands entry (#716)
   #    runs as that entry; the runner below is for the files that fit none.
-  local runner="" vline="" label n_entry=0 e_sel
+  local runner vline runner_why label runner_rc=0
   _tc_load
-  for p in ${paths[@]+"${paths[@]}"}; do
-    _tc_pick "$p" || continue
-    case "$p" in
-      *[!A-Za-z0-9_./-]*)
-        printf 'qa-run: verdict BLOCKED spec: Tests: path outside [A-Za-z0-9_./-] fits verify.targeted_commands entry %s: %s\n' \
-          "${TC_IDX[$TC_SEL]}" "$(printf '%s' "$p" | tr -cd '[:print:]' | head -c 60)"
-        return 4 ;;
-    esac
-  done
-  for p in ${present[@]+"${present[@]}"}; do _tc_pick "$p" && n_entry=$((n_entry + 1)); done
-  if [ -f tests/run-tests.sh ]; then
-    runner=talos
-  else
-    vline="$(cfg verify 2>/dev/null | grep -i 'test' | head -n 1)"
-    [ -z "$vline" ] || runner=verify
-  fi
-  if [ -z "$runner" ] && { [ "$n_entry" -eq 0 ] || [ "$n_entry" -lt "${#present[@]}" ]; }; then
-    echo "qa-run: no tests/run-tests.sh and no test command in verify:"
-    printf 'qa-run: verdict FAIL no usable test runner; hand-check the criteria and say so\n'
-    return 3
-  fi
+  _runner_pick . ${present[@]+"${present[@]}"} || runner_rc=$?
+  case "$runner_rc" in
+    4) printf 'qa-run: verdict BLOCKED spec: %s\n' "$runner_why"; return 4 ;;
+    3)
+      echo "qa-run: no tests/run-tests.sh and no test command in verify:"
+      printf 'qa-run: verdict FAIL no usable test runner; hand-check the criteria and say so\n'
+      return 3 ;;
+  esac
   label="${runner:-targeted}"
-  # _tc_exec OUTFILE SEL FILE -- one run of an entry; its lines are appended to OUTFILE.
-  _tc_exec() {
-    local out="$1" sel="$2" f="$3" cmd base cls dir raw rc id st
-    base="${f##*/}"; cls="${base%.*}"; [ -n "$cls" ] || cls="$base"
-    dir="${f%/*}"; [ "$dir" != "$f" ] || dir="."
-    cmd="${TC_RUN[$sel]}"
-    cmd="${cmd//\{file\}/$f}"; cmd="${cmd//\{class\}/$cls}"; cmd="${cmd//\{dir\}/$dir}"
-    raw="$tmp/entry.out"
-    bash "$SCRIPT_DIR/pipeline-verify.sh" --issue "$issue" --worktree "$top" -- \
-      bash -c "$cmd" > "$raw" 2>&1; rc=$?
-    cat "$raw" >> "$out"
-    if [ -n "${TC_PASS[$sel]}${TC_FAIL[$sel]}" ]; then
-      while read -r id st; do
-        case "$st" in
-          pass) printf '  ok  %s (verify.targeted_commands entry %s)\n' "$id" "${TC_IDX[$sel]}" >> "$out" ;;
-          fail) printf 'FAIL  %s (verify.targeted_commands entry %s)\n' "$id" "${TC_IDX[$sel]}" >> "$out" ;;
-        esac
-      done <<EOF
-$(cmd_map "$raw" --spec "$spec" --pass-re "${TC_PASS[$sel]}" --fail-re "${TC_FAIL[$sel]}")
-EOF
-    fi
-    return "$rc"
-  }
-  # _qa_exec OUTFILE PATH... -- one run; output (stdout+stderr) to OUTFILE.
-  _qa_exec() {
-    local out="$1" a=() rest=() q rc=0 r
-    shift
-    : > "$out"
-    for q in "$@"; do
-      if _tc_pick "$q"; then
-        _tc_exec "$out" "$TC_SEL" "$q"; r=$?
-        [ "$rc" -ne 0 ] || rc="$r"
-      else
-        rest+=("$q")
-      fi
-    done
-    [ "${#rest[@]}" -gt 0 ] || return "$rc"
-    if [ "$runner" = talos ]; then
-      for q in "${rest[@]}"; do a+=(--for "$q"); done
-      bash "$SCRIPT_DIR/pipeline-verify.sh" --issue "$issue" --worktree "$top" -- \
-        bash tests/run-tests.sh "${a[@]}" --strict --no-cache >> "$out" 2>&1; r=$?
-    else
-      bash "$SCRIPT_DIR/pipeline-verify.sh" --issue "$issue" --worktree "$top" -- \
-        bash -c "$vline \"\$@\"" talos-qa "${rest[@]}" ${filters[@]+"${filters[@]}"} >> "$out" 2>&1; r=$?
-    fi
-    [ "$rc" -ne 0 ] || rc="$r"
-    return "$rc"
-  }
 
   # 8. Head run.
   : > "$tmp/head.out"; : > "$tmp/red.out"
@@ -945,32 +1030,16 @@ EOF
   fi
 
   # 9. Red run: the first commit after the merge-base, when its own change is tests-only.
-  local note="" mb red="" red8="" f bad_path="" frozen_files=() frozen_rc=0
+  local note="" bref mb red="" red8="" red_why="" frozen_files=() frozen_rc=0
   if [ "${#present[@]}" -eq 0 ]; then
     note="no test file to run; red proof skipped"
   else
-    local bref="${base:-$(cfg base_branch 2>/dev/null)}"
-    [ -n "$bref" ] || bref="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
-    [ -n "$bref" ] || bref=main
-    mb="$(git merge-base HEAD "origin/$bref" 2>/dev/null || git merge-base HEAD "$bref" 2>/dev/null)"
-    [ -z "$mb" ] || red="$(git rev-list --reverse "$mb"..HEAD 2>/dev/null | head -n 1)"
-    if [ -z "$red" ]; then
-      note="no red commit found after the merge-base with $bref; red proof skipped"
-    else
-      red8="${red:0:8}"
-      while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        _qa_is_test_path "$f" || { bad_path="$f"; break; }
-      done <<EOF
-$(git diff-tree --no-commit-id --name-only -r --root "$red" 2>/dev/null)
-EOF
-      if [ -n "$bad_path" ]; then
-        note="red commit $red8 is not tests-only ($(printf '%s' "$bad_path" | tr -cd '[:print:]' | head -c 80)); red proof skipped"
-        red=""
-      elif [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
-        note="the head run left tracked files modified; red proof skipped"
-        red=""
-      fi
+    _red_commit HEAD "$base"
+    if [ -n "$red_why" ]; then
+      note="$red_why; red proof skipped"
+    elif [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+      note="the head run left tracked files modified; red proof skipped"
+      red=""
     fi
   fi
   if [ -n "$red" ]; then
@@ -1078,6 +1147,198 @@ EOF
   return 0
 }
 
+# The throwaway worktree of red-check's red commit (removed on every path out).
+_RC_HOME=""
+_RC_WT=""
+_rc_exit() {
+  [ -n "$_RC_WT" ] || return 0
+  git -C "$_RC_HOME" worktree remove --force "$_RC_WT" >/dev/null 2>&1 || :
+  git -C "$_RC_HOME" worktree prune >/dev/null 2>&1 || :
+  _RC_WT=""
+}
+
+# _rc_collisions: lines `id-collision AC<n> file=<f>` on stdout for the criteria
+# (table) whose id is already labelled in a Tests file before this branch (the
+# file exists at the merge-base mb and labels it there) or labelled by two Tests
+# files at the red commit. Pure text, one `git show` per file and commit. The
+# label is the placement parse: the id first in a quoted string or after ok/FAIL.
+_rc_collisions() {
+  local id p i re at_mb at_red n_red hit
+  local red_txt=() mb_txt=()
+  for p in ${paths[@]+"${paths[@]}"}; do
+    red_txt+=("$(git show "$red:$p" 2>/dev/null)")
+    mb_txt+=("$([ -z "$mb" ] || git show "$mb:$p" 2>/dev/null)")
+  done
+  for id in $(printf '%s\n' "$table" | awk '$2 == "test" || $2 == "same" { print $1 }'); do
+    re="([\"']|(ok|FAIL)[[:space:]]+)$id([^A-Za-z0-9_]|\$)"
+    n_red=0; i=0
+    for p in ${paths[@]+"${paths[@]}"}; do
+      if grep -qE "$re" <<<"${red_txt[$i]}"; then n_red=$((n_red + 1)); fi
+      i=$((i + 1))
+    done
+    i=0
+    for p in ${paths[@]+"${paths[@]}"}; do
+      hit=0
+      grep -qE "$re" <<<"${mb_txt[$i]}" && hit=1
+      if [ "$n_red" -ge 2 ] && grep -qE "$re" <<<"${red_txt[$i]}"; then hit=1; fi
+      [ "$hit" -eq 0 ] || printf 'id-collision %s file=%s\n' "$id" "$p"
+      i=$((i + 1))
+    done
+  done
+}
+
+# red-check ISSUE [REF] (#747): each criterion's kind against its state at the
+# red commit, in a throwaway worktree (the caller's checkout is never touched).
+cmd_red_check() {
+  local issue="${1:-}" ref="${2:-HEAD}" home sha tmp
+  [ $# -ge 1 ] && [ $# -le 2 ] || usage
+  case "$issue" in ''|*[!0-9]*) usage ;; esac
+  case "$ref" in ''|-*|*[!A-Za-z0-9_./~^@{}-]*) usage ;; esac
+
+  home="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "pipeline-criteria: red-check: not inside a git checkout" >&2; return 1; }
+  cd "$home" || return 1
+  _VERB=red-check
+  if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
+    # shellcheck source=pipeline-cfg-cache.sh
+    . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
+    _talos_on_exit '_rc_exit'
+  else
+    cfg() { :; }
+    trap '_rc_exit' EXIT
+  fi
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/talos-red-check.XXXXXX")" && [ -d "$tmp" ] \
+    || { echo "pipeline-criteria: red-check: no scratch directory" >&2; return 1; }
+  if type _talos_on_exit >/dev/null 2>&1; then _talos_on_exit "rm -rf \"$tmp\""; fi
+
+  # 1. The spec, as data; what there is to check.
+  local spec="$tmp/spec.md" table paths filters refused found spec_why n_test
+  if ! _spec_usable "$issue" "$spec"; then
+    printf 'red-check: BLOCKED spec: %s\n' "$spec_why"
+    return 4
+  fi
+  n_test="$(printf '%s\n' "$table" | awk '$2 == "test" || $2 == "same"' | wc -l | tr -d ' ')"
+  if [ "$found" -eq 0 ]; then echo "red-check: skipped no Tests: line (prose-only spec)"; return 0; fi
+  if [ "$n_test" -eq 0 ]; then echo "red-check: skipped no test criteria"; return 0; fi
+
+  # 2. The red commit of REF.
+  sha="$(git rev-parse --verify -q "$ref^{commit}" 2>/dev/null)"
+  if [ -z "$sha" ] && [[ "$ref" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+    git fetch -q origin "$ref" >/dev/null 2>&1 || :
+    sha="$(git rev-parse --verify -q "$ref^{commit}" 2>/dev/null)"
+  fi
+  [ -n "$sha" ] || { echo "pipeline-criteria: red-check: cannot resolve $ref" >&2; return 1; }
+  local bref mb red red8 red_why p
+  _red_commit "$sha" ""
+  if [ -n "$red_why" ]; then echo "red-check: skipped $red_why"; return 0; fi
+  local at_red=()
+  for p in ${paths[@]+"${paths[@]}"}; do
+    git cat-file -e "$red:$p" 2>/dev/null && at_red+=("$p")
+  done
+  if [ "${#at_red[@]}" -eq 0 ]; then echo "red-check: skipped no test file exists at the red commit $red8"; return 0; fi
+
+  # 3. The id collisions (text), then the red run in a detached worktree.
+  local out="" n_col=0 n_mis=0 line
+  out="$(_rc_collisions)"
+  [ -z "$out" ] || n_col="$(printf '%s\n' "$out" | wc -l | tr -d ' ')"
+  local runner vline runner_why runner_rc=0 top="$tmp/wt"
+  git worktree add -q --detach "$top" "$red" >/dev/null 2>&1 \
+    || { echo "red-check: skipped could not check out the red commit $red8"; return 0; }
+  _RC_HOME="$home"; _RC_WT="$top"
+  _tc_load
+  _runner_pick "$top" "${at_red[@]}" || runner_rc=$?
+  case "$runner_rc" in
+    4) printf 'red-check: BLOCKED spec: %s\n' "$runner_why"; return 4 ;;
+    3) echo "red-check: no tests/run-tests.sh and no test command in verify:"; return 3 ;;
+  esac
+  : > "$tmp/red.out"
+  ( cd "$top" && _qa_exec "$tmp/red.out" "${at_red[@]}" ) >/dev/null 2>&1 || :
+  _rc_exit
+
+  # 4. Each (test) that passed at red and each (same) that failed there.
+  local id st kind mis=""
+  while read -r id st; do
+    kind="$(printf '%s\n' "$table" | awk -v i="$id" '$1 == i { print $2 }')"
+    if [ "$kind" = test ] && [ "$st" = pass ]; then mis="${mis}kind-mismatch $id want=same"$'\n'; n_mis=$((n_mis + 1))
+    elif [ "$kind" = same ] && [ "$st" = fail ]; then mis="${mis}kind-mismatch $id want=test"$'\n'; n_mis=$((n_mis + 1)); fi
+  done <<EOF
+$(cmd_map "$tmp/red.out" --spec "$spec")
+EOF
+  [ -z "$mis" ] || printf '%s' "$mis"
+  [ -z "$out" ] || printf '%s\n' "$out"
+  if [ "$n_col" -gt 0 ]; then echo "red-check: COLLISION $n_col"; return 4; fi
+  if [ "$n_mis" -gt 0 ]; then echo "red-check: MISMATCH $n_mis"; return 1; fi
+  echo "red-check: ok"
+}
+
+# The spec text on argv[1] with the red-check findings on stdin applied: each
+# `kind-mismatch AC<n> want=same|test` flips the final kind marker of that
+# criterion's checklist line, and the spec's leading `**PM spec:**` is followed
+# by a line saying the driver revised it. Every other byte is unchanged. Exit 1
+# when a listed criterion is not a flippable line of the spec.
+_REVISE_PY='
+import re, sys
+text = open(sys.argv[1], encoding="utf-8", newline="").read()
+want, order = {}, []
+for ln in sys.stdin:
+    m = re.match(r"^kind-mismatch (AC[0-9]+) want=(same|test)$", ln.strip())
+    if m and m.group(1) not in want:
+        want[m.group(1)] = m.group(2)
+        order.append(m.group(1))
+if not want:
+    sys.exit(1)
+item = re.compile(r"^[ \t]*[-*][ \t]+\[[ xX]\][ \t]+[*`]*(AC[0-9]+)")
+marker = re.compile(r"\((test|prose|same)[:)]")
+done = set()
+lines = text.split("\n")
+for i, ln in enumerate(lines):
+    m = item.match(ln)
+    if not m or m.group(1) not in want or m.group(1) in done:
+        continue
+    ms = list(marker.finditer(ln))
+    if not ms:
+        continue
+    start = ms[-1].start()
+    end = ln.find(")", start)
+    # (test) is flipped to (same), (same...) to (test); anything else is not a kind to flip.
+    if end < 0 or ms[-1].group(1) != ("test" if want[m.group(1)] == "same" else "same"):
+        continue
+    new = "(same: green at the red commit, found by red-check)" if want[m.group(1)] == "same" else "(test)"
+    lines[i] = ln[:start] + new + ln[end + 1:]
+    done.add(m.group(1))
+if len(done) != len(order):
+    sys.stderr.write("revise-spec: not a flippable criterion line: " + " ".join(a for a in order if a not in done) + "\n")
+    sys.exit(1)
+text = "\n".join(lines)
+why = ", ".join(("%s is (same) (green at the red commit)" if want[a] == "same" else "%s is (test) (red at the red commit)") % a for a in order)
+lead = "**PM spec:**"
+note = lead + " revised by the driver after red-check: " + why + "\n\n"
+at = text.find(lead)
+if at < 0:
+    sys.stdout.write(note + text)
+else:
+    rest = text[at + len(lead):].lstrip(" \t")
+    if rest.startswith("\n"):
+        rest = rest[1:]
+    sys.stdout.write(text[:at] + note + rest)
+'
+
+# revise-spec ISSUE (#747): the issue's spec with the red-check findings on
+# stdin applied (see _REVISE_PY); the new spec comment on stdout. Reads only.
+cmd_revise_spec() {
+  local issue="${1:-}" tmp rc=0
+  [ $# -eq 1 ] || usage
+  case "$issue" in ''|*[!0-9]*) usage ;; esac
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/talos-revise-spec.XXXXXX")" && [ -d "$tmp" ] \
+    || { echo "pipeline-criteria: revise-spec: no scratch directory" >&2; return 1; }
+  if bash "$SCRIPT_DIR/pipeline-vcs.sh" view-issue "$issue" --spec 2>/dev/null | python3 -I -c "$_QA_SPEC_PY" > "$tmp/spec.md" && [ -s "$tmp/spec.md" ]; then
+    python3 -I -c "$_REVISE_PY" "$tmp/spec.md" || rc=$?
+  else
+    echo "pipeline-criteria: revise-spec: spec unreadable for issue #$issue" >&2; rc=1
+  fi
+  rm -rf "${tmp:?}"
+  return "$rc"
+}
+
 sub="${1:-}"
 [ $# -gt 0 ] && shift
 case "$sub" in
@@ -1093,5 +1354,7 @@ case "$sub" in
   spec-check) cmd_spec_check "$@" ;;
   spec-usable) cmd_spec_usable "$@" ;;
   placement) cmd_placement "$@" ;;
+  red-check) cmd_red_check "$@" ;;
+  revise-spec) cmd_revise_spec "$@" ;;
   *) usage ;;
 esac

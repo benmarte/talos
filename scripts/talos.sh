@@ -276,6 +276,16 @@
 #         issue blocked, `stop reason=qa-flaky issue=<N> pr=<M>`, exit 0, no
 #         attempt (#717). Other FAIL shapes, or an edited spec, run the fix round. A QA stage that ends
 #         `BLOCKED: spec: <why>` stops the same way (#645).
+#         Right after a first-round developer opens the PR, before any review stage,
+#         the run asks `pipeline-criteria.sh red-check <N> <pr-head>` once per PR
+#         (#747; a fix round never does): a `(test)` green at the red commit or a
+#         `(same)` red there (exit 1) is re-posted by the run as a new `**PM spec:**`
+#         comment with just those kinds flipped, spec-usable is asked again and the
+#         run goes on to reviewer; an id already labelled by an earlier issue's file
+#         or by two `Tests:` files (exit 4) blocks PR and issue and stops `reason=
+#         spec-unusable detail=id-collision issue=<N> pr=<M>` (exit 0), no reviewer
+#         (a `BLOCKED spec:` verdict stops without `detail=`); any other exit is
+#         relayed and the run continues.
 #         A reviewer, security or adversarial
 #         finding gets its developer fix round in the same run: under PR_DRAFT the
 #         other enabled review roles with no fresh approval run on that head first,
@@ -4266,6 +4276,11 @@ print(min(new) if new else "")' "$_o0" "$_o1")" || _w=""
   if [ "$_v" = BLOCKED ]; then
     _talos_relay blocked "$(grep -m 1 -v '^[[:space:]]*$' "$_CFG_CACHE_DIR/agent.out" 2>/dev/null | head -c 300)"
   fi
+  # #747: the criteria kinds are checked against the red commit once, as soon as a
+  # first-round developer has opened the PR (a fix-round developer's PR is known).
+  if [ "$_role" = developer ] && [ -z "$_pr" ]; then
+    case "$_v" in "PR_OPENED "*) _talos_run_red_check "${_v#PR_OPENED }" "$_n" ;; esac
+  fi
   # #640: a review-side stage that ends the same way at the same head as its
   # last dispatch on this PR would only be dispatched again: the run stops.
   case "$_role:$_next" in
@@ -4428,6 +4443,74 @@ _talos_run_qa_comment() {
   printf '%s\n' "$_cnt" > "$_f" || _talos_stop scratch-unavailable
 }
 
+# _talos_run_spec_usable <pr> <issue> (#610): `pipeline-criteria.sh spec-usable
+# <issue>`. A spec QA cannot use (exit 4) blocks the PR and the issue, the verb's
+# line relayed, and ends the run `stop reason=spec-unusable issue=<N> pr=<M>`
+# (exit 0); exit 0 returns; any other exit is `stop reason=state-unavailable`.
+_talos_run_spec_usable() {
+  local _pr="$1" _n="$2"
+  _talos_run_capture spec-usable bash "$SCRIPT_DIR/pipeline-criteria.sh" spec-usable "$_n" < /dev/null
+  case "$_RC" in
+    0) return 0 ;;
+    4)
+      _talos_block_labels "$_n" "$_pr"
+      _talos_relay spec-usable "$_OUT"
+      _talos_emit stop "reason=spec-unusable issue=$_n pr=$_pr"
+      _talos_flush; exit 0 ;;
+    *) _talos_stop state-unavailable ;;
+  esac
+}
+
+# _talos_run_red_check <pr> <issue> (#747): once per PR per run, right after a
+# first-round developer opened it and before any review stage, `pipeline-criteria.sh
+# red-check <issue> <pr-head>` compares each criterion's kind with its state at the
+# red commit.
+#   exit 0, 3 (no runner): the run continues.
+#   exit 1 with a `red-check: MISMATCH` line (kind-mismatch): the spec is re-posted as a new `**PM spec:**` comment
+#     with just those kinds flipped (`revise-spec`, the body in a file), spec-usable
+#     is asked again, and the run continues. An unreadable spec or a failed post is
+#     `stop reason=state-unavailable`.
+#   exit 4: PR and issue blocked, the lines relayed, `stop reason=spec-unusable
+#     detail=id-collision issue=<N> pr=<M>` (exit 0); a `BLOCKED spec:` verdict stops
+#     without `detail=`.
+#   anything else: the output is relayed and the run continues -- a red-check
+#     fault never blocks it.
+_talos_run_red_check() {
+  local _pr="$1" _n="$2" _f="$_CFG_CACHE_DIR/red-check.$1" _head _lines
+  [ ! -f "$_f" ] || return 0
+  : > "$_f" || _talos_stop scratch-unavailable
+  _talos_cap _vcs pr-head "$_pr"
+  _head="${_OUT%%$'\n'*}"
+  if [ "$_RC" -ne 0 ] || [ -z "$_head" ]; then
+    _talos_relay red-check "pr-head unreadable for PR #$_pr; red-check skipped"
+    return 0
+  fi
+  _talos_run_capture red-check bash "$SCRIPT_DIR/pipeline-criteria.sh" red-check "$_n" "$_head" < /dev/null
+  _lines="$(head -n 24 <<<"$_OUT")"
+  # Exit 1 is also the verb's own fault code: only a MISMATCH verdict line is a kind-mismatch.
+  { [ "$_RC" -ne 1 ] || grep -q '^red-check: MISMATCH ' <<<"$_OUT"; } || _RC=fault
+  case "$_RC" in
+    0) return 0 ;;
+    1)
+      _talos_relay red-check "$_lines"
+      _talos_run_capture revise-spec bash "$SCRIPT_DIR/pipeline-criteria.sh" revise-spec "$_n" <<<"$_OUT"
+      { [ "$_RC" -eq 0 ] && [ -n "$_OUT" ]; } || _talos_stop state-unavailable
+      _BODY="$_OUT"
+      _talos_say comment-issue "$_n" || _talos_stop state-unavailable
+      _talos_run_spec_usable "$_pr" "$_n" ;;
+    4)
+      _talos_block_labels "$_n" "$_pr"
+      _talos_relay red-check "$_lines"
+      if grep -q '^red-check: BLOCKED spec:' <<<"$_lines"; then
+        _talos_emit stop "reason=spec-unusable issue=$_n pr=$_pr"
+      else
+        _talos_emit stop "reason=spec-unusable detail=id-collision issue=$_n pr=$_pr"
+      fi
+      _talos_flush; exit 0 ;;
+    *) _talos_relay red-check "$_lines" ;;
+  esac
+}
+
 # _talos_run_qa_fail <pr> <issue> (#537): a QA FAIL is a developer fix round,
 # the playbook's flow: `gate fix-round <N> qa --pr <M>` (the budget guard, the
 # attempt ceilings, the unblock right before the round), then the developer in
@@ -4447,16 +4530,7 @@ _talos_run_qa_comment() {
 # reason=state-unavailable`.
 _talos_run_qa_fail() {
   local _pr="$1" _n="$2" _head _f
-  _talos_run_capture spec-usable bash "$SCRIPT_DIR/pipeline-criteria.sh" spec-usable "$_n" < /dev/null
-  case "$_RC" in
-    0) : ;;
-    4)
-      _talos_block_labels "$_n" "$_pr"
-      _talos_relay spec-usable "$_OUT"
-      _talos_emit stop "reason=spec-unusable issue=$_n pr=$_pr"
-      _talos_flush; exit 0 ;;
-    *) _talos_stop state-unavailable ;;
-  esac
+  _talos_run_spec_usable "$_pr" "$_n"
   _talos_run_qa_flaky "$_pr" "$_n"
   _talos_run_qa_spec_fault "$_pr" "$_n"
   _talos_run_qa_comment "$_pr" "$_n"

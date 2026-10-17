@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- feat: `pipeline-criteria.sh red-check <N> [<ref>]` checks each criterion's kind against the red commit in a throwaway worktree (`kind-mismatch`, `id-collision`), and `talos.sh run` calls it once after the first-round developer opens the PR: a `(test)`/`(same)` mismatch is re-posted as a revised `**PM spec:**` and the run continues, an id collision stops `spec-unusable detail=id-collision` before reviewer
 - fix(azure): `pr-files` lists a deleted file from the change's `originalPath` (ADO sends `item.path` null) and a rename under both names, so `check-pr-files` no longer fails closed on a PR that deletes a file; an entry with neither path is still a parse failure
 - fix: `talos.sh run` exports one `PIPELINE_RUN_ID` per run (kept across the exec after a merge, a caller's own value wins), so the Azure board column lookup and its `board-states-collide` warning happen once per run instead of on every status move
 - fix(azure): the board column lookup uses the project's default team when `board.azure_team` is unset (the backlogs API answers 404 without a team), warns `board-team-unmatched` when `vcs.azure.area_path` matches no team, and `board-columns-unavailable` names the failed `step` (teams, backlogs or columns)
