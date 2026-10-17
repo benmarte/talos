@@ -232,6 +232,7 @@
 6 test-unsafe-cleanup-guard.sh
 79 test-upsert-pr-comment.sh
 13 test-user-layer-hermetic.sh
+2 test-vcs-provider-parity.sh
 17 test-vcs-shared-approval-sha.sh
 21 test-vcs-shared-markers.sh
 3 test-vcs-shared-pr-files.sh
