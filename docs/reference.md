@@ -798,7 +798,7 @@ Cost: the plan's cloud session credit applies to cloud sessions only; a run on y
 
 ### GitHub-only verbs
 
-Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azure and GitLab), `upsert-pr-comment`, `mark-needs-owner` and `list-needs-owner` (also on Azure), `edit-pr-body`, `has-spec` (also on Azure and GitLab), `conflict-files`. Other providers exit non-zero; `talos.sh next` then stops with `unsupported-verb:<verb>`.
+Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azure and GitLab), `upsert-pr-comment`, `mark-needs-owner` and `list-needs-owner` (also on Azure), `edit-pr-body` (also on GitLab and Azure; Azure refuses a body over 4000 characters, only `file` exits 2), `has-spec` (also on Azure and GitLab), `conflict-files`. Other providers exit non-zero; `talos.sh next` then stops with `unsupported-verb:<verb>`.
 
 ### Provider parity
 
@@ -806,7 +806,7 @@ Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azu
 
 | Verb | `github` / `github-api` | `gitlab` | `azure` | `file` |
 |---|---|---|---|---|
-| `edit-pr-body` | yes | exception: github only (guard exits 2) | exception: github only (guard exits 2) | exception: no PRs |
+| `edit-pr-body` | yes | yes | yes (refuses a body over 4000 characters) | exception: no PRs |
 | `conflict-files` | yes | exception: github only | exception: github only | exception: no PRs |
 | `upsert-pr-comment` | yes | exception: no GitLab arm yet | yes | exception: no PRs |
 | `mark-needs-owner` | yes | exception: no GitLab arm yet | yes | exception: local-only |

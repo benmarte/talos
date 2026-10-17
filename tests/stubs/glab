@@ -253,6 +253,21 @@ print('\n'.join(out))
       printf '[{"iid":7,"title":"fix: guard","state":"opened","source_branch":"fix/issue-42-guard"}]\n'
     fi
     exit 0 ;;
+  "api --method PUT projects/"*"/merge_requests/"*)
+    # edit-pr-body (#762): log the --input file (the JSON body) to GH_LOG as
+    # `GLAB BODY: ...`. STUB_GITLAB_API_FAIL=1 fails the write.
+    if [ "${STUB_GITLAB_API_FAIL:-}" = "1" ]; then
+      echo "ERROR: 500 Internal Server Error" >&2
+      exit 1
+    fi
+    _in=""; _p=""
+    for _a in "$@"; do
+      [ "$_p" = "--input" ] && _in="$_a"
+      _p="$_a"
+    done
+    if [ -n "${GH_LOG:-}" ] && [ -f "$_in" ]; then { printf 'GLAB BODY: '; cat "$_in"; printf '\n'; } >> "$GH_LOG"; fi
+    printf '{}\n'
+    exit 0 ;;
   "api --paginate projects/"*"/pipelines/"*"/jobs"*)
     # A pipeline's jobs (#737): STUB_GITLAB_PIPELINE_JOBS is the raw output,
     # pages back-to-back as `glab api --paginate` prints them (unset = no

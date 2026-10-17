@@ -1096,8 +1096,8 @@ for _p in github github-api; do
   assert_eq "" "$(cat "$GH_LOG" "$CURL_LOG")" "#455 $_p: --dry-run makes no call"
 done
 
-# other providers: exit 2, before any body is read
-for _p in gitlab azure file; do
+# providers without PRs: exit 2, before any body is read
+for _p in file; do
   _epb_cfg "$_p"
   _epb_run edit-pr-body 7 --body-file "$SANDBOX/nope"
   assert_eq "2" "$RC" "#455 $_p: edit-pr-body exits 2"
