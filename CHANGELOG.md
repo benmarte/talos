@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- feat: `pipeline-vcs.sh conflict-files` works on gitlab (head fetched from `refs/merge-requests/<iid>/head`) and azure (the PR's source branch), and `diff-pr --stat` prints the github-shaped per-file summary on gitlab (counted from the MR diffs) and azure (from `git diff --numstat`); only `file` still exits 1, and the gitlab and azure `conflict-files` parity exceptions are gone.
 - fix(azure): `record-attempt` logs `marker posted at <org>/<project>/_workitems/edit/<id>` instead of `<unknown>`; `comment-issue` and `close-issue` output is unchanged.
 - fix: azure `pr-checks-required` requeues a Build policy evaluation that is queued with no build attached, once per PR, evaluation and source commit, then reports it `stuck` (exit 1) on the next read instead of waiting forever; `verify.ci_requeue_stuck` (default `true`) switches it off.
 - feat: `pipeline-vcs.sh upsert-pr-comment`, `mark-needs-owner` and `list-needs-owner` work on gitlab for merge requests (the marker note is a PUT of the MR note or a new note, the question an MR note plus `glab mr update --label`), with the output shapes and fail-closed rules of github and azure; only `file` still exits 2, and the gitlab parity exceptions for the three verbs are gone.

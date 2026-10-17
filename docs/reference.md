@@ -799,7 +799,7 @@ Cost: the plan's cloud session credit applies to cloud sessions only; a run on y
 
 ### GitHub-only verbs
 
-Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azure and GitLab), `upsert-pr-comment`, `mark-needs-owner` and `list-needs-owner` (also on Azure and, for merge requests, GitLab), `edit-pr-body` (also on GitLab and Azure; Azure refuses a body over 4000 characters, only `file` exits 2), `has-spec` (also on Azure and GitLab), `conflict-files`. Other providers exit non-zero; `talos.sh next` then stops with `unsupported-verb:<verb>`.
+Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azure and GitLab), `upsert-pr-comment`, `mark-needs-owner` and `list-needs-owner` (also on Azure and, for merge requests, GitLab), `edit-pr-body` (also on GitLab and Azure; Azure refuses a body over 4000 characters, only `file` exits 2), `has-spec` (also on Azure and GitLab), `conflict-files` (also on GitLab and Azure). Other providers exit non-zero; `talos.sh next` then stops with `unsupported-verb:<verb>`.
 
 ### Provider parity
 
@@ -808,7 +808,7 @@ Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azu
 | Verb | `github` / `github-api` | `gitlab` | `azure` | `file` |
 |---|---|---|---|---|
 | `edit-pr-body` | yes | yes | yes (refuses a body over 4000 characters) | exception: no PRs |
-| `conflict-files` | yes | exception: github only | exception: github only | exception: no PRs |
+| `conflict-files` | yes | yes (fetches `refs/merge-requests/<iid>/head`) | yes (fetches the source branch) | exception: no PRs |
 | `upsert-pr-comment` | yes | yes (merge requests) | yes | exception: no PRs |
 | `mark-needs-owner` | yes | yes (merge requests) | yes | exception: local-only |
 | `list-needs-owner` | yes | yes (merge requests) | yes | exception: local-only |
@@ -819,7 +819,7 @@ Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azu
 
 The file provider supports `list-issues`, `view-issue`, `comment-issue` and `close-issue`.
 
-`diff-pr --stat` is a flag, not a verb, so the test cannot see it. It is supported on `github` and `github-api` only: the `gitlab` and `azure` `diff-pr` arms ignore it and print the full diff, and no provider has a `--files` flag (`pr-files` lists the paths).
+`diff-pr --stat` is a flag, not a verb, so the test cannot see it. It is supported on `github`, `github-api`, `gitlab` (counted from the merge request's diffs) and `azure` (from `git diff --numstat origin/<target>...origin/<source>`), with one output shape; without it every provider prints the full diff. No provider has a `--files` flag (`pr-files` lists the paths).
 
 ### File mode and chat mode
 

@@ -1389,10 +1389,11 @@ _talos_gate_merge() {
   # conflicting path in merge.union_paths, else it exits 3), else by
   # update-branch (merge.auto_sync), else by the developer's merge-base task. A
   # pushed head is not CI-verified, so it ends in `wait`.
-  # conflict-files exists for github and github-api only (it exits 1 "not
-  # implemented" elsewhere, which is indistinguishable from a real failure on
-  # github), so the provider decides: any other provider is judged by pr-mergeable
-  # alone (no path list, so no union-path sync: CONFLICTING goes to the developer).
+  # conflict-files also exists for gitlab and azure now, but this caller stays
+  # github and github-api only until it is switched over (on `file` it exits 1 "not
+  # implemented", indistinguishable from a real failure on github), so the provider
+  # decides: any other provider is judged by pr-mergeable alone (no path list, so
+  # no union-path sync: CONFLICTING goes to the developer).
   case "$(cfg vcs.provider)" in
     github | github-api)
       _talos_cap _vcs conflict-files "$_pr"
