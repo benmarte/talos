@@ -151,6 +151,7 @@
 16 test-per-role-runner.sh
 0 test-pipeline-meta.sh
 15 test-pipeline-status.sh
+1 test-pipeline-verify-qa-bare.sh
 4 test-pipeline-verify.sh
 6 test-planner.sh
 5 test-plugin-install.sh

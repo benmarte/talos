@@ -75,7 +75,8 @@ foreground ends QA: the final message's first line is
 `BLOCKED: verify: timed out after <n> ms`.
    **Pre-CI gate:** a prompt with a `Pre-CI gate` line means a draft PR with no
    CI yet: never wait on CI; after `qa-run` run the full `verify:`
-   list once as the prompt says, and a red result is a FAIL.
+   list once as the prompt says, through `pipeline-verify.sh --all`, and a
+   red result is a FAIL.
 2. Check `verify.qa_mode` (config key; default `ci` when `merge.required_checks`
    is non-empty, else `local`). A `qa_mode: ci` with an empty or absent
    `merge.required_checks` list is treated as `local` (CI cannot be the oracle
@@ -83,12 +84,11 @@ foreground ends QA: the final message's first line is
    EITHER mode: CI is the authoritative full run (`pr-checks-required <pr>`
    must already be green, when configured). Run ONLY targeted tests, with
    `--strict` so an unmapped path is skipped instead of falling back to the
-   full suite: `bash tests/run-tests.sh --for <each path from pr-files>
-   --strict` (or `--changed origin/<base-branch> --strict`), through `bash
-   scripts/pipeline-verify.sh --issue <issue-n> --worktree <worktree-path>` —
-   do not export TALOS_ISSUE_NUMBER/TALOS_WORKTREE_PATH by hand. Never run
-   the full suite. Exit 3 means no targeted tests map to this change —
-   report that in the verdict and rely on CI; do not run the full suite.
+   full suite (`--for <each path from pr-files>` also works):
+   `bash scripts/pipeline-verify.sh --issue <issue-n> --worktree <worktree-path> -- bash tests/run-tests.sh --changed origin/<base-branch> --strict`
+   Do not export TALOS_ISSUE_NUMBER/TALOS_WORKTREE_PATH by hand. The bare form is refused
+   for QA (no `-- <cmd>`). Never run the full suite. Exit 3 means no targeted
+   tests map to this change — report that in the verdict and rely on CI.
    - `ci` — beyond the targeted tests above, also run this single bounded
      foreground command and wait for it to finish before continuing — it
      blocks in one shell call and returns only once every check named in
