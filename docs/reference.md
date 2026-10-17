@@ -800,6 +800,26 @@ Cost: the plan's cloud session credit applies to cloud sessions only; a run on y
 
 Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azure and GitLab), `upsert-pr-comment`, `mark-needs-owner` and `list-needs-owner` (also on Azure), `edit-pr-body`, `has-spec` (also on Azure and GitLab), `conflict-files`. Other providers exit non-zero; `talos.sh next` then stops with `unsupported-verb:<verb>`.
 
+### Provider parity
+
+[`tests/test-vcs-provider-parity.sh`](../tests/test-vcs-provider-parity.sh) collects the verbs the stage prompts and scripts call and fails when a provider lacks one that has no recorded `PARITY-EXCEPTION` (in its exceptions table, or on the provider's case arm), or when a recorded exception is stale (the provider now handles the verb, or nothing calls it). Every called verb not listed here is supported by all four providers; `github-api` is `github`.
+
+| Verb | `github` / `github-api` | `gitlab` | `azure` | `file` |
+|---|---|---|---|---|
+| `edit-pr-body` | yes | exception: github only (guard exits 2) | exception: github only (guard exits 2) | exception: no PRs |
+| `conflict-files` | yes | exception: github only | exception: github only | exception: no PRs |
+| `upsert-pr-comment` | yes | exception: no GitLab arm yet | yes | exception: no PRs |
+| `mark-needs-owner` | yes | exception: no GitLab arm yet | yes | exception: local-only |
+| `list-needs-owner` | yes | exception: no GitLab arm yet | yes | exception: local-only |
+| `record-attempt`, `read-attempt` | yes | yes | yes | exception: local-only (no comments) |
+| `read-comments` | yes | yes | yes | exception: local-only (no comments) |
+| `assign-issue` | yes | yes | yes | exception: local-only |
+| `comment-pr`, `pr-head`, `pr-head-ref`, `check-approval-sha` | yes | yes | yes | exception: no PRs |
+
+The file provider supports `list-issues`, `view-issue`, `comment-issue` and `close-issue`.
+
+`diff-pr --stat` is a flag, not a verb, so the test cannot see it. It is supported on `github` and `github-api` only: the `gitlab` and `azure` `diff-pr` arms ignore it and print the full diff, and no provider has a `--files` flag (`pr-files` lists the paths).
+
 ### File mode and chat mode
 
 `vcs.provider: file` uses a markdown checklist as issue list and board; `vcs.file.source.path` names it (default `plan.md`). Each `- [ ] Title` line is a work item, tagged `<!-- id: N -->` on the first `list-issues`; indented lines are its detail; `close-issue` ticks it. No PRs, labels, board, QA, review, security or docs: the validator and developer run and the developer commits to a branch. See [`file-mode.md`](../skills/pipeline/refs/file-mode.md).
