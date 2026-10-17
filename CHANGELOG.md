@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: `red-check` no longer stops a run with `detail=id-collision` when an `AC<n>` id is labelled by a `Tests:` file already on the base branch and by one the branch adds: it drops the older file (`drop-file`, `to-prose`, verdict `REVISE`), the driver re-posts the spec with that file on a new `**Regression:**` line, and `qa-run` runs that file whole at the head (`regression run exited <N>` fails the gate; a pass counts toward no criterion); `agents/pm.md` tells the PM to keep such files off the Tests line.
 - feat: `pipeline-vcs.sh conflict-files` works on gitlab (head fetched from `refs/merge-requests/<iid>/head`) and azure (the PR's source branch), and `diff-pr --stat` prints the github-shaped per-file summary on gitlab (counted from the MR diffs) and azure (from `git diff --numstat`); only `file` still exits 1, and the gitlab and azure `conflict-files` parity exceptions are gone.
 - fix(azure): `record-attempt` logs `marker posted at <org>/<project>/_workitems/edit/<id>` instead of `<unknown>`; `comment-issue` and `close-issue` output is unchanged.
 - fix: azure `pr-checks-required` requeues a Build policy evaluation that is queued with no build attached, once per PR, evaluation and source commit, then reports it `stuck` (exit 1) on the next read instead of waiting forever; `verify.ci_requeue_stuck` (default `true`) switches it off.

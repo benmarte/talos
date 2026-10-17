@@ -285,8 +285,10 @@
 #         (#747; a fix round never does): a `(test)` green at the red commit or a
 #         `(same)` red there (exit 1) is re-posted by the run as a new `**PM spec:**`
 #         comment with just those kinds flipped, spec-usable is asked again and the
-#         run goes on to reviewer; an id already labelled by an earlier issue's file
-#         or by two `Tests:` files (exit 4) blocks PR and issue and stops `reason=
+#         run goes on to reviewer; the same for `red-check: REVISE` (#773), where a
+#         pre-existing `Tests:` file that shares an id with a file the branch adds is
+#         moved to a `**Regression:**` line; any other id already labelled by an
+#         earlier issue's file or by two `Tests:` files (exit 4) blocks PR and issue and stops `reason=
 #         spec-unusable detail=id-collision issue=<N> pr=<M>` (exit 0), no reviewer
 #         (a `BLOCKED spec:` verdict stops without `detail=`); any other exit is
 #         relayed and the run continues.
@@ -4505,10 +4507,13 @@ _talos_run_spec_usable() {
 # red-check <issue> <pr-head>` compares each criterion's kind with its state at the
 # red commit.
 #   exit 0, 3 (no runner): the run continues.
-#   exit 1 with a `red-check: MISMATCH` line (kind-mismatch): the spec is re-posted as a new `**PM spec:**` comment
-#     with just those kinds flipped (`revise-spec`, the body in a file), spec-usable
-#     is asked again, and the run continues. An unreadable spec or a failed post is
-#     `stop reason=state-unavailable`.
+#   exit 1 with a `red-check: MISMATCH` line (kind-mismatch) or a `red-check: REVISE`
+#     line (#773: that and a pre-existing Tests file that shares an id with a file
+#     the branch adds, `drop-file` / `to-prose`): the lines are relayed, the spec is
+#     re-posted as a new `**PM spec:**` comment with those kinds flipped, the file
+#     moved to a `**Regression:**` line and its criteria made prose (`revise-spec`,
+#     the body in a file), spec-usable is asked again, and the run continues. An
+#     unreadable spec or a failed post is `stop reason=state-unavailable`.
 #   exit 4: PR and issue blocked, the lines relayed, `stop reason=spec-unusable
 #     detail=id-collision issue=<N> pr=<M>` (exit 0); a `BLOCKED spec:` verdict stops
 #     without `detail=`.
@@ -4526,8 +4531,8 @@ _talos_run_red_check() {
   fi
   _talos_run_capture red-check bash "$SCRIPT_DIR/pipeline-criteria.sh" red-check "$_n" "$_head" < /dev/null
   _lines="$(head -n 24 <<<"$_OUT")"
-  # Exit 1 is also the verb's own fault code: only a MISMATCH verdict line is a kind-mismatch.
-  { [ "$_RC" -ne 1 ] || grep -q '^red-check: MISMATCH ' <<<"$_OUT"; } || _RC=fault
+  # Exit 1 is also the verb's own fault code: only a MISMATCH or REVISE verdict line is a finding.
+  { [ "$_RC" -ne 1 ] || grep -qE '^red-check: (MISMATCH|REVISE) ' <<<"$_OUT"; } || _RC=fault
   case "$_RC" in
     0) return 0 ;;
     1)
