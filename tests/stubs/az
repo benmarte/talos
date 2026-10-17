@@ -357,7 +357,14 @@ print(json.dumps({'id': 5, 'fields': fields}))
   "repos pr show "*)
     # diff-pr / checkout-pr query specific refs with -o tsv; honor that.
     case "$args" in
-      *sourceRefName*tsv*) printf 'refs/heads/fix/issue-5-x\n' ;;
+      *sourceRefName*tsv*)
+        # STUB_AZURE_PR_SOURCE overrides the source branch (#766); set to ""
+        # it prints nothing, as for a PR whose source cannot be resolved.
+        if [ "${STUB_AZURE_PR_SOURCE+set}" = "set" ]; then
+          [ -n "$STUB_AZURE_PR_SOURCE" ] && printf 'refs/heads/%s\n' "$STUB_AZURE_PR_SOURCE"
+        else
+          printf 'refs/heads/fix/issue-5-x\n'
+        fi ;;
       *targetRefName*tsv*) printf 'refs/heads/main\n' ;;
       *)
         # find-pr (#298): STUB_AZURE_PR_<id> overrides the PR object per id.

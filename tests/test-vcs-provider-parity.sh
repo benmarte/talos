@@ -53,7 +53,7 @@ def function_body(name):
 # marker test-verb-parity.sh's extractor already skips).
 arm_re = re.compile(r'^\s{4}([a-z][a-z0-9|-]+)\)(.*)$')
 py_re = re.compile(r"\bverb == '([a-z][a-z0-9-]*)'")
-# Verbs handled before dispatch, for github and github-api only.
+# Verbs handled before dispatch, for every provider but file.
 PRE_DISPATCH = ('edit-pr-body', 'conflict-files')
 
 PROVIDERS = (('github', '_github'), ('gitlab', '_gitlab'),
@@ -71,7 +71,8 @@ for prov, fn in PROVIDERS:
                     handled[prov].add(v)
         if prov == 'file':
             handled[prov].update(py_re.findall(line))
-handled['github'].update(PRE_DISPATCH)
+for prov in ('github', 'gitlab', 'azure'):
+    handled[prov].update(PRE_DISPATCH)
 
 universe = set(PRE_DISPATCH)
 for prov, _ in PROVIDERS:
@@ -224,8 +225,6 @@ assert_contains "$out" "STALE gitlab never-called" "an exception for a verb nobo
 # slice of #753 adds the verb and deletes its line.
 read -r -d '' PARITY_EXCEPTIONS <<'TABLE' || true
 # provider verb PARITY-EXCEPTION: reason
-gitlab conflict-files PARITY-EXCEPTION: github and github-api only; handled before dispatch (#256)
-azure conflict-files PARITY-EXCEPTION: github and github-api only; handled before dispatch (#256)
 file assign-issue PARITY-EXCEPTION: local-only by design
 file check-approval-sha PARITY-EXCEPTION: local-only by design (no PRs, no approvals)
 file comment-pr PARITY-EXCEPTION: local-only by design (no PRs)
@@ -256,6 +255,17 @@ case "$PARITY_EXCEPTIONS" in
     fail "AC10 gitlab and azure edit-pr-body are no longer exceptions" ;;
   *"file edit-pr-body PARITY-EXCEPTION:"*) pass "AC10 only the file edit-pr-body exception is kept" ;;
   *) fail "AC10 only the file edit-pr-body exception is kept" ;;
+esac
+
+for want in "gitlab conflict-files" "azure conflict-files"; do
+  case "$PARITY_EXCEPTIONS" in
+    *"$want PARITY-EXCEPTION:"*) fail "AC7 the table no longer records: $want" ;;
+    *) pass "AC7 the table no longer records: $want" ;;
+  esac
+done
+case "$PARITY_EXCEPTIONS" in
+  *"file conflict-files PARITY-EXCEPTION:"*) pass "AC7 only the file conflict-files exception is kept" ;;
+  *) fail "AC7 only the file conflict-files exception is kept" ;;
 esac
 
 for want in "gitlab upsert-pr-comment" \
