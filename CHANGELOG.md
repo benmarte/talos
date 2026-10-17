@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- feat: `tests/test-vcs-provider-parity.sh` fails when a verb the prompts or scripts call is missing from a VCS provider without a recorded `PARITY-EXCEPTION`, and `docs/reference.md` has a provider parity table
 - feat: a broken environment is no longer graded as a code failure: `verify.ready` (repo-only list) runs before every `qa-run` test run and a failing command ends it `BLOCKED environment: <cmd> exited <N>` (exit 5), so the run stops `reason=environment` with no developer fix round; a FAIL or BLOCKED verdict keeps its raw output under `.talos/qa-run-<pr>/`, and `qa-run` names the config file that supplied `verify.targeted_commands`.
 - fix: `spec-check` and `qa-run` accept Next.js route-group and dynamic-segment test paths (`app/(routes)/farms/[id]/a.test.tsx`; `verify.targeted_commands` gets `{file}`, `{class}` and `{dir}` shell-quoted) and a bullet list right under a bare `**Tests:**` label, `tests-line-open` scans only the Tests line and its list, each refusal names its fix, and `agents/pm.md` states the rules and tells the PM to run `spec-check` before posting.
 - fix: a claude stage no longer waits about 115 s on each refused tool call under a terminal wrapper (cmux) that adds a `PermissionRequest` hook: `pipeline-agent.sh` starts `claude` with `CMUX_CLAUDE_HOOKS_DISABLED=1` unless the caller set it, and the QA profile says a refused command is not a block and the verdict must still be posted.

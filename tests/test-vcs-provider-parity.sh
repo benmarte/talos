@@ -5,6 +5,10 @@
 # case arm) records why not. tests/test-verb-parity.sh pins the _github set;
 # this file compares the providers with each other (#753 slice 1).
 #
+# A verb counts as called when a prompt or script passes it to pipeline-vcs.sh
+# (directly, through talos.sh's `_vcs` wrapper, or as pipeline-next.py's
+# `vcs('<verb>')`). The table is also in docs/reference.md (Provider parity).
+#
 # Later slices add the missing verbs and delete the matching table lines; a
 # table line left behind after that fails here as stale.
 #
@@ -220,6 +224,26 @@ assert_contains "$out" "STALE gitlab never-called" "an exception for a verb nobo
 # slice of #753 adds the verb and deletes its line.
 read -r -d '' PARITY_EXCEPTIONS <<'TABLE' || true
 # provider verb PARITY-EXCEPTION: reason
+gitlab edit-pr-body PARITY-EXCEPTION: github and github-api only; the pre-dispatch guard exits 2 (#455)
+azure edit-pr-body PARITY-EXCEPTION: github and github-api only; the pre-dispatch guard exits 2 (#455)
+gitlab upsert-pr-comment PARITY-EXCEPTION: no GitLab arm yet; azure has one
+gitlab mark-needs-owner PARITY-EXCEPTION: no GitLab arm yet; azure has one
+gitlab list-needs-owner PARITY-EXCEPTION: no GitLab arm yet; azure has one
+gitlab conflict-files PARITY-EXCEPTION: github and github-api only; handled before dispatch (#256)
+azure conflict-files PARITY-EXCEPTION: github and github-api only; handled before dispatch (#256)
+file assign-issue PARITY-EXCEPTION: local-only by design
+file check-approval-sha PARITY-EXCEPTION: local-only by design (no PRs, no approvals)
+file comment-pr PARITY-EXCEPTION: local-only by design (no PRs)
+file conflict-files PARITY-EXCEPTION: local-only by design (no PRs)
+file edit-pr-body PARITY-EXCEPTION: local-only by design (no PRs)
+file list-needs-owner PARITY-EXCEPTION: local-only by design
+file mark-needs-owner PARITY-EXCEPTION: local-only by design
+file pr-head PARITY-EXCEPTION: local-only by design (no PRs)
+file pr-head-ref PARITY-EXCEPTION: local-only by design (no PRs)
+file read-attempt PARITY-EXCEPTION: local-only by design (no comments)
+file read-comments PARITY-EXCEPTION: local-only by design (no comments)
+file record-attempt PARITY-EXCEPTION: local-only by design (no comments)
+file upsert-pr-comment PARITY-EXCEPTION: local-only by design (no PRs)
 TABLE
 printf '%s\n' "$PARITY_EXCEPTIONS" >"$FIX/exceptions"
 
@@ -239,5 +263,9 @@ for want in "azure edit-pr-body" "gitlab edit-pr-body" "gitlab upsert-pr-comment
     *) fail "AC5 the table records: $want" ;;
   esac
 done
+
+parity_out="$(bash "$TALOS_ROOT/tests/test-verb-parity.sh" 2>&1)"; rc=$?
+assert_eq "0" "$rc" "AC6 tests/test-verb-parity.sh still passes unchanged"
+[ "$rc" -eq 0 ] || printf '%s\n' "$parity_out" >&2
 
 finish
