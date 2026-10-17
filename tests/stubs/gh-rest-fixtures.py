@@ -183,7 +183,22 @@ repo, rest = m.group(1), m.group(2) or ""
 # ── reads ────────────────────────────────────────────────────────────────────
 if method == "GET":
     if rest == "":
-        reply(200, {"full_name": repo, "default_branch": "main", "owner": {"login": repo.split("/")[0]}})
+        reply(200, {"full_name": repo, "default_branch": "main", "owner": {"login": repo.split("/")[0]},
+                    "html_url": "https://github.com/" + repo})
+    # attach-files (#776): the evidence branch and its files live in
+    # STUB_EVIDENCE_DIR (<dir>/branch exists once the branch does; each committed
+    # payload is <dir>/files/<path with / as __>).
+    EVID = E("STUB_EVIDENCE_DIR")
+    mm = re.fullmatch(r"/git/ref/heads/(.+)", rest)
+    if mm and EVID:
+        if mm.group(1) == "main" or (mm.group(1) == "talos-evidence" and os.path.exists(os.path.join(EVID, "branch"))):
+            reply(200, {"ref": "refs/heads/" + mm.group(1), "object": {"sha": "m" * 40, "type": "commit"}})
+        reply(404, {"message": "Not Found"})
+    mm = re.fullmatch(r"/contents/(.+)", rest)
+    if mm and EVID:
+        if os.path.exists(os.path.join(EVID, "files", mm.group(1).replace("/", "__"))):
+            reply(200, {"path": mm.group(1), "sha": "f" * 40})
+        reply(404, {"message": "Not Found"})
     mm = re.fullmatch(r"/pulls/(\d+)", rest)
     if mm and E("STUB_GH_API_FAIL") == "pr":
         reply(502, {"message": "Bad Gateway"})
@@ -270,6 +285,17 @@ if method == "POST" and mm:
     cid = E("STUB_COMMENT_ID", "100")
     reply(201, {"id": int(cid), "body": body.get("body", ""),
                 "html_url": "https://github.com/%s/issues/%s#issuecomment-%s" % (repo, mm.group(1), cid)})
+EVID = E("STUB_EVIDENCE_DIR")
+if method == "POST" and rest == "/git/refs" and EVID:
+    open(os.path.join(EVID, "branch"), "w").write(json.dumps(body))
+    reply(201, {"ref": body.get("ref", ""), "object": {"sha": body.get("sha", "")}})
+mm = re.fullmatch(r"/contents/(.+)", rest)
+if method == "PUT" and mm and EVID:
+    if E("STUB_EVIDENCE_PUT_FAIL") and E("STUB_EVIDENCE_PUT_FAIL") in mm.group(1):
+        reply(500, {"message": "Server Error"})
+    os.makedirs(os.path.join(EVID, "files"), exist_ok=True)
+    open(os.path.join(EVID, "files", mm.group(1).replace("/", "__")), "w").write(json.dumps(body))
+    reply(201, {"content": {"path": mm.group(1), "sha": "f" * 40}})
 if method == "POST" and rest == "/issues":
     n = E("STUB_NEW_ISSUE_NUMBER", "42")
     reply(201, {"number": int(n), "html_url": "https://github.com/%s/issues/%s" % (repo, n)})

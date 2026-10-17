@@ -340,6 +340,10 @@ print(json.dumps({'id': 5, 'fields': fields}))
     exit 0 ;;  # -o none prints nothing, as the real az does
   "boards work-item update "*)
     printf '{"id":1}\n' ;;
+  "account get-access-token "*)
+    # attach-files on azure (#776) uploads with curl and an Azure DevOps token.
+    [ "${STUB_AZURE_TOKEN_FAIL:-}" = "1" ] && _stub_fail "Please run 'az login' to setup account."
+    printf 'stub-ado-token\n' ;;
   "account show "*)
     # Operator identity for issues.assignee: self (#299).
     printf '%s\n' "${STUB_CURRENT_USER:-}" ;;
