@@ -253,6 +253,53 @@ print('\n'.join(out))
       printf '[{"iid":7,"title":"fix: guard","state":"opened","source_branch":"fix/issue-42-guard"}]\n'
     fi
     exit 0 ;;
+  "api --method POST projects/"*"/merge_requests/"*"/notes"*)
+    # upsert-pr-comment's create (#763): the --input file is {"body": ...}. It
+    # is logged to GH_LOG as `GLAB BODY: ...` and, with STUB_GITLAB_STATE_DIR
+    # set, recorded as an MR note. STUB_GITLAB_NOTE_WRITE_FAIL=1 or
+    # STUB_GITLAB_API_FAIL=1 fails the write.
+    if [ "${STUB_GITLAB_NOTE_WRITE_FAIL:-}" = "1" ] || [ "${STUB_GITLAB_API_FAIL:-}" = "1" ]; then
+      echo "ERROR: 500 Internal Server Error" >&2
+      exit 1
+    fi
+    _in=""; _p=""
+    for _a in "$@"; do
+      [ "$_p" = "--input" ] && _in="$_a"
+      _p="$_a"
+    done
+    if [ -n "${GH_LOG:-}" ] && [ -f "$_in" ]; then { printf 'GLAB BODY: '; cat "$_in"; printf '\n'; } >> "$GH_LOG"; fi
+    _pn="${args#*/merge_requests/}"; _pn="${_pn%%/*}"
+    [ -f "$_in" ] && _note_post mr_notes "$_pn" "$(python3 -I -c 'import json, sys; sys.stdout.write(json.load(open(sys.argv[1]))["body"])' "$_in")" >/dev/null
+    printf '{}\n'
+    exit 0 ;;
+  "api --method PUT projects/"*"/merge_requests/"*"/notes/"*)
+    # upsert-pr-comment's rewrite (#763): replaces that note's body in the
+    # state dir (a canned note has no file, so only the log shows the write).
+    if [ "${STUB_GITLAB_NOTE_WRITE_FAIL:-}" = "1" ] || [ "${STUB_GITLAB_API_FAIL:-}" = "1" ]; then
+      echo "ERROR: 500 Internal Server Error" >&2
+      exit 1
+    fi
+    _in=""; _p=""
+    for _a in "$@"; do
+      [ "$_p" = "--input" ] && _in="$_a"
+      _p="$_a"
+    done
+    if [ -n "${GH_LOG:-}" ] && [ -f "$_in" ]; then { printf 'GLAB BODY: '; cat "$_in"; printf '\n'; } >> "$GH_LOG"; fi
+    _pn="${args#*/merge_requests/}"; _pn="${_pn%%/*}"
+    _pid="${args##*/notes/}"; _pid="${_pid%% *}"
+    if [ -n "${STUB_GITLAB_STATE_DIR:-}" ] && [ -f "$_in" ] && [ -s "$STUB_GITLAB_STATE_DIR/mr_notes_$_pn" ]; then
+      NID="$_pid" IN="$_in" F="$STUB_GITLAB_STATE_DIR/mr_notes_$_pn" python3 -I -c '
+import json, os
+body = json.load(open(os.environ["IN"]))["body"]
+rows = [json.loads(l) for l in open(os.environ["F"]) if l.strip()]
+for r in rows:
+    if str(r["id"]) == os.environ["NID"]:
+        r["body"] = body
+open(os.environ["F"], "w").write("".join(json.dumps(r) + "\n" for r in rows))
+'
+    fi
+    printf '{}\n'
+    exit 0 ;;
   "api --method PUT projects/"*"/merge_requests/"*)
     # edit-pr-body (#762): log the --input file (the JSON body) to GH_LOG as
     # `GLAB BODY: ...`. STUB_GITLAB_API_FAIL=1 fails the write.
@@ -294,6 +341,11 @@ print('\n'.join(out))
     esac
     exit 0 ;;
   "api user"*)
+    # STUB_GITLAB_USER_FAIL=1 fails the identity lookup (#763).
+    if [ "${STUB_GITLAB_USER_FAIL:-}" = "1" ]; then
+      echo "ERROR: 401 Unauthorized" >&2
+      exit 1
+    fi
     # Operator identity for issues.assignee: self (#299). glab api user is
     # GET /user; a subset of the documented response (#305).
     printf '{"id":1,"username":"%s","name":"Operator","state":"active","locked":false,"web_url":"https://gitlab.com/%s"}\n' \
@@ -346,6 +398,11 @@ print(json.dumps(d))
     # glab issue note <n> --message <body>: prints the note's URL.
     shift 2; _note_post issue_notes "$1" "$(_msg_of "$@")"; exit 0 ;;
   "mr note "*)
+    # STUB_GITLAB_NOTE_POST_FAIL=1 fails the post (#763).
+    if [ "${STUB_GITLAB_NOTE_POST_FAIL:-}" = "1" ]; then
+      echo "ERROR: 500 Internal Server Error" >&2
+      exit 1
+    fi
     shift 2; _note_post mr_notes "$1" "$(_msg_of "$@")"; exit 0 ;;
   "mr update "*)
     # glab mr update <n> --label <l>: recorded when STUB_GITLAB_STATE_DIR is set.
@@ -354,6 +411,8 @@ print(json.dumps(d))
     for _mu_a in "$@"; do
       case "$_mu_prev" in
         -l|--label) [ -n "${STUB_GITLAB_STATE_DIR:-}" ] && printf '%s\n' "$_mu_a" >> "$STUB_GITLAB_STATE_DIR/labels_$_mu_n" ;;
+        -u|--unlabel) [ -n "${STUB_GITLAB_STATE_DIR:-}" ] && [ -f "$STUB_GITLAB_STATE_DIR/labels_$_mu_n" ] \
+          && { grep -vxF -- "$_mu_a" "$STUB_GITLAB_STATE_DIR/labels_$_mu_n" > "$STUB_GITLAB_STATE_DIR/labels_$_mu_n.tmp"; mv "$STUB_GITLAB_STATE_DIR/labels_$_mu_n.tmp" "$STUB_GITLAB_STATE_DIR/labels_$_mu_n"; } ;;
       esac
       _mu_prev="$_mu_a"
     done
