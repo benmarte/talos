@@ -55,6 +55,7 @@ board.status_field	Status	table	bootstrap-board.sh,pipeline-status.sh
 comments.enabled	true	table	docs
 comments.header		explicit	pipeline-events.sh
 comments.templates_dir	templates/comments	table	pipeline-vcs.sh
+docs.paths	README.md\ndocs/*\nscripts/pipeline-defaults.sh	table	talos.sh:_talos_docs_gate (#754, new)
 events.enabled	true	table	pipeline-hooks.sh
 events.path	talos/events.jsonl	table	pipeline-events.sh,pipeline-hooks.sh
 execution.isolation	worktree	table	pipeline-isolation.sh

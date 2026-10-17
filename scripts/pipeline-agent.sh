@@ -293,6 +293,13 @@
 # runner_cmd wrapping an Ollama-backed coding agent).
 #
 # Exit code is the runner's exit code — the orchestrator reacts to failures.
+# One exception (#754): 78 when the stage changed, created or removed a resolved
+# config file (the user-level ${TALOS_HOME:-~/.talos}/talos.pipeline.json, the
+# project file $PIPELINE_CONFIG or ./talos.pipeline.json, the repo's
+# talos.pipeline.json). Each is checksummed before and after the stage, so a Bash
+# write is caught too; stderr gets `pipeline-agent: reason=config-mutated
+# role=<role> file=<path>`. For the claude runner every role is also denied
+# Edit/Write on those files (_claude_perm_build).
 # (hooks.post_stage, if configured, runs after the runner exits but before
 # this script returns; it never changes the exit code.)
 set -uo pipefail
@@ -1467,8 +1474,64 @@ _cp_user_rule_ok() {
 _cp_verify_rule_ok() {
   [[ "${#1}" -le 200 && "$1" =~ ^[A-Za-z0-9./_][A-Za-z0-9\ ./_=:@%+-]*$ ]]
 }
+# _cp_docs_paths_warn <mode> (#754): headless claude refuses every Edit/Write under
+# .claude/ as a sensitive file unless the mode is auto or bypassPermissions, so a
+# docs.paths entry there needs the docs role in one of them. Fixed words only.
+_cp_docs_paths_warn() {
+  local _g
+  case "$1" in auto | bypassPermissions) return 0 ;; esac
+  while IFS= read -r _g; do
+    case "$_g" in
+      .claude/* | ./.claude/*)
+        _cp_warn "docs.paths names a path under .claude/, which headless claude refuses to edit unless the docs role runs with claude_permission_mode: auto (or bypassPermissions)"
+        return 0 ;;
+    esac
+  done <<EOF
+$(cfg docs.paths)
+EOF
+}
+
+# ── Config guard (#754) ───────────────────────────────────────────────────────
+# _GUARD_FILES: the resolved config files, existing or not, deduplicated; the
+# checksum of each before the stage is in _GUARD_BEFORE (same index).
+_GUARD_FILES=() _GUARD_BEFORE=()
+_guard_add() {
+  local _f
+  for _f in ${_GUARD_FILES[@]+"${_GUARD_FILES[@]}"}; do
+    if [ "$_f" = "$1" ] || [ "$_f" -ef "$1" ]; then return 0; fi
+  done
+  _GUARD_FILES+=("$1")
+}
+_guard_collect() {
+  local _p _top
+  _GUARD_FILES=()
+  [ -z "${TALOS_HOME:-${HOME:+$HOME/.talos}}" ] || _guard_add "${TALOS_HOME:-$HOME/.talos}/talos.pipeline.json"
+  _p="${PIPELINE_CONFIG:-talos.pipeline.json}"
+  case "$_p" in /*) ;; *) _p="$PWD/$_p" ;; esac
+  _guard_add "$_p"
+  if _top="$(git rev-parse --show-toplevel 2>/dev/null)" && [ -n "$_top" ]; then
+    [ "$(pwd -P)" != "$_top" ] || _top="$PWD"
+    _guard_add "$_top/talos.pipeline.json"
+  fi
+}
+_guard_sum() { if [ -f "$1" ]; then cksum < "$1"; else echo -; fi; }
+_guard_record() {
+  local _f
+  _GUARD_BEFORE=()
+  for _f in ${_GUARD_FILES[@]+"${_GUARD_FILES[@]}"}; do _GUARD_BEFORE+=("$(_guard_sum "$_f")"); done
+}
+# _guard_changed: prints the first file that differs from _guard_record; 1 when none.
+_guard_changed() {
+  local _f _i=0
+  for _f in ${_GUARD_FILES[@]+"${_GUARD_FILES[@]}"}; do
+    if [ "$(_guard_sum "$_f")" != "${_GUARD_BEFORE[$_i]}" ]; then printf '%s' "$_f"; return 0; fi
+    _i=$((_i + 1))
+  done
+  return 1
+}
+
 _claude_perm_build() {
-  local _a _own_allow=0 _skip=0 _own_mode=0 _mode _f _n _d _i=0 _line _rules=() _dirs=() _deny=() _tools _in_cwd=0 _phys _home
+  local _a _own_allow=0 _skip=0 _own_mode=0 _mode _f _n _d _i=0 _line _rules=() _dirs=() _deny=() _tools _in_cwd=0 _phys _home _g
   _CP_ARGS=()
   for _a in ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"}; do
     case "$_a" in
@@ -1488,6 +1551,7 @@ _claude_perm_build() {
         *) _cp_warn "agents.claude_permission_mode must be one of: $_CP_MODES -- ignoring it" ;;
       esac
     fi
+    [ "$ROLE" != docs ] || _cp_docs_paths_warn "$_mode"
   fi
   [ "$_own_allow" -eq 0 ] || return 0
 
@@ -1507,6 +1571,24 @@ _claude_perm_build() {
       fi
     done
   fi
+
+  # The resolved config files are read-only to every role (#754), as is the scripts
+  # dir; the checksum around the stage is what catches a Bash write.
+  _guard_collect
+  for _f in ${_GUARD_FILES[@]+"${_GUARD_FILES[@]}"}; do
+    [ -f "$_f" ] || continue
+    _d="$(cd "${_f%/*}" 2>/dev/null && pwd -P)"
+    _phys="${_d:+$_d/${_f##*/}}"
+    [ "$_phys" != "$_f" ] || _phys=""
+    for _g in "$_f" "$_phys"; do
+      [ -n "$_g" ] || continue
+      if _cp_safe_path "$_g"; then
+        _deny+=("Edit(/$_g)" "Write(/$_g)")
+      else
+        _cp_warn "a resolved config file has characters a permission rule cannot hold; a stage can read it but it is not denied to Edit/Write (the checksum still guards it)"
+      fi
+    done
+  done
 
   _rules=(Read Glob Grep)
   _home="$(cd "$HOME" 2>/dev/null && pwd)"
@@ -2018,11 +2100,19 @@ EOF
 # The stage's wall time (#532): from the first attempt to the runner's exit,
 # recorded on stage_complete unless the caller supplies TALOS_STAGE_DURATION_S.
 _STAGE_T0=$SECONDS
+_guard_collect
+_guard_record
 if [ "${#CHAIN[@]}" -eq 0 ]; then
   _run_stage "$RUNNER"
   _usage_marker "$RUNNER"
 else
   _run_chain
+fi
+# #754: a stage that changed the pipeline's own config ends here, whatever the
+# runner exited with; the post_stage hook below still fires, verdict FAIL.
+if _mutated="$(_guard_changed)"; then
+  echo "pipeline-agent: reason=config-mutated role=$ROLE file=$_mutated" >&2
+  RC=78
 fi
 
 # hooks.post_stage (#182): fire once, here, the moment the stage runner has

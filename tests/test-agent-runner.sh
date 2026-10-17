@@ -384,4 +384,14 @@ assert_eq "2" "$rc" "--check-effort with no role exits 2"
 
 rm -f "$CE_DIR/effortfix.md" "$CE_DIR/noeffort.md" talos.pipeline.json
 
+# ── AC3 (#754) a stage that leaves every config file byte-identical keeps the runner's rc ──
+printf '{"roles": {"pm": true}}\n' > "$HOME/.talos/talos.pipeline.json"
+printf '{"agents": {"runner": "claude"}}\n' > talos.pipeline.json
+bash "$AGENT" validator "Issue #7." >/dev/null 2>"$ERRFILE"; rc=$?
+assert_eq "0" "$rc" "AC3 config files untouched: a clean runner keeps exit 0"
+STUB_CLAUDE_EXIT=3 bash "$AGENT" validator "Issue #7." >/dev/null 2>"$ERRFILE"; rc=$?
+assert_eq "3" "$rc" "AC3 config files untouched: the runner's own exit code passes through"
+assert_not_contains "$(cat "$ERRFILE")" "config-mutated" "AC3 config files untouched: no config-mutated line"
+rm -f "$HOME/.talos/talos.pipeline.json" talos.pipeline.json
+
 finish
