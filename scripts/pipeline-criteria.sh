@@ -95,8 +95,9 @@
 #             unusable (the four faults of spec-usable below) and the PR was
 #             not judged; no test ran
 #       The Tests: line is DATA, never a command. A path must be repo-relative,
-#       tracked at the PR head, match ^[A-Za-z0-9_./-]+$ and not start with `-`
-#       or contain `..`; a name filter must match ^[A-Za-z0-9_|. -]+$, not
+#       tracked at the PR head, match ^[A-Za-z0-9_./()[]-]+$ (the parentheses and
+#       square brackets of a Next.js route group or dynamic segment, #752) and
+#       not start with `-` or contain `..`; a name filter must match ^[A-Za-z0-9_|. -]+$, not
 #       start with `-` and not be a runner command. Anything else is refused:
 #       nothing from the spec runs and the verdict is BLOCKED. With
 #       tests/run-tests.sh the files run as `--for <path> ... --strict
@@ -109,23 +110,31 @@
 #       repo-relative path fits `match` (a glob: `*` any characters but `/`, `?`
 #       one, `**/` zero or more directories) runs as `run`, once per file, with
 #       {file}, {class} (file name without its last extension) and {dir}
-#       substituted, from the repo root through pipeline-verify.sh. `pass` and
+#       substituted shell-quoted (#752: already quoted, never wrap them in
+#       quotes; a path of letters, digits and _ . / - is unchanged), from the
+#       repo root through pipeline-verify.sh. `pass` and
 #       `fail` are EREs for one output line ({n} is the criterion number; map
 #       above); a missing one is today's `ok`/`FAIL` line. A file that fits no
 #       entry uses the runner above. A malformed entry is skipped with one
-#       stderr note naming its index. A path outside [A-Za-z0-9_./-] that an
+#       stderr note naming its index. A path outside [A-Za-z0-9_./()[]-] that an
 #       entry matches is `verdict BLOCKED spec`, exit 4; nothing runs.
 #   pipeline-criteria.sh spec-check <spec-file>
 #       Would qa-run accept this spec's `Tests:` line (#594)? Pure text, the
 #       parser qa-run uses; `talos.sh done pm` runs it on the spec the PM just
 #       posted. One line:
 #         spec-check: ok
-#         spec-check: refused tests-line-refused: <the parser's reason>
-#         spec-check: refused tests-line-missing: <n> test criteria and no usable Tests: line
-#         spec-check: refused tests-line-open: <the line>
-#       tests-line-open (#648): a line other than the `Tests:` line leaves a test
+#         spec-check: refused tests-line-refused: <the parser's reason and its fix>
+#         spec-check: refused tests-line-missing: <n> test criteria and no usable Tests: line (<fix>)
+#         spec-check: refused tests-line-open: name the file, QA runs no file left open: <the line>
+#       Each refusal is one line and says how to fix it: a note beside the list
+#       moves to its own line, a path holds letters, digits and _ . / - ( ) [ ],
+#       the paths go on the `Tests:` line or in a bullet list right under a bare
+#       `Tests:` label (unindented bullets count; the list ends at the first
+#       blank or non-bullet line), a test file is named, not left open.
+#       tests-line-open (#648): the `Tests:` line or a line of its list leaves a test
 #       file open (`developer's choosing`, `developer's choice`, `new or existing
 #       file`, any case); every test criterion's file is on the `Tests:` line.
+#       Other sections (Files likely to change) are not scanned (#752).
 #       Exit 1 on a refusal. A (same) criterion counts as a test criterion. A
 #       spec with none (prose only, or no checklist) needs no `Tests:` line and
 #       is ok.
@@ -433,11 +442,13 @@ sys.stdout.write(text)
 
 # The spec on stdin -> its `Tests:` items as data, one record per line:
 #   P<TAB>path  F<TAB>filter  B<TAB>reason (refused)  N (no usable Tests: line)
+#   O<TAB>line (the Tests line or a line of its list leaves a test file open)
 # Nothing here executes anything; a value is a path or a filter or refused.
 _QA_TESTS_PY='
 import re, sys
 text = sys.stdin.read()
-PATH_RE = re.compile(r"^[A-Za-z0-9_./-]+$")
+PATH_RE = re.compile(r"^[A-Za-z0-9_./()\[\]-]+$")
+OPEN_RE = re.compile(r"developer.{1,3}s (choosing|choice)|new or existing file", re.I)
 FILT_RE = re.compile(r"^[A-Za-z0-9_|. -]+$")
 RUNNERS = set("npm npx yarn pnpm bun deno node pytest python python3 py.test tox nox bash sh zsh dash env make cmake ninja go cargo mvn gradle gradlew ant dotnet jest vitest mocha ava ruby rake rspec bundle php phpunit composer perl prove swift sbt mix elixir".split())
 
@@ -451,15 +462,29 @@ def refuse(reason, v=""):
 
 lines = text.splitlines()
 rest = None
+block = []
 for i, l in enumerate(lines):
     m = re.match(r"^\s*(?:[-*+]\s+)?(?:\[[ xX]\]\s+)?\**Tests\**:\**\s*(.*)$", l)
     if m:
         rest = m.group(1).strip()
+        block = [l]
+        # A bare label takes the bullets right under it, indented or not (the
+        # Azure comment round trip flattens them); a label with paths on it
+        # takes indented bullets only. Either list ends at a blank or non-bullet line.
+        if rest.strip("* "):
+            item = r"^\s+[-*+]\s+(.*)$"
+        else:
+            item = r"^\s*[-*+]\s+(?!\[[ xX]\]\s)(.*)$"
         for l2 in lines[i + 1:]:
-            m2 = re.match(r"^\s+[-*+]\s+(.*)$", l2)
+            m2 = re.match(item, l2)
             if not m2:
                 break
             rest += " " + m2.group(1).strip()
+            block.append(l2)
+        break
+for b in block:
+    if OPEN_RE.search(b):
+        print("O\t" + show(b.strip()))
         break
 if rest is None or not rest.strip("* "):
     print("N")
@@ -469,7 +494,7 @@ spans = re.findall(r"`([^`]*)`", rest)
 if spans:
     residue = re.sub(r"`[^`]*`", " ", rest)
     if re.search(r"[;|&$<>\\{}`]", residue):
-        refuse("shell syntax beside the test list", residue.strip())
+        refuse("shell syntax beside the test list (move the note to its own line)", residue.strip())
     items = spans
 else:
     items = [t for t in re.split(r"[,\s]+", rest.strip("* ")) if t]
@@ -484,7 +509,7 @@ for raw in items:
     is_path = "/" in it or re.search(r"\.[A-Za-z0-9]+$", it)
     if is_path:
         if not PATH_RE.match(it):
-            refuse("test path outside [A-Za-z0-9_./-]", it)
+            refuse("test path has a character outside letters, digits, _ . / - ( ) [ ]", it)
         if it.startswith("/") or it.startswith("-"):
             refuse("test path is absolute or starts with -", it)
         if it.endswith("/"):
@@ -516,15 +541,17 @@ for f in filters:
 
 # _tests_line SPEC: the spec's `Tests:` line through _QA_TESTS_PY, the one parse
 # qa-run and spec-check share (#594). It sets the caller's paths, filters,
-# refused (the parser's reason) and found.
+# refused (the parser's reason), found and open_line (a Tests-line text that
+# leaves a test file open, #648).
 _tests_line() {
   local tag val
-  paths=(); filters=(); refused=""; found=0
+  paths=(); filters=(); refused=""; found=0; open_line=""
   while IFS="$(printf '\t')" read -r tag val; do
     case "$tag" in
       P) paths+=("$val"); found=1 ;;
       F) filters+=("$val"); found=1 ;;
       B) refused="$val" ;;
+      O) open_line="$val" ;;
     esac
   done <<EOF
 $(python3 -I -c "$_QA_TESTS_PY" < "$1")
@@ -545,17 +572,14 @@ cmd_spec_check() {
   n_test="$(cmd_ids "$spec" 2>/dev/null | awk '$2 == "test" || $2 == "same"' | wc -l | tr -d ' ')"
   if [ "$n_test" -gt 0 ]; then
     # #648: a test file left to the developer is a file QA does not run.
-    open_line="$(grep -vE '^[[:space:]]*([-*+][[:space:]]+)?(\[[ xX]\][[:space:]]+)?\**Tests\**:' "$spec" \
-      | grep -iE "developer.{1,3}s (choosing|choice)|new or existing file" | head -n 1 \
-      | tr -cd '[:print:]' | sed 's/^ *//' | cut -c1-60)"
     if [ -n "$open_line" ]; then
-      echo "spec-check: refused tests-line-open: $open_line"
+      echo "spec-check: refused tests-line-open: name the file, QA runs no file left open: $open_line"
       return 1
     fi
   fi
   if [ "$found" -eq 0 ]; then
     if [ "$n_test" -gt 0 ]; then
-      echo "spec-check: refused tests-line-missing: $n_test test criteria and no usable Tests: line"
+      echo "spec-check: refused tests-line-missing: $n_test test criteria and no usable Tests: line (put the test paths on the Tests: line or in a bullet list right under it)"
       return 1
     fi
   fi
@@ -813,17 +837,16 @@ EOF
 # returns 0, 4 (a path no entry may take: runner_why is the spec fault) or 3 (no
 # usable runner). Needs paths and the _tc_load entries.
 _runner_pick() {
-  local dir="$1" p n_entry=0
+  local dir="$1" p n_entry=0 bad_re='[^]A-Za-z0-9_./()[-]'
   shift
   runner=""; vline=""; runner_why=""
   for p in ${paths[@]+"${paths[@]}"}; do
     _tc_pick "$p" || continue
-    case "$p" in
-      *[!A-Za-z0-9_./-]*)
-        runner_why="$(printf 'Tests: path outside [A-Za-z0-9_./-] fits verify.targeted_commands entry %s: %s' \
-          "${TC_IDX[$TC_SEL]}" "$(printf '%s' "$p" | tr -cd '[:print:]' | head -c 60)")"
-        return 4 ;;
-    esac
+    if [[ "$p" =~ $bad_re ]]; then
+      runner_why="$(printf 'Tests: path outside letters, digits, _ . / - ( ) [ ] fits verify.targeted_commands entry %s: %s' \
+        "${TC_IDX[$TC_SEL]}" "$(printf '%s' "$p" | tr -cd '[:print:]' | head -c 60)")"
+      return 4
+    fi
   done
   for p in "$@"; do _tc_pick "$p" && n_entry=$((n_entry + 1)); done
   if [ -f "$dir/tests/run-tests.sh" ]; then
@@ -844,6 +867,9 @@ _tc_exec() {
   local out="$1" sel="$2" f="$3" cmd base cls dir raw rc id st
   base="${f##*/}"; cls="${base%.*}"; [ -n "$cls" ] || cls="$base"
   dir="${f%/*}"; [ "$dir" != "$f" ] || dir="."
+  # Shell-quoted (#752): a route-group path holds ( ) [ ]; one in the old
+  # charset has nothing to quote and goes in unchanged.
+  printf -v f '%q' "$f"; printf -v cls '%q' "$cls"; printf -v dir '%q' "$dir"
   cmd="${TC_RUN[$sel]}"
   cmd="${cmd//\{file\}/$f}"; cmd="${cmd//\{class\}/$cls}"; cmd="${cmd//\{dir\}/$dir}"
   raw="$tmp/entry.out"

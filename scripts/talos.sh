@@ -2882,8 +2882,8 @@ _talos_spec_check() {
     "1:spec-check: refused tests-line-open: "*) _SPEC_SLUG=tests-line-open ;;
     *) _talos_warn spec-check-unread "issue=$_n"; return 0 ;;
   esac
-  # The reason is one line of fixed words plus at most 60 printable ASCII
-  # characters of the refused line. Its `<!--` is broken up: a comment holding
+  # The reason is one line of fixed words, the fix, and at most 60 printable
+  # ASCII characters of the refused line. Its `<!--` is broken up: a comment holding
   # a `<!-- talos:` marker is hidden from the PM by `view-issue --since-stage`.
   _why="${_OUT#spec-check: refused $_SPEC_SLUG: }"
   _why="${_why//<!--/<!- -}"
@@ -2906,7 +2906,7 @@ _talos_spec_check() {
   #    --since-stage` hands the PM its own spec plus this note.
   { printf '%s\n\n%s\n' \
       "**Spec check:** $_SPEC_SLUG: $_why" \
-      "QA cannot run this spec's tests, so no developer work has started. The test file paths go on the \`**Tests:**\` line itself, in backticks, with nothing else on that line (an optional name filter, also in backticks, is the one exception); a note goes on a line of its own below it. PM: post the whole spec again as a new \`**PM spec:**\` comment with this fixed, then advance the label again." \
+      "QA cannot run this spec's tests, so no developer work has started. The test file paths go on the \`**Tests:**\` line itself, in backticks, or in a bullet list right under a bare \`**Tests:**\` label (the list ends at the first blank line). A path holds letters, digits and _ . / - ( ) [ ] only, and nothing else sits on that line but an optional name filter, also in backticks; a note goes on a line of its own, and a test file is named, never left open. PM: post the whole spec again as a new \`**PM spec:**\` comment with this fixed, then advance the label again." \
       > "$_CFG_CACHE_DIR/body" \
       && _vcs comment-issue "$_n" --body-file "$_CFG_CACHE_DIR/body" > /dev/null; } \
     || _talos_warn comment-failed "issue=$_n"

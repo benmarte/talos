@@ -85,7 +85,7 @@ assert_eq "0" "$RC" "AC4 report: a missing red state alone is no failure"
 # ── AC5 spec-check ───────────────────────────────────────────────────────────
 SC="$SANDBOX/check.md"
 printf -- '- [ ] AC1 keeps parsing (same: refactor)\n- [ ] AC2 the README (prose: wording)\n' > "$SC"
-assert_eq "spec-check: refused tests-line-missing: 1 test criteria and no usable Tests: line" "$(bash "$CRIT" spec-check "$SC")" "AC5 spec-check: only (same) criteria and no Tests: line is refused tests-line-missing"
+assert_eq "spec-check: refused tests-line-missing: 1 test criteria and no usable Tests: line (put the test paths on the Tests: line or in a bullet list right under it)" "$(bash "$CRIT" spec-check "$SC")" "AC5 spec-check: only (same) criteria and no Tests: line is refused tests-line-missing"
 printf -- '- [ ] AC1 keeps parsing (same: refactor)\n\n**Tests:** `tests/test-keep.sh`\n' > "$SC"
 assert_eq "spec-check: ok" "$(bash "$CRIT" spec-check "$SC")" "AC5 spec-check: a (same) criterion with a valid Tests: line is ok"
 

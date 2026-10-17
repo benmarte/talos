@@ -132,12 +132,12 @@ assert_eq "reason" "$_got" "AC2 spec-check: the #583 line is tests-line-refused 
 # ── AC3: spec-check, test criteria and no usable Tests: line ─────────────────
 spec
 sc "$SPEC"
-assert_eq "1:spec-check: refused tests-line-missing: 1 test criteria and no usable Tests: line" "$RC:$OUT" \
+assert_eq "1:spec-check: refused tests-line-missing: 1 test criteria and no usable Tests: line (put the test paths on the Tests: line or in a bullet list right under it)" "$RC:$OUT" \
   "AC3 spec-check: a test criterion and no Tests: line is tests-line-missing, exit 1"
 spec '**Tests:**' '- `tests/test-greet.sh`'
 sc "$SPEC"
-assert_eq "1:spec-check: refused tests-line-missing: 1 test criteria and no usable Tests: line" "$RC:$OUT" \
-  "AC3 spec-check: Tests: alone on its line with unindented bullets below is tests-line-missing, exit 1"
+assert_eq "0:spec-check: ok" "$RC:$OUT" \
+  "AC3 spec-check: Tests: alone on its line with unindented bullets below is the list (#752), ok"
 
 # ── AC4: done pm, a clean spec ───────────────────────────────────────────────
 reset_stubs
@@ -171,7 +171,7 @@ next=fix-round stage=pm" "$OUT" "AC5 done pm refused line: spec_check=tests-line
 
 # ── AC6: done pm, test criteria and no usable Tests: line ────────────────────
 reset_stubs
-spec '**Tests:**' '- `tests/test-greet.sh`'
+spec
 posted
 dn
 assert_eq "$REFUSED_WRITES
