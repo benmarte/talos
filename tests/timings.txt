@@ -24,6 +24,7 @@
 5 test-azure-stuck-policy-764.sh
 19 test-azure-pr-comment-verbs.sh
 5 test-azure-pr-labels.sh
+5 test-azure-record-attempt-url-765.sh
 5 test-azure-repo-name.sh
 18 test-azure-view-issue-comments.sh
 9 test-azure-wi-line-breaks.sh

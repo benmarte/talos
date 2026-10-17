@@ -206,6 +206,8 @@ print(json.dumps(d))
       exit 0
     fi ;;
   "rest --method post "*"/workItems/"*"/comments"*)
+    # STUB_AZURE_WI_POST_FAIL=1 (#765) makes the work-item comment write fail.
+    [ "${STUB_AZURE_WI_POST_FAIL:-}" = "1" ] && _stub_fail "TF401027: You need the Work Item 'Edit' permission."
     # Attempt verbs (#685): with STUB_AZURE_STATE_DIR set, record the write.
     if [ -n "${STUB_AZURE_STATE_DIR:-}" ]; then
       for _a in "$@"; do
