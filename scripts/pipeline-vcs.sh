@@ -6192,7 +6192,10 @@ for name in required:
 # ─────────────────────────────────────────────────────────────────────────────
 # Post a comment to an Azure DevOps work item. `az boards work-item comment add`
 # does not exist in the azure-devops extension, so use the REST comments endpoint
-# via `az rest` (needs an absolute org URL + project name).
+# via `az rest` (needs an absolute org URL + project name). Prints nothing on
+# stdout unless called with a third argument `--print-url`; then, after a
+# successful post, it prints the work item's web URL (built from the org,
+# project and id, not parsed from the response) for record-attempt's log line.
 _azure_post_comment() {
   local n="$1" body="$2"
   # Work-item comments render HTML (unlike PR threads) — convert markdown bodies.
@@ -6217,6 +6220,7 @@ _azure_post_comment() {
     --headers "Content-Type=application/json" --body "@$tmp" >/dev/null
   local rc=$?
   rm -f "$tmp"
+  [ "$rc" -eq 0 ] && [ "${3:-}" = "--print-url" ] && echo "$base_org/$proj/_workitems/edit/$n"
   return $rc
 }
 
@@ -7454,7 +7458,7 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
       _azure_post_attempt_marker() {
         local _first="${2%%$'\n'*}"
         _first="$(printf '%s' "$_first" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')"
-        _azure_post_comment "$1" "<p>${_first}</p>"$'\n'"${2##*$'\n'}"
+        _azure_post_comment "$1" "<p>${_first}</p>"$'\n'"${2##*$'\n'}" --print-url
       }
       shift 2 2>/dev/null || shift "$#"
       _vcs_shared_record_attempt "$n" "$stage" _azure_post_attempt_marker "$@"
