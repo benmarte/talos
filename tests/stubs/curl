@@ -61,6 +61,13 @@
 #     prints "Argument list too long" and exits 126 -- macOS has no such limit, so
 #     without this a body on argv would pass locally and fail only in CI.
 
+#   - attach-files on azure (#776): `--data-binary @<file>` (a file, not stdin) is
+#     the upload of one PR attachment. It is logged as `<upload N bytes>` in the
+#     payload field and, with STUB_UPLOAD_DIR set, copied to <dir>/<name>. A POST
+#     to .../pullRequests/<id>/attachments/<name> answers 201 with
+#     {"id","displayName","url"}; STUB_AZURE_UPLOAD_FAIL=<text> fails (500) an
+#     upload whose name contains <text>.
+
 # One argv element over the Linux limit: refuse before doing anything else.
 _argv_max="${STUB_CURL_ARGV_MAX:-131072}"
 for arg in "$@"; do
@@ -75,6 +82,7 @@ for arg in "$@"; do
 done
 
 payload=""
+upload_file=""
 url=""
 prev=""
 cfg_in=""
@@ -85,6 +93,10 @@ hdr_file=""
 for arg in "$@"; do
   [ "$prev" = "-d" ] && payload="$arg"
   [ "$prev" = "--data-binary" ] && [ "$arg" = "@-" ] && payload="$(cat)"
+  if [ "$prev" = "--data-binary" ] && [ "$arg" != "@-" ] && [ -f "${arg#@}" ]; then
+    upload_file="${arg#@}"
+    payload="<upload $(LC_ALL=C wc -c < "$upload_file" | tr -d ' ') bytes>"
+  fi
   [ "$prev" = "-K" ] && [ "$arg" = "-" ] && cfg_in="$(cat)"
   [ "$prev" = "-w" ] && has_w=true
   [ "$prev" = "-D" ] && hdr_file="$arg"
@@ -144,6 +156,17 @@ if [[ "$url" == *"/user" && "$url" != *"/users/"* ]]; then
   if [ -n "${STUB_CURRENT_USER_STATUS:-}" ]; then
     http_status="$STUB_CURRENT_USER_STATUS"
     resp='{"message":"Resource not accessible by integration"}'
+  fi
+elif [[ "$url" =~ /pullRequests/([0-9]+)/attachments/([^/?]+) ]]; then
+  # attach-files on azure (#776): the body of the upload is the file itself.
+  _at_name="${BASH_REMATCH[2]}"
+  if [ -n "${STUB_AZURE_UPLOAD_FAIL:-}" ] && [[ "$_at_name" == *"$STUB_AZURE_UPLOAD_FAIL"* ]]; then
+    http_status=500
+    resp='{"message":"Server Error"}'
+  else
+    if [ -n "${STUB_UPLOAD_DIR:-}" ] && [ -n "$upload_file" ]; then cp "$upload_file" "$STUB_UPLOAD_DIR/$_at_name"; fi
+    http_status=201
+    resp="$(printf '{"id":"11111111-2222-3333-4444-555555555555","displayName":"%s","url":"%s"}' "$_at_name" "${url%%\?*}")"
   fi
 elif [ -n "${STUB_COMMENT_STORE:-}" ] && [ -e "$STUB_COMMENT_STORE" ] && { [[ "$url" =~ /issues/([0-9]+)/comments(\?.*)?$ ]] || [[ "$url" =~ /issues/comments/([0-9]+)$ ]]; }; then
   _cs_n="${BASH_REMATCH[1]}"

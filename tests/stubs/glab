@@ -263,6 +263,44 @@ print(json.dumps(d))
       printf '[{"iid":7,"title":"fix: guard","state":"opened","source_branch":"fix/issue-42-guard"}]\n'
     fi
     exit 0 ;;
+  "api --method POST projects/"*"/uploads"*)
+    # attach-files on gitlab (#776): --input is the multipart body of one file
+    # (--header carries its Content-Type). The call is logged to GH_LOG as
+    # `GLAB UPLOAD: <name> <bytes> <content-type>`; with STUB_UPLOAD_DIR the file's
+    # bytes are copied to <dir>/<name>. The answer carries the markdown GitLab
+    # builds: an image link for an image, a plain link otherwise.
+    # STUB_GITLAB_UPLOAD_FAIL=<text> fails an upload whose name contains <text>;
+    # STUB_GITLAB_API_FAIL=1 fails every one.
+    _in=""; _ct=""; _p=""
+    for _a in "$@"; do
+      [ "$_p" = "--input" ] && _in="$_a"
+      [ "$_p" = "--header" ] && _ct="${_a#Content-Type: }"
+      _p="$_a"
+    done
+    [ -f "$_in" ] || { echo "ERROR: no --input" >&2; exit 1; }
+    _up="$(IN="$_in" OUT="${STUB_UPLOAD_DIR:-}" python3 -I -c '
+import os, re
+raw = open(os.environ["IN"], "rb").read()
+m = re.search(rb"filename=\"([^\"]*)\"", raw)
+name = m.group(1).decode() if m else ""
+head, _, rest = raw.partition(b"\r\n\r\n")
+body = rest.rsplit(b"\r\n--", 1)[0]
+if os.environ["OUT"] and name:
+    open(os.path.join(os.environ["OUT"], name), "wb").write(body)
+print(name, len(body))
+')"
+    _un="${_up% *}"
+    if [ "${STUB_GITLAB_API_FAIL:-}" = "1" ] || { [ -n "${STUB_GITLAB_UPLOAD_FAIL:-}" ] && [[ "$_un" == *"$STUB_GITLAB_UPLOAD_FAIL"* ]]; }; then
+      echo "ERROR: 500 Internal Server Error" >&2
+      exit 1
+    fi
+    [ -n "${GH_LOG:-}" ] && printf 'GLAB UPLOAD: %s %s\n' "$_up" "$_ct" >> "$GH_LOG"
+    case "$_un" in
+      *.png|*.jpg|*.jpeg|*.gif|*.webp) _bang='!' ;;
+      *) _bang='' ;;
+    esac
+    printf '{"alt":"%s","url":"/uploads/0123abcd/%s","full_path":"/-/project/1/uploads/0123abcd/%s","markdown":"%s[%s](/uploads/0123abcd/%s)"}\n' "$_un" "$_un" "$_un" "$_bang" "$_un" "$_un"
+    exit 0 ;;
   "api --method POST projects/"*"/merge_requests/"*"/notes"*)
     # upsert-pr-comment's create (#763): the --input file is {"body": ...}. It
     # is logged to GH_LOG as `GLAB BODY: ...` and, with STUB_GITLAB_STATE_DIR

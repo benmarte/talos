@@ -13,6 +13,7 @@
 3 test-assert-sync.sh
 4 test-assignee-trim.sh
 27 test-assignee-verbs.sh
+20 test-attach-files-776.sh
 56 test-attempt-counting.sh
 16 test-azure-approval-verbs.sh
 17 test-azure-attempt-verbs.sh
@@ -94,6 +95,7 @@
 11 test-draft-check.sh
 20 test-draft-complete-qa-fresh.sh
 72 test-draft-stage-order.sh
+25 test-e2e-artifacts-776.sh
 108 test-e2e-pipeline.sh
 5 test-env-allowlist.sh
 60 test-env-refs.sh
