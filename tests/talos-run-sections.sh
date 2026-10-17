@@ -1726,4 +1726,40 @@ assert_contains "$(cat "$ERR")" "reason=verdict-unreadable" "AC7 a docs re-stamp
 assert_not_contains "$(journal)" "hooks post_stage" "AC7 a docs re-stamp answer with neither word: nothing recorded"
 fi
 
-finish
+# ── (o) #775: a fix-round developer's PR gains the account user first ─────────
+# Not one of the four parts: tests/test-assign-pr-775.sh runs it alone
+# (TALOS_RUN_PART=775 TALOS_RUN_EMBED=1) and carries on in this sandbox.
+if run_part 775; then
+  fix775_fixture() {
+    reset_stubs
+    LEASE_RESET
+    draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
+    draft_collect ready
+    draft_ready
+    printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' > "$STUB_DIR/pr-head.12"
+    printf '{"number": 9, "title": "t", "labels": [{"name": "pipeline:ready"}], "body": "- [ ] AC1 the suite is green (prose: fixture)", "state": "open"}' \
+      > "$STUB_DIR/view-issue.9"
+    printf 'https://github.com/acme/widget/pull/12\nfixed the failing test\n' > "$STUB_DIR/message.developer"
+    printf 'FAIL: the suite broke\n' > "$STUB_DIR/message.qa.1"
+    printf bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > "$STUB_DIR/hook.developer.1.head"
+    cat > "$STUB_DIR/hook.developer.1" <<'HOOK'
+cp "$d/hook.developer.1.head" "$d/pr-head.12"
+HOOK
+  }
+  fix775_order() { grep -oE 'agent qa|vcs assign-pr 12|agent developer' "$STUB_DIR/journal" | tr '\n' '>' | sed 's/>$//'; }
+
+  fix775_fixture
+  TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --max-iterations 2
+  assert_eq "agent qa>vcs assign-pr 12>agent developer" "$(fix775_order | sed 's/>agent qa.*//')" \
+    "AC12 a fix-round developer dispatch on PR 12 runs assign-pr 12 before the agent starts"
+
+  fix775_fixture
+  printf 'pipeline-vcs: assign-pr: WARNING -- could not assign #12 to operator1: stub\n' > "$STUB_DIR/assign-pr.err"
+  printf 1 > "$STUB_DIR/assign-pr.rc"
+  TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --max-iterations 2
+  assert_eq "agent qa>vcs assign-pr 12>agent developer" "$(fix775_order | sed 's/>agent qa.*//')" \
+    "AC12 a failing assign-pr does not stop the dispatch: the developer still starts"
+  assert_contains "$(cat "$ERR")" "WARNING -- could not assign #12" "AC12 the failing assign-pr's warning is relayed"
+fi
+
+[ -n "${TALOS_RUN_EMBED:-}" ] || finish
