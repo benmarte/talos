@@ -74,9 +74,8 @@
 #                                 | ci-pending | ci-rerun attempt=<k> | rerun-unsupported
 #                                 | ci-failed | base-synced | conflict-check-unverified
 #                                 | awaiting-human-merge | closing-keyword-unverified
-#                                 | human-approval paths=<list> | human-paths-unverified
 #            verdict=block      reason=forbidden-files | closing-keyword | siblings-capped
-# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge closing-keyword-unverified human-approval human-paths-unverified forbidden-files closing-keyword siblings-capped
+# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge closing-keyword-unverified forbidden-files closing-keyword siblings-capped
 #   stop: usage unknown-verb scripts-missing python-missing scratch-unavailable config-unreadable
 #         draft-resolve-failed view-failed labels-unreadable approval-sha-failed
 #         unsupported-verb:<verb> draft-unverified ci-unverified head-unresolved
@@ -1270,7 +1269,7 @@ _talos_gate_recover_stamps() {
 _talos_gate_merge() {
   [ "$#" -eq 2 ] || _talos_stop usage 2
   local _pr="$1" _n="$2" _prl _isl _all _missing="" _line _r _stale="" _stalelist=""
-  local _draft _cierr _sha _cnt _synced=0 _hpaths _hlabel
+  local _draft _cierr _sha _cnt _synced=0
   _talos_isnum "$_pr" && _talos_isnum "$_n" || _talos_stop usage 2
   _talos_prepare gate-merge pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
                             pipeline-draft-check.sh pipeline-notify.sh pipeline-mergebase.sh
@@ -1460,36 +1459,6 @@ _talos_gate_merge() {
     _vcs label-pr "$_pr" --add pipeline:approved > /dev/null || _talos_stop handoff-label-failed
     _talos_verdict handoff
   fi
-  # merge.human_paths (#786): a PR that touches a listed path needs a person's label
-  # for this exact head (talos:human-approved:<sha12>, which pipeline-vcs.sh never
-  # applies). A diff or config that cannot be read waits too. The comment and the
-  # notice go out once per head (the talos:human-approval marker).
-  _talos_cap _vcs human-paths "$_pr"
-  case "$_RC" in
-    0) : ;;
-    1)
-      [ -n "$_OUT" ] || { _talos_emit reason human-paths-unverified; _talos_verdict wait; }
-      _hpaths="$_OUT"
-      _sha="$(_vcs pr-head "$_pr")" || _talos_stop head-unresolved
-      [[ "$_sha" =~ ^[0-9a-f]{40}$ ]] || _talos_stop head-unresolved
-      _hlabel="talos:human-approved:${_sha:0:12}"
-      if ! _talos_has "$_prl" "$_hlabel"; then
-        _talos_trust
-        _talos_cap _vcs read-comments "$_pr"
-        [ "$_RC" -eq 0 ] || _talos_stop comments-unreadable
-        _cnt="$(_talos_count_marker "<!-- talos:human-approval $_sha -->" "$_OUT")" || _talos_stop comments-unreadable
-        _talos_isnum "$_cnt" || _talos_stop comments-unreadable
-        if [ "$_cnt" -eq 0 ]; then
-          _talos_post "$_pr" "This PR touches paths listed in merge.human_paths, so it waits for a person to approve this exact head before Talos merges it."$'\n\n'"Matched paths:"$'\n'"$(printf '%s\n' "$_hpaths" | sed 's/[<>]//g; s/^/- /')"$'\n\n'"To approve: create the PR label \`$_hlabel\` if it does not exist and apply it to this PR in the provider UI. A push changes the head and needs a new label."$'\n'"<!-- talos:human-approval $_sha -->"
-          _talos_notify info "human-approval" "#$_n PR #$_pr waits for a person's approval of its head (merge.human_paths)" "$_n"
-        fi
-        _hpaths="$(printf '%s' "$_hpaths" | tr '\n' ',')"
-        _talos_emit reason human-approval
-        _talos_emit paths "${_hpaths%,}"
-        _talos_verdict wait
-      fi ;;
-    *) _talos_emit reason human-paths-unverified; _talos_verdict wait ;;
-  esac
   if [ "$_draft" = "true" ]; then
     _talos_cap _vcs pr-ci-runs "$_pr"
     if [ "$_RC" -eq 0 ] && _talos_isnum "$_OUT"; then

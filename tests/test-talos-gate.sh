@@ -150,7 +150,7 @@ reset_stubs
 gm
 assert_eq "0" "$RC" "merge: exits 0"
 assert_eq "verdict=merge" "$OUT" "merge: PR_DRAFT=false, all gates green: exactly one verdict line"
-assert_eq "view-pr view-issue check-approval-sha check-pr-files check-closing-keyword pr-checks-required conflict-files human-paths" "$(vcs_verbs)" "merge: the gates run in Step 4's order and nothing else is called"
+assert_eq "view-pr view-issue check-approval-sha check-pr-files check-closing-keyword pr-checks-required conflict-files" "$(vcs_verbs)" "merge: the gates run in Step 4's order and nothing else is called"
 assert_eq "0" "$(called pr-is-draft)" "merge: PR_DRAFT=false never asks pr-is-draft"
 assert_eq "0" "$(called pr-ci-runs)" "merge: PR_DRAFT=false never reads pr-ci-runs"
 assert_eq "0" "$(called merge-pr)" "merge: the verdict never merges"
@@ -164,7 +164,7 @@ reset_stubs; set_stub draft-check 0 "true"; set_stub pr-is-draft 1 "ready"
 gm
 assert_eq "verdict=merge
 ci_runs=2" "$OUT" "merge: PR_DRAFT=true reads the CI-run count before the verdict"
-assert_eq "view-pr view-issue check-approval-sha check-pr-files check-closing-keyword pr-is-draft pr-checks-required conflict-files human-paths pr-ci-runs" "$(vcs_verbs)" "merge: PR_DRAFT=true adds pr-is-draft before CI and pr-ci-runs last"
+assert_eq "view-pr view-issue check-approval-sha check-pr-files check-closing-keyword pr-is-draft pr-checks-required conflict-files pr-ci-runs" "$(vcs_verbs)" "merge: PR_DRAFT=true adds pr-is-draft before CI and pr-ci-runs last"
 assert_gate "merge (draft)"
 set_stub pr-ci-runs 2 ""
 gm

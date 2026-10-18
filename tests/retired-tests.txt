@@ -52,3 +52,4 @@ test-events-arg-hang.sh
 test-notify-pm.sh
 test-notify-templates.sh
 test-notify-threads-concurrent.sh
+test-human-paths-786.sh

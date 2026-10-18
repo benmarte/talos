@@ -109,8 +109,6 @@ TALOS_MARKERS=(
   talos:needs-owner
   talos:reviewed
   talos:ci-rerun
-  talos:human-approval
-  talos:human-approved
   talos:forbidden-files-active
   talos:forbidden-files-defaults-replaced
   talos:closing-keyword-unverified
