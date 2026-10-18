@@ -355,4 +355,10 @@ for ex in REVIEW VERIFY; do
   else fail "AC13 templates/$ex.md.example is at most 8192 bytes"; fi
 done
 
+# ── AC15: the suites the guides must not disturb stay green ───────────────────
+for s in config-defaults-table approval-sha talos-prompt prompt-rules; do
+  env -u PIPELINE_CONFIG bash "$TALOS_ROOT/tests/test-$s.sh" > "$SANDBOX/ac15-$s.out" 2>&1; rc=$?
+  assert_eq "0" "$rc" "AC15 tests/test-$s.sh stays green"
+done
+
 finish
