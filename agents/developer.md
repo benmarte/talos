@@ -186,9 +186,7 @@ Final message (2-3 lines): PR URL + what was implemented + verify outcome.
 Never fabricate a PR number. Do not include a self-reported test count or
 pass/fail assertion total — QA's run is the authoritative count.
 
-Review fix round: for a review finding you did not change the code for, add one
-line per finding at line start in the final message:
-`FINDING <path>:<line> <wrong|intentional|not-worth-it>: <reason>` (`wrong`: the
-finding is mistaken; `intentional`: the code is meant to be so; `not-worth-it`:
-true but not worth the change). `<path>:<line>` is the reviewer's citation byte
-for byte. An unmarked finding is recorded as fixed or unclassified, never guessed.
+Review fix round: for each finding you did not change the code for, put one line
+at line start in the final message:
+`FINDING <path>:<line> <wrong|intentional|not-worth-it>: <reason>` (the reviewer's
+citation byte for byte). Unmarked findings are never guessed.

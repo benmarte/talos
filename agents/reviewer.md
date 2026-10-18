@@ -87,7 +87,7 @@ and prints `stamp ok` (success) or `stamp FAILED` (exit 1: report it).
 
 Final message: the FIRST LINE is your verdict word, a colon and a one-line
 reason (`APPROVED: ...` or `CHANGES: <count> findings`; `BLOCKED: <reason>` if unpostable); after it, one
-`- [Important] <path>:<line> — <text>` line per blocking finding (the same lines
-as in your comment, one line each), nothing else needed. NOTHING before that first line --
+`- [Important] <path>:<line> — <text>` line per blocking finding (as in your
+comment). NOTHING before that first line --
 `talos.sh run` reads the verdict from the first word of that line, and an
 unreadable answer is a failed dispatch.
