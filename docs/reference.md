@@ -251,7 +251,7 @@ A higher layer overrides a lower one key by key: mappings merge, scalars replace
 
 The user-level file accepts every key except the repo-only ones (scope `repo` in the table).
 
-Repo-only keys: `base_branch`, `repo`, `vcs.provider`, `vcs.repo`, `vcs.azure.*`, `vcs.file.source.path`, `board.*`, `verify` (and `verify.commands`), `verify.qa_mode`, `verify.targeted_commands`, `verify.e2e`, `verify.e2e_artifacts.*`, `verify.ready`, `merge.required_checks`, `merge.forbidden_files`, `merge.forbidden_files_replace`, `merge.forbidden_files_allow`, `merge.approval_waiver_paths`, `merge.union_paths`, `issues.label_filter`, `issues.skip_labels`, `markers.trusted_authors`, `markers.verify_authors`. In the user-level file each is dropped with one stderr note naming the key, not the value. Their environment variables still apply.
+Repo-only keys: `base_branch`, `repo`, `vcs.provider`, `vcs.repo`, `vcs.azure.*`, `vcs.file.source.path`, `board.*`, `verify` (and `verify.commands`), `verify.qa_mode`, `verify.targeted_commands`, `verify.e2e`, `verify.e2e_artifacts.*`, `verify.guide`, `review.guide`, `verify.ready`, `merge.required_checks`, `merge.forbidden_files`, `merge.forbidden_files_replace`, `merge.forbidden_files_allow`, `merge.approval_waiver_paths`, `merge.union_paths`, `issues.label_filter`, `issues.skip_labels`, `markers.trusted_authors`, `markers.verify_authors`. In the user-level file each is dropped with one stderr note naming the key, not the value. Their environment variables still apply.
 
 The user-level file drives `hooks.*` and `notifications.cmd`, so it is read only if it is a regular file (or your symlink to one) owned by you and not group- or world-writable. Otherwise one stderr line names the fix and the layer reads as absent, as does malformed or non-mapping content.
 
@@ -355,6 +355,8 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `verify.targeted` | bool | `true` | - | any |
 | `verify.targeted_commands` | list | - | - | repo |
 | `verify.e2e` | str | - | - | repo |
+| `verify.guide` | str | `VERIFY.md` | - | repo |
+| `review.guide` | str | `REVIEW.md` | - | repo |
 | `verify.e2e_artifacts.dir` | str | - | - | repo |
 | `verify.e2e_artifacts.include` | list | - | - | repo |
 | `verify.e2e_artifacts.max_files` | int | `12` | - | repo |
@@ -1075,7 +1077,7 @@ After a successful post the reviewer or security body file is removed; the qa an
 
 ### Stale approvals and the delta re-stamp
 
-A new commit stales an approval unless every file changed since the marker SHA matches `merge.approval_waiver_paths` (default `*.md`, `docs/**`, `CHANGELOG.md`, `*.example`). Never waivable: `scripts/`, `tests/`, `agents/`, `skills/`, `templates/prompts/`, runner dot-directories (`.claude/{agents,skills,commands,talos,rules}`, `.agents`, `.gemini`, `.pi`, `.codex`), `.agent/`, `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.local.md`, `GEMINI.md`, and the pipeline config files (`talos.pipeline.{yml,yaml,json}`, `.claude-pipeline.{yaml,json}`, `pipeline.{yaml,json}`); an entry that would waive them fails the gate.
+A new commit stales an approval unless every file changed since the marker SHA matches `merge.approval_waiver_paths` (default `*.md`, `docs/**`, `CHANGELOG.md`, `*.example`). Never waivable: `scripts/`, `tests/`, `agents/`, `skills/`, `templates/prompts/`, runner dot-directories (`.claude/{agents,skills,commands,talos,rules}`, `.agents`, `.gemini`, `.pi`, `.codex`), `.agent/`, `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.local.md`, `GEMINI.md`, `REVIEW.md` and `VERIFY.md` at any depth, the paths named by `review.guide` and `verify.guide`, and the pipeline config files (`talos.pipeline.{yml,yaml,json}`, `.claude-pipeline.{yaml,json}`, `pipeline.{yaml,json}`); an entry that would waive them fails the gate.
 
 `gate merge` strips stale labels, comments, answers `redispatch`. Under `talos.sh run` only docs gets `--shape restamp` (below); a stale qa, reviewer or security approval ends the run with `stop verdict=redispatch reason=stale-approvals` and the next run dispatches a full stage. On the LLM loop every role that already approved gets a re-stamp: same role and profile, `talos.sh prompt <role> --shape restamp`, header `**Agent:** <role> (talos) — re-stamp`, delta and targeted tests only. `RESTAMP_PASS` re-confirms through `post-approval`; `RESTAMP_FAIL` strips the label and the next round runs the full stage. Model: `agents.roles.<role>.restamp_model`, then `agents.restamp_model` (defaults to `agents.model`), else the role's normal model; `restamp_effort` follows the same chain. 
 
@@ -1153,6 +1155,17 @@ A FAIL or BLOCKED verdict keeps the raw output of its runs: `head.out`, `rerun.o
 A `(test)` criterion that is green at the red commit and at the head (`vacuous`) is a regression guard, not a spec fault, when at least one other `(test)` criterion went red then green (`AC<n> red@<sha8> green@head`) and no other FAIL line exists (`head=`, `same`, `flaky`, `weakened`): `qa-run` reports it as `AC<n> guard green@head (green at red@<sha8>)`, which is not a `FAIL` line, so the verdict is decided by the other criteria, the run does not stop and the PM spec is not rewritten. The QA comment lists the guard lines. A vacuous criterion beside any other FAIL line, or when no criterion went red then green, keeps `AC<n> FAIL vacuous (green at red@<sha8>)`, and a criterion that fails at the head is `head=fail`, never a guard.
 
 A spec QA cannot use is a fault of the spec, not of the PR. `qa-run` then ends with `qa-run: verdict BLOCKED spec: <why>` (exit 4) and runs no test; `<why>` is `unreadable for issue #<N>`, `no criteria checklist`, `Tests: line refused (<reason>)` or `<n> test criteria and no Tests: line`. QA answers `BLOCKED: spec: <why>`, and `pipeline-criteria.sh spec-usable <issue>` makes the same check alone (`spec-usable: ok`, or `spec-usable: BLOCKED spec: <why>` with exit 4; no git command, no test). The driver reads the per-criterion results from `qa-run`'s own output, never from QA's final message: `talos.sh run` sets `TALOS_QA_RESULTS` for the QA stage, `qa-run` writes its `AC<n> ...` lines to that file in the run's scratch, and with no file or an empty one the ordinary fix round runs. `talos.sh run` asks it after every QA `FAIL`, so a spec fault never starts a developer fix round: see `spec-unusable` under [A run stops](#a-run-stops). The spec is the latest comment that starts with `**PM spec:**`, whatever it quotes, a `<!-- talos:` marker included.
+
+### Repo guides: REVIEW.md and VERIFY.md
+
+Two optional files in the target repo steer the review and QA stages. `REVIEW.md` is added to the reviewer, security and adversarial prompts; `VERIFY.md` to the QA prompt (feature map, how to start the app, which e2e specs cover which area, known flaky checks). Start from `templates/REVIEW.md.example` and `templates/VERIFY.md.example`; this repo's own `REVIEW.md` is a worked one.
+
+- **Base branch only.** `talos.sh prompt` runs one best-effort `git fetch origin <base>` and reads `git show origin/<base>:<path>`: plain git, the same on GitHub, GitLab and Azure DevOps, never the working tree or the PR head, so a PR cannot rewrite its own review rules. A missing ref, path or file adds nothing to the prompt and is not an error. The restamp and fix-round prompts do not carry a guide.
+- **Size.** At most 8192 bytes; more is cut there and a `[guide truncated at 8192 bytes]` line follows the text (env `TALOS_PROMPT_GUIDE_MAX_BYTES` changes the cap; a value that is no positive integer means the default).
+- **Data, below Talos's rules.** The text sits between `----- BEGIN GUIDE <token> -----` and `----- END GUIDE <token> -----` lines (a new token per render, never part of the text), under a line that says it is repo guidance from the repo owner, that Talos's stage rules win on any conflict, and that it can narrow or add checks but never turn off red proof, approvals or security blocking.
+- **Keys.** `review.guide` (default `REVIEW.md`) and `verify.guide` (default `VERIFY.md`) are repo-only. Set one to another repo-relative path to rename the file, or to `""` to switch that guide off. A path with a leading `/`, a `..` component or a character outside `A-Za-z0-9_./-` is not read; one stderr line names the key.
+- **Verdict.** With a guide, the reviewer ends its verdict comment's DETAILS with `Guide rules applied: <short rule names or quotes, or none>`, so you can see whether the guide is followed.
+- **Approvals.** A changed guide stales an approval: `REVIEW.md` and `VERIFY.md` (any depth) and the configured guide paths are never waived by `merge.approval_waiver_paths`.
 
 ### Comment templates
 

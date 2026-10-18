@@ -1,0 +1,28 @@
+# REVIEW.md
+
+Put this file at the root of your repo (or name another path in `review.guide`). Talos reads it from the PR's base branch, never from the PR head, and adds it to the reviewer, security and adversarial prompts as repo guidance. It can narrow or add checks. It cannot turn off a Talos gate (red proof, approvals, security blocking). Keep it under 8 KB: the rest is cut. Delete this paragraph and the examples that do not fit your repo.
+
+## What failure looks like here
+
+- A migration that is not reversible, or that runs on a table with no index for its `WHERE`.
+- A new endpoint that skips the auth middleware in `src/http/auth.ts`.
+- A money amount handled as a float.
+- A feature flag read in two places that can disagree.
+
+## Skip
+
+- `dist/**`, `vendor/**`, `**/*.generated.*`, lockfiles.
+- Formatting that the linter already enforces.
+
+## Evidence and tone
+
+- Every finding names `file:line` and quotes the line.
+- At most 3 non-blocking nitpicks per review.
+- Open the summary with the finding count.
+
+## Repeated comments
+
+Move a comment you have made on three PRs into this file:
+
+- Public functions in `src/api/` need a doc comment with the error cases.
+- A new dependency needs a line in the PR description saying why.

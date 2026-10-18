@@ -13,6 +13,7 @@ post-approval verifies its own stamp: do not re-read your comment or re-check la
 Human-attention report (#294): at most 3 bullets in the verdict comment's
 `ATTENTION_REPORT` (contract in your role profile).
 {{CHANGE_BLOCK}}
+{{GUIDE_BLOCK}}
 
 {{STOP_RULE}}
 

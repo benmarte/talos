@@ -117,6 +117,8 @@ verify.qa_mode	enum	local	-	-	repo
 verify.targeted	bool	true	-	-	any
 verify.targeted_commands	list		-	-	repo
 verify.e2e	str		-	-	repo
+verify.guide	str	VERIFY.md	-	-	repo
+review.guide	str	REVIEW.md	-	-	repo
 verify.e2e_artifacts.dir	str		-	-	repo
 verify.e2e_artifacts.include	list		-	-	repo
 verify.e2e_artifacts.max_files	int	12	-	-	repo

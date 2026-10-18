@@ -1,0 +1,24 @@
+# VERIFY.md
+
+Put this file at the root of your repo (or name another path in `verify.guide`). Talos reads it from the PR's base branch, never from the PR head, and adds it to the QA prompt as repo guidance. It can add checks and say how to run them. It cannot turn off a Talos gate (red proof, approvals). Keep it under 8 KB: the rest is cut. Delete this paragraph and the examples that do not fit your repo.
+
+## Start the app
+
+- `npm ci && npm run dev` serves http://localhost:3000 (wait for `ready` in the log).
+- The API needs `DATABASE_URL`; `docker compose up -d db` starts a local one.
+
+## Feature map
+
+| Area | Where it lives | How to check it |
+| --- | --- | --- |
+| Sign-in | `src/auth/` | `tests/e2e/auth.spec.ts`; by hand: sign in, reload, still signed in |
+| Checkout | `src/cart/` | `tests/e2e/checkout.spec.ts`; use the test card 4242 4242 4242 4242 |
+| Reports | `src/reports/` | `npm test -- reports`; open `/reports` and compare the totals with the fixture |
+
+## Known flaky checks
+
+- `tests/e2e/search.spec.ts` fails about one run in twenty on a cold index. Re-run it once before calling it red.
+
+## Not worth verifying
+
+- Anything under `docs/` and `*.md`.
