@@ -9945,6 +9945,15 @@ if [ "$VERB" = "human-paths" ]; then
     echo "[dry-run] human-paths $_hp_n: pr-files $_hp_n | match against merge.human_paths" >&2
     exit 2
   fi
+  _hp_cfg="$(cfg merge.human_paths)"
+  # A mapping under the key flattens into merge.human_paths.<k> dump pairs and leaves
+  # the key itself empty: that is a config that is not a list, not "no patterns".
+  if [ -f "${_CFG_CACHE_FILE:-}" ] && tr '\0' '\n' < "$_CFG_CACHE_FILE" | grep -q '^merge\.human_paths\.'; then
+    echo "pipeline-vcs: human-paths: merge.human_paths is not a list of patterns" >&2
+    exit 2
+  fi
+  # No patterns: nothing to match, so the diff is not fetched (the default costs no API call).
+  [ -n "${_hp_cfg//[[:space:]]/}" ] || exit 0
   _hp_files="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-files "$_hp_n" 2>/dev/null)" || {
     echo "pipeline-vcs: human-paths: could not read the changed files of PR #$_hp_n" >&2
     exit 2
@@ -9971,13 +9980,6 @@ if hits:
     print("\n".join(hits))
     sys.exit(1)
 '
-  _hp_cfg="$(cfg merge.human_paths)"
-  # A mapping under the key flattens into merge.human_paths.<k> dump pairs and leaves
-  # the key itself empty: that is a config that is not a list, not "no patterns".
-  if [ -f "${_CFG_CACHE_FILE:-}" ] && tr '\0' '\n' < "$_CFG_CACHE_FILE" | grep -q '^merge\.human_paths\.'; then
-    echo "pipeline-vcs: human-paths: merge.human_paths is not a list of patterns" >&2
-    exit 2
-  fi
   _hp_out="$(printf '%s\n' "$_hp_files" | HUMAN_PATHS="$_hp_cfg" python3 -I -c "$_hp_py")"; _hp_rc=$?
   case "$_hp_rc" in
     0) exit 0 ;;
