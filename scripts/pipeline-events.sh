@@ -14,8 +14,9 @@
 #        pipeline-events.sh cost --issue N [--pr M] --markdown
 #        pipeline-events.sh cost --summary --issue A [--issue B ...]
 #        pipeline-events.sh note --issue N [--pr M] --kind K [--body-file F|-]
+#        pipeline-events.sh scoreboard [--since YYYY-MM-DD] [--repo NAME] [--json]
 #
-#   path  Prints the resolved absolute path to the events log (does not
+#   path Prints the resolved absolute path to the events log (does not
 #          require the file to exist).
 #   list   Prints matching events, oldest first. Default output is a compact
 #          one-line-per-event table (ts, event, role, issue, pr, verdict,
@@ -159,6 +160,16 @@
 #          500 bytes are kept). An unknown kind, a missing --kind or --issue, a
 #          non-digit number or an option with no value exits 2 with the usage and
 #          appends nothing. Exit 0 otherwise, even when nothing could be written.
+#   scoreboard (#799) summarises the log per repo and per ISO week (UTC), from the
+#          log only (no provider call, no write): merged runs, hands-free ones (no
+#          hand_note for the issue), fix rounds and tokens per merged PR, run_end
+#          events by reason and finding_outcome events by stage and outcome.
+#          --since YYYY-MM-DD keeps merged / run_end / finding_outcome events on or
+#          after that date (the lookups are not filtered); --repo keeps one repo's
+#          rows. Tab-separated table by default, one JSON object with --json. A
+#          missing or empty log prints the header only (rows: [] with --json),
+#          exit 0. A bad --since or an option with no value exits 2 with the usage.
+#          The reading rules are in docs/reference.md ("The events log").
 #
 # A malformed line (not valid JSON, or not a JSON object) is skipped rather
 # than aborting the read; the count of skipped lines is reported once on
@@ -881,6 +892,195 @@ except Exception as e:
 $src" "$log_path" "$issue" "$pr" "$SCRIPT_DIR" "$budget"
 }
 
+# cmd_scoreboard REPO SINCE JSON_MODE -- the events log summarised per repo and
+# per ISO week (#799): merged runs, how many were hands-free, fix rounds and
+# tokens per merged PR, run ends by reason, finding outcomes per stage. Reads
+# the log only. The reading rules are in docs/reference.md ("The events log").
+cmd_scoreboard() {
+  local repo="$1" since="$2" json_mode="$3"
+  local log_path
+  log_path="$(_events_log_path)" || {
+    echo "pipeline-events: could not resolve the events log path (not a git repo?)" >&2
+    return 1
+  }
+
+  python3 -I - "$log_path" "$repo" "$since" "$json_mode" <<'PYEOF'
+import datetime
+import json
+import math
+import sys
+
+log_path, repo_filter, since, json_mode = sys.argv[1:5]
+
+records = []
+skipped = 0
+try:
+    with open(log_path, "r", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+                if not isinstance(rec, dict):
+                    raise ValueError("not an object")
+            except (ValueError, TypeError):
+                skipped += 1
+                continue
+            records.append(rec)
+except OSError:
+    pass  # a missing or unreadable log reads as an empty one
+
+
+def key(v):
+    return None if v is None else str(v)
+
+
+def tokens_of(rec):
+    """The event's tokens as a number, or None when it is not a finite non-negative one."""
+    v = rec.get("tokens")
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if not math.isfinite(v) or v < 0:
+        return None
+    return v
+
+
+def day_of(rec):
+    ts = rec.get("ts")
+    if not isinstance(ts, str):
+        return None
+    try:
+        return datetime.date.fromisoformat(ts[:10])
+    except ValueError:
+        return None
+
+
+def week_of(day):
+    iso = day.isocalendar()
+    return "%04d-W%02d" % (iso[0], iso[1])
+
+
+# Lookups over the whole log, never filtered by --since or --repo.
+issue_repo = {}       # issue -> repo of the first event of that issue that has one
+hand_noted = set()    # issues with a hand_note anywhere
+dev_events = {}       # pr -> developer event count
+pr_tokens = {}        # pr -> [sum, any recorded] over non-orchestrator events
+for rec in records:
+    issue, pr = key(rec.get("issue")), key(rec.get("pr"))
+    r = rec.get("repo")
+    if issue is not None and isinstance(r, str) and r and issue not in issue_repo:
+        issue_repo[issue] = r
+    if rec.get("event") == "hand_note" and issue is not None:
+        hand_noted.add(issue)
+    if pr is not None and rec.get("event") == "developer":
+        dev_events[pr] = dev_events.get(pr, 0) + 1
+    if pr is not None and rec.get("role") != "orchestrator":
+        acc = pr_tokens.setdefault(pr, [0, False])
+        t = tokens_of(rec)
+        if t is not None:
+            acc[0] += t
+            acc[1] = True
+
+
+def repo_of(rec):
+    r = rec.get("repo")
+    if isinstance(r, str) and r:
+        return r
+    return issue_repo.get(key(rec.get("issue")), "-")
+
+
+since_day = datetime.date.fromisoformat(since) if since else None
+rows = {}
+
+
+def row_for(rec):
+    """The (repo, week) row an event counts in, or None when the filters or its ts drop it."""
+    day = day_of(rec)
+    if day is None or (since_day is not None and day < since_day):
+        return None
+    repo = repo_of(rec)
+    if repo_filter and repo != repo_filter:
+        return None
+    return rows.setdefault((repo, week_of(day)), {
+        "merged": 0, "hands_free": 0, "fix_rounds": 0, "tokens": 0,
+        "tokens_unrecorded": 0, "run_ends": {}, "finding_outcomes": {},
+    })
+
+
+def label(v):
+    return "none" if v is None else str(v)
+
+
+merged_seen = set()
+for rec in records:
+    event = rec.get("event")
+    issue, pr = key(rec.get("issue")), key(rec.get("pr"))
+    if event == "merged" and rec.get("role") == "orchestrator" and pr is not None:
+        row = row_for(rec)
+        if row is None or (issue, pr) in merged_seen:
+            continue
+        merged_seen.add((issue, pr))
+        row["merged"] += 1
+        if issue not in hand_noted:
+            row["hands_free"] += 1
+        row["fix_rounds"] += max(dev_events.get(pr, 0) - 1, 0)
+        total, recorded = pr_tokens.get(pr, [0, False])
+        row["tokens"] += total
+        if not recorded:
+            row["tokens_unrecorded"] += 1
+    elif event == "run_end":
+        row = row_for(rec)
+        if row is not None:
+            reason = label(rec.get("reason"))
+            row["run_ends"][reason] = row["run_ends"].get(reason, 0) + 1
+    elif event == "finding_outcome":
+        row = row_for(rec)
+        if row is not None:
+            by_stage = row["finding_outcomes"].setdefault(label(rec.get("stage")), {})
+            outcome = label(rec.get("outcome"))
+            by_stage[outcome] = by_stage.get(outcome, 0) + 1
+
+keys = sorted(rows)
+if json_mode == "1":
+    out = []
+    for repo, week in keys:
+        r = rows[(repo, week)]
+        out.append({
+            "repo": repo, "week": week, "merged": r["merged"],
+            "hands_free": r["hands_free"], "fix_rounds": r["fix_rounds"],
+            "tokens": r["tokens"], "tokens_unrecorded": r["tokens_unrecorded"],
+            "run_ends": dict(sorted(r["run_ends"].items())),
+            "finding_outcomes": {
+                s: dict(sorted(o.items())) for s, o in sorted(r["finding_outcomes"].items())
+            },
+        })
+    print(json.dumps({"rows": out}))
+else:
+    def cell(v):
+        # a log value never breaks the table: control characters read as spaces
+        return "".join(" " if ord(c) < 32 or ord(c) == 127 else c for c in str(v))
+
+    print("\t".join(["repo", "week", "merged", "hands_free", "fix_rounds_per_pr",
+                     "tokens_per_pr", "run_ends", "finding_outcomes"]))
+    for repo, week in keys:
+        r = rows[(repo, week)]
+        n = r["merged"]
+        fix = "%.1f" % (r["fix_rounds"] / n) if n else "-"
+        tok = "%d" % int(r["tokens"] / n + 0.5) if n else "-"
+        run_ends = ",".join("%s:%d" % (k, v) for k, v in sorted(r["run_ends"].items())) or "-"
+        findings = ",".join(
+            "%s/%s:%d" % (s, o, c)
+            for s, outs in sorted(r["finding_outcomes"].items())
+            for o, c in sorted(outs.items())
+        ) or "-"
+        print("\t".join(cell(x) for x in [repo, week, n, r["hands_free"], fix, tok, run_ends, findings]))
+
+if skipped:
+    print(f"pipeline-events: skipped {skipped} malformed line(s)", file=sys.stderr)
+PYEOF
+}
+
 # _usage -- the usage text, shared by the unknown-verb and bad-option exits.
 _usage() {
   echo "Usage: pipeline-events.sh path" >&2
@@ -891,6 +1091,7 @@ _usage() {
   echo "       pipeline-events.sh cost --issue N [--pr M] --markdown" >&2
   echo "       pipeline-events.sh cost --summary --issue A [--issue B ...]" >&2
   echo "       pipeline-events.sh note --issue N [--pr M] --kind <spec-revised|approval-posted|unblocked|relabelled|code-pushed> [--body-file F|-]" >&2
+  echo "       pipeline-events.sh scoreboard [--since YYYY-MM-DD] [--repo NAME] [--json]" >&2
 }
 
 # _need_value OPTION ARGC -- exit 2 with usage when a value-taking option is
@@ -915,6 +1116,19 @@ _need_digits() {
       exit 2
       ;;
   esac
+}
+
+# _need_date OPTION VALUE -- exit 2 with usage unless VALUE is a real
+# YYYY-MM-DD date (#799).
+_need_date() {
+  case "$2" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+      python3 -I -c 'import datetime, sys; datetime.date.fromisoformat(sys.argv[1])' "$2" 2>/dev/null && return 0
+      ;;
+  esac
+  echo "pipeline-events: $1 must be a YYYY-MM-DD date" >&2
+  _usage
+  exit 2
 }
 
 VERB="${1:-}"
@@ -1028,6 +1242,19 @@ case "$VERB" in
       -)  bash "$SCRIPT_DIR/pipeline-hooks.sh" hand_note "$kind" --issue "$issue" ${pr:+--pr "$pr"} ;;
       *)  bash "$SCRIPT_DIR/pipeline-hooks.sh" hand_note "$kind" --issue "$issue" ${pr:+--pr "$pr"} < "$body_file" ;;
     esac
+    ;;
+  scoreboard)
+    shift
+    repo="" since="" json_mode="0"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --repo) _need_value "$1" $#; repo="$2"; shift 2 ;;
+        --since) _need_value "$1" $#; _need_date "$1" "$2"; since="$2"; shift 2 ;;
+        --json) json_mode="1"; shift ;;
+        *) shift ;;
+      esac
+    done
+    cmd_scoreboard "$repo" "$since" "$json_mode"
     ;;
   *)
     _usage
