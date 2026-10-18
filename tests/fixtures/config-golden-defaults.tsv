@@ -86,6 +86,7 @@ merge.auto_sync	true	table	docs
 merge.forbidden_files		empty	pipeline-vcs.sh
 merge.forbidden_files_allow		empty	pipeline-vcs.sh
 merge.forbidden_files_replace		equiv	pipeline-vcs.sh
+merge.human_paths		empty	pipeline-vcs.sh
 merge.method	squash	table	pipeline-vcs.sh
 merge.required_checks		empty	pipeline-status-file.sh,pipeline-vcs.sh
 merge.union_paths		empty	pipeline-mergebase.sh

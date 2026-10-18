@@ -125,6 +125,7 @@
 16 test-hooks-model-attribution.sh
 13 test-hooks-post-stage.sh
 12 test-hooks-pre-dispatch.sh
+12 test-human-paths-786.sh
 5 test-install-agents-md.sh
 53 test-install-agents-skills.sh
 68 test-install-harness.sh

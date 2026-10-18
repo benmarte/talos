@@ -29,7 +29,7 @@
 # _talos_security_key is derived from it. Every limits.* and hooks.* key is also
 # security-relevant, listed or not (a prefix match below).
 _TALOS_SECURITY_KEYS="merge.forbidden_files merge.forbidden_files_replace merge.forbidden_files_allow
-merge.approval_waiver_paths merge.auto markers.verify_authors markers.trusted_authors
+merge.approval_waiver_paths merge.human_paths merge.auto markers.verify_authors markers.trusted_authors
 limits.max_fix_attempts limits.max_total_dispatches limits.max_retries
 limits.tokens_per_issue limits.warn_at hooks.pre_dispatch hooks.post_stage hooks.timeout_s
 roles.qa roles.reviewer roles.security"
