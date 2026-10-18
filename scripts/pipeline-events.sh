@@ -65,8 +65,9 @@
 #          orchestrator rows are left out of the total's count). With no such
 #          event the output is unchanged.
 #          A `stage_start` event (#550, the dispatch marker the status line reads),
-#          a `run_end` event (a run's stop line) and a `hand_note` event (a hand
-#          intervention) are not stage runs: every cost form skips them. list and tail show them.
+#          a `run_end` event (a run's stop line), a `hand_note` event (a hand
+#          intervention) and a `finding_outcome` event (how a review finding
+#          ended) are not stage runs: every cost form skips them. list and tail show them.
 #          --pr M keeps only events whose pr is M (an event with pr null never
 #          matches), in the table, --json and --line alike.
 #          --line (needs --issue; wins over --json) prints one summary line
@@ -429,8 +430,8 @@ with open(log_path if os.path.isfile(log_path) else os.devnull, "r", errors="rep
             continue
         # #550: a dispatch marker for the status line, not a finished stage;
         # a run_end is the run's stop line, not a stage either, and a hand_note
-        # records a person's intervention.
-        if rec.get("event") in ("stage_start", "run_end", "hand_note"):
+        # records a person's intervention, a finding_outcome how a review finding ended.
+        if rec.get("event") in ("stage_start", "run_end", "hand_note", "finding_outcome"):
             continue
         if not matches(rec):
             continue

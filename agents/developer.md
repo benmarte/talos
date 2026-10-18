@@ -185,3 +185,8 @@ Scratch scripts: check every `mktemp`/`create` result is a non-empty directory b
 Final message (2-3 lines): PR URL + what was implemented + verify outcome.
 Never fabricate a PR number. Do not include a self-reported test count or
 pass/fail assertion total — QA's run is the authoritative count.
+
+Review fix round: for each finding you did not change the code for, put one line
+at line start in the final message:
+`FINDING <path>:<line> <wrong|intentional|not-worth-it>: <reason>` (the reviewer's
+citation byte for byte). Unmarked findings are never guessed.

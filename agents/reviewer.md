@@ -86,7 +86,8 @@ differ after a push), appends the marker as the last line and applies
 and prints `stamp ok` (success) or `stamp FAILED` (exit 1: report it).
 
 Final message: the FIRST LINE is your verdict word, a colon and a one-line
-reason (`APPROVED: ...` or `CHANGES: <count> findings`; `BLOCKED: <reason>` if unpostable); after it, 1-3 lines of
-findings the orchestrator can relay. NOTHING before that first line --
+reason (`APPROVED: ...` or `CHANGES: <count> findings`; `BLOCKED: <reason>` if unpostable); after it, one
+`- [Important] <path>:<line> — <text>` line per blocking finding (as in your
+comment). NOTHING before that first line --
 `talos.sh run` reads the verdict from the first word of that line, and an
 unreadable answer is a failed dispatch.

@@ -33,7 +33,12 @@ for _role in validator qa reviewer security adversarial; do
     "AC1 $_role profile puts the verdict word on the first line"
   assert_contains "$_rule" "$_example" \
     "AC1 $_role profile examples its own verdict words"
-  assert_contains "$_rule" "1-3 lines of findings" \
+  # #798: the review stages list one Important line per blocking finding.
+  case "$_role" in
+    reviewer | security | adversarial) _after='`- [Important] <path>:<line> — <text>` line per blocking finding' ;;
+    *) _after="1-3 lines of findings" ;;
+  esac
+  assert_contains "$_rule" "$_after" \
     "AC1 $_role profile keeps findings after the verdict line"
   assert_contains "$_rule" "NOTHING before" \
     "AC1 $_role profile forbids anything before the verdict line"

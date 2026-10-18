@@ -105,6 +105,7 @@
 15 test-events-spend-line.sh
 31 test-events-spend-report.sh
 9 test-find-pr-pagination.sh
+15 test-finding-outcome-event.sh
 24 test-free-text-as-data.sh
 7 test-frozen-run-714.sh
 4 test-gate-same-head.sh
