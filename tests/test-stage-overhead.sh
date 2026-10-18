@@ -70,11 +70,11 @@ budget() {  # role ceiling
   if [ "$size" -le "$2" ]; then pass "$1: profile + prompt template is $size bytes (budget $2)"
   else fail "$1: profile + prompt template is $size bytes (budget $2)" "over by $((size - $2))"; fi
 }
-budget developer 13020  # #798: the FINDING marker paragraph;#648: the placement check before the PR; #716: the verify.targeted_commands rule; #791: the PR body's Testing and How to revert sections
+budget developer 13115  # #800: the **Regresses:** line in the PR body; #798: the FINDING marker paragraph;#648: the placement check before the PR; #716: the verify.targeted_commands rule; #791: the PR body's Testing and How to revert sections
 budget qa 10310  # #789: the GUIDE_BLOCK marker line; #778: the one-line targeted command, the refused bare form and the pre-CI --all; #751: the exit-5 rule (BLOCKED environment is not a FAIL); #750: a refused tool call is not a block, post the verdict first; #693: the guard green@head line; #729: the AC<n> FAIL flaky and qa-run e2e lines, less the post-approval "GitHub-only"; #714: the frozen@head column, FAIL weakened and --ack-changed; #715: the (same) result lines; #610: the exit-4 rule (an unusable spec is BLOCKED, not a FAIL); #648: a vacuous FAIL is the spec's; #674: the 600000 ms cap and BLOCKED: verify
 budget reviewer 6070 # #798: the Important line per finding in the final message;#789: the GUIDE_BLOCK marker line and the Guide rules applied line; #596: the Change-block rule at Read diff and the prompt's marker line; #661: the mandatory review body file; #710: the talos:reviewed marker line; #785: the Re-review block rule and the finding tags paragraph; #791: the How to revert check
 budget security 5290  # #798: the same;#789: the GUIDE_BLOCK marker line; #596: the same; #661: the mandatory sign-off body file; #710: the talos:reviewed marker line; #785: the same two additions
-budget pm 5480  # #773: only files the change adds, or with no AC ids, on the Tests line; #715: the (same) criterion kind; #648: (test) only if red on base; every test file on the Tests: line; #752: the path charset, the bullet list, the open-file phrases and the spec-check self-check
+budget pm 5559  # #800: the **Regresses:** line; #773: only files the change adds, or with no AC ids, on the Tests line; #715: the (same) criterion kind; #648: (test) only if red on base; every test file on the Tests: line; #752: the path charset, the bullet list, the open-file phrases and the spec-check self-check
 budget validator 4300
 budget docs 4600
 budget adversarial 6340  # #798: the same;#789: the GUIDE_BLOCK marker line; #785: the finding tags paragraph

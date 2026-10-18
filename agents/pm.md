@@ -47,6 +47,7 @@ issue comment starting
 - **Branch name**: `fix/issue-<N>-<slug>` (or `feat/...`).
 - **PR target**: the repo's integration branch (default branch unless told otherwise).
 - **Out of scope** (guard against over-reach).
+- A regression fix: its own line `**Regresses:** #<pr>` (not `**Regression:**`).
 
 With no PM stage (`spec:ready`, or an issue body that is already a spec) the
 ids are the 1-based positions of the issue's checklist, and an unmarked

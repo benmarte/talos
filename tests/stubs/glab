@@ -220,6 +220,30 @@ print(json.dumps(d))
     _stub_flags "$_GL_UPDATE_VF" "$_GL_UPDATE_BF" "$@"
     _assignee_write "$@"
     exit 0 ;;
+  "api --paginate projects/"*"/repository/commits?"*)
+    # list-default-commits (#800): STUB_GITLAB_COMMITS is the raw output, pages
+    # back-to-back as `glab api --paginate` prints them (unset = no commits).
+    if [ "${STUB_GITLAB_COMMITS_FAIL:-}" = "1" ] || [ "${STUB_GITLAB_API_FAIL:-}" = "1" ]; then
+      echo "ERROR: 500 Internal Server Error" >&2
+      exit 1
+    fi
+    printf '%s\n' "${STUB_GITLAB_COMMITS:-[]}"
+    exit 0 ;;
+  "api --paginate projects/"*"/issues?"*)
+    # list-regresses (#800): the issues here, the merge requests below.
+    if [ "${STUB_GITLAB_REGRESS_ISSUES_FAIL:-}" = "1" ] || [ "${STUB_GITLAB_API_FAIL:-}" = "1" ]; then
+      echo "ERROR: 500 Internal Server Error" >&2
+      exit 1
+    fi
+    printf '%s\n' "${STUB_GITLAB_REGRESS_ISSUES:-[]}"
+    exit 0 ;;
+  "api --paginate projects/"*"/merge_requests?scope=all"*)
+    if [ "${STUB_GITLAB_REGRESS_MRS_FAIL:-}" = "1" ] || [ "${STUB_GITLAB_API_FAIL:-}" = "1" ]; then
+      echo "ERROR: 500 Internal Server Error" >&2
+      exit 1
+    fi
+    printf '%s\n' "${STUB_GITLAB_REGRESS_MRS:-[]}"
+    exit 0 ;;
   "api --paginate projects/"*"/issues/"*"/notes"*)
     # view-issue's notes (#735): STUB_GITLAB_ISSUE_NOTES is the raw output,
     # pages back-to-back as `glab api --paginate` prints them (unset = no

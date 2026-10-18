@@ -161,12 +161,16 @@
 #          non-digit number or an option with no value exits 2 with the usage and
 #          appends nothing. Exit 0 otherwise, even when nothing could be written.
 #   scoreboard (#799) summarises the log per repo and per ISO week (UTC), from the
-#          log only (no provider call, no write): merged runs, hands-free ones (no
-#          hand_note for the issue), fix rounds and tokens per merged PR, run_end
-#          events by reason and finding_outcome events by stage and outcome.
-#          --since YYYY-MM-DD keeps merged / run_end / finding_outcome events on or
-#          after that date (the lookups are not filtered); --repo keeps one repo's
-#          rows. Tab-separated table by default, one JSON object with --json. A
+#          log, no write: merged runs, hands-free ones (no hand_note for the issue),
+#          fix rounds and tokens per merged PR, run_end events by reason and
+#          finding_outcome events by stage and outcome. The two last columns
+#          (#800), reverts and fix_forwards of Talos-merged PRs, read the provider
+#          through pipeline-vcs.sh list-default-commits and list-regresses, once
+#          each, only here and only when the log has a merged event; a failed read
+#          prints one note on stderr and shows its column as ? (null with --json).
+#          --since YYYY-MM-DD keeps merged / run_end / finding_outcome events and
+#          reverts / fix-forwards on or after that date (the lookups are not
+#          filtered); --repo keeps one repo's rows. Tab-separated table by default, one JSON object with --json. A
 #          missing or empty log prints the header only (rows: [] with --json),
 #          exit 0. A bad --since or an option with no value exits 2 with the usage.
 #          The reading rules are in docs/reference.md ("The events log").
@@ -894,8 +898,10 @@ $src" "$log_path" "$issue" "$pr" "$SCRIPT_DIR" "$budget"
 
 # cmd_scoreboard REPO SINCE JSON_MODE -- the events log summarised per repo and
 # per ISO week (#799): merged runs, how many were hands-free, fix rounds and
-# tokens per merged PR, run ends by reason, finding outcomes per stage. Reads
-# the log only. The reading rules are in docs/reference.md ("The events log").
+# tokens per merged PR, run ends by reason, finding outcomes per stage, and the
+# reverts and fix-forwards of the merged PRs (#800: the only provider reads, made
+# here and nowhere else). The reading rules are in docs/reference.md ("The events
+# log").
 cmd_scoreboard() {
   local repo="$1" since="$2" json_mode="$3"
   local log_path
@@ -904,13 +910,15 @@ cmd_scoreboard() {
     return 1
   }
 
-  python3 -I - "$log_path" "$repo" "$since" "$json_mode" <<'PYEOF'
+  python3 -I - "$log_path" "$repo" "$since" "$json_mode" "$SCRIPT_DIR/pipeline-vcs.sh" <<'PYEOF'
 import datetime
 import json
 import math
+import re
+import subprocess
 import sys
 
-log_path, repo_filter, since, json_mode = sys.argv[1:5]
+log_path, repo_filter, since, json_mode, vcs_script = sys.argv[1:6]
 
 records = []
 skipped = 0
@@ -1002,9 +1010,14 @@ def row_for(rec):
     repo = repo_of(rec)
     if repo_filter and repo != repo_filter:
         return None
-    return rows.setdefault((repo, week_of(day)), {
+    return row_at(repo, week_of(day))
+
+
+def row_at(repo, week):
+    return rows.setdefault((repo, week), {
         "merged": 0, "hands_free": 0, "fix_rounds": 0, "tokens": 0,
         "tokens_unrecorded": 0, "run_ends": {}, "finding_outcomes": {},
+        "reverts": 0, "fix_forwards": 0,
     })
 
 
@@ -1041,6 +1054,88 @@ for rec in records:
             outcome = label(rec.get("outcome"))
             by_stage[outcome] = by_stage.get(outcome, 0) + 1
 
+# Reverts and fix-forwards (#800): the one place a provider is read, and only here
+# (never from a normal run). Both count Talos-merged PRs, so a log with no merged
+# event reads nothing and both columns are 0.
+merged_repo = {}   # pr -> repo of its first merged event
+merged_days = []
+for rec in records:
+    pr = key(rec.get("pr"))
+    if rec.get("event") == "merged" and rec.get("role") == "orchestrator" and pr is not None:
+        merged_repo.setdefault(pr, repo_of(rec))
+        if day_of(rec) is not None:
+            merged_days.append(day_of(rec))
+
+
+def read_vcs(verb, read_since):
+    """The verb's JSON list, or None (after one note on stderr) when the read fails."""
+    cmd = ["bash", vcs_script, verb] + (["--since", read_since] if read_since else [])
+    try:
+        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        if p.returncode != 0:
+            raise ValueError("exit %d" % p.returncode)
+        data = json.loads(p.stdout)
+        if not isinstance(data, list) or not all(isinstance(e, dict) for e in data):
+            raise ValueError("not a list of objects")
+    except (OSError, ValueError) as e:
+        print("pipeline-events: scoreboard: %s failed (%s); that column is unknown" % (verb, e),
+              file=sys.stderr)
+        return None
+    return data
+
+
+def earliest_days(entries, pr_of, date_of):
+    """pr (as text) -> earliest day over the entries naming a Talos-merged PR."""
+    first = {}
+    for e in entries:
+        pr, day = pr_of(e), None
+        try:
+            day = datetime.date.fromisoformat(str(date_of(e))[:10])
+        except ValueError:
+            pass
+        if pr is None or pr not in merged_repo or day is None:
+            continue
+        if pr not in first or day < first[pr]:
+            first[pr] = day
+    return first
+
+
+def count_into(first, column):
+    for pr, day in first.items():
+        repo = merged_repo[pr]
+        if (repo_filter and repo != repo_filter) or (since_day is not None and day < since_day):
+            continue
+        row_at(repo, week_of(day))[column] += 1
+
+
+def last_pr_number(subject):
+    if not isinstance(subject, str) or not subject.startswith('Revert "'):
+        return None
+    nums = re.findall(r"#(\d+)", subject)
+    return nums[-1] if nums else None
+
+
+unknown = set()
+if merged_repo:
+    read_since = since or (min(merged_days).isoformat() if merged_days else "")
+    commits = read_vcs("list-default-commits", read_since)
+    if commits is None:
+        unknown.add("reverts")
+    else:
+        count_into(earliest_days(commits, lambda c: last_pr_number(c.get("subject")),
+                                 lambda c: c.get("date")), "reverts")
+    regresses = read_vcs("list-regresses", read_since)
+    if regresses is None:
+        unknown.add("fix_forwards")
+    else:
+        count_into(earliest_days(regresses, lambda e: key(e.get("regresses")),
+                                 lambda e: e.get("date")), "fix_forwards")
+
+
+def shown(r, column):
+    return None if column in unknown else r[column]
+
+
 keys = sorted(rows)
 if json_mode == "1":
     out = []
@@ -1054,6 +1149,7 @@ if json_mode == "1":
             "finding_outcomes": {
                 s: dict(sorted(o.items())) for s, o in sorted(r["finding_outcomes"].items())
             },
+            "reverts": shown(r, "reverts"), "fix_forwards": shown(r, "fix_forwards"),
         })
     print(json.dumps({"rows": out}))
 else:
@@ -1062,7 +1158,7 @@ else:
         return "".join(" " if ord(c) < 32 or ord(c) == 127 else c for c in str(v))
 
     print("\t".join(["repo", "week", "merged", "hands_free", "fix_rounds_per_pr",
-                     "tokens_per_pr", "run_ends", "finding_outcomes"]))
+                     "tokens_per_pr", "run_ends", "finding_outcomes", "reverts", "fix_forwards"]))
     for repo, week in keys:
         r = rows[(repo, week)]
         n = r["merged"]
@@ -1074,7 +1170,9 @@ else:
             for s, outs in sorted(r["finding_outcomes"].items())
             for o, c in sorted(outs.items())
         ) or "-"
-        print("\t".join(cell(x) for x in [repo, week, n, r["hands_free"], fix, tok, run_ends, findings]))
+        reverts, fix_forwards = ("?" if shown(r, c) is None else r[c] for c in ("reverts", "fix_forwards"))
+        print("\t".join(cell(x) for x in [repo, week, n, r["hands_free"], fix, tok, run_ends, findings,
+                                          reverts, fix_forwards]))
 
 if skipped:
     print(f"pipeline-events: skipped {skipped} malformed line(s)", file=sys.stderr)

@@ -51,8 +51,21 @@
 #   list-assignees                            One JSON object {"<n>": ["login", ...]} of
 #                                             the open issues that have an assignee
 #                                             (#560). Exit 1 on a failed read.
+#   list-default-commits [--since YYYY-MM-DD] The base branch's commits, newest first, as
+#                                             [{"sha", "subject", "date"}] (subject: the
+#                                             first line of the message; #800). Read
+#                                             only; the scoreboard's revert read. Exit 1
+#                                             on a failed read, a read that hits its
+#                                             page cap (never a partial list), and the
+#                                             file provider.
+#   list-regresses [--since YYYY-MM-DD]       One [{"number", "kind", "date",
+#                                             "regresses"}] entry (kind issue|pr, date
+#                                             the creation time) per `**Regresses:** #<n>`
+#                                             line, at the start of a line, in the body
+#                                             of an issue or PR of any state (#800); no
+#                                             body is printed. Exit codes as above.
 #   view-issue <n>                            View issue details
-#             <n> --spec                      Compact form for stage handoff (#201):
+#             <n> --spec                     Compact form for stage handoff (#201):
 #                                             same {title, body, labels, comments}
 #                                             shape, but comments is at most the one
 #                                             latest comment whose body starts with
@@ -1180,6 +1193,132 @@ if not isinstance(d, list):
     sys.exit("pipeline-vcs: expected a JSON array")
 print(len(d))
 '
+}
+
+# ── Scoreboard reads (#800): list-default-commits and list-regresses ──────────
+# Pages a read follows before it is a failed one: a capped list is never
+# printed as if it were whole.
+_VCS_READ_MAX_PAGES=20
+
+# _vcs_read_since <verb> [--since YYYY-MM-DD] -- prints the date ('' when absent),
+# non-zero with one usage line on anything else.
+_vcs_read_since() {
+  local _rs_verb="$1"; shift
+  case "$#:${1:-}" in
+    0:) return 0 ;;
+    2:--since)
+      if python3 -I -c 'import datetime, re, sys; assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", sys.argv[1]); datetime.date.fromisoformat(sys.argv[1])' "$2" 2>/dev/null; then
+        printf '%s' "$2"
+        return 0
+      fi ;;
+  esac
+  echo "pipeline-vcs: $_rs_verb: usage: $_rs_verb [--since YYYY-MM-DD]" >&2
+  return 1
+}
+
+# _vcs_commits_shape <github|gitlab|azure> -- a provider's raw commit array (azure:
+# its {"value": [...]} page) on stdin; prints [{sha, subject, date}], subject the
+# first line of the message. Non-zero, nothing on stdout, on any other shape.
+_vcs_commits_shape() {
+  python3 -I -c '
+import json, sys
+
+provider = sys.argv[1]
+try:
+    raw = json.load(sys.stdin)
+    if provider == "azure":
+        raw = raw["value"]
+    if not isinstance(raw, list):
+        raise ValueError("not an array")
+    out = []
+    for c in raw:
+        if provider == "github":
+            msg, date = c["commit"]["message"], c["commit"]["committer"]["date"]
+            sha = c["sha"]
+        elif provider == "gitlab":
+            msg, date, sha = c.get("message") or c["title"], c["committed_date"], c["id"]
+        else:
+            msg, date, sha = c["comment"], c["committer"]["date"], c["commitId"]
+        lines = (msg or "").splitlines()
+        out.append({"sha": sha, "subject": lines[0] if lines else "", "date": date})
+except (ValueError, KeyError, TypeError, AttributeError):
+    print("pipeline-vcs: list-default-commits: unreadable commit list", file=sys.stderr)
+    sys.exit(1)
+print(json.dumps(out))
+' "$1"
+}
+
+# _vcs_regresses_items <github|gitlab|azure> [issue|pr] -- a provider's raw list of
+# issues and PRs on stdin (azure: work items for `issue`, PRs for `pr`); prints
+# [{number, kind, date, body}]. Azure work items store HTML, so their Description
+# is turned back into the lines the author wrote (<strong> as **, blocks and <br>
+# as line breaks). Non-zero, nothing on stdout, on any other shape.
+_vcs_regresses_items() {
+  python3 -I -c '
+import html, json, re, sys
+
+provider, kind = sys.argv[1], sys.argv[2]
+
+def md(h):
+    h = re.sub(r"(?is)<\s*(strong|b)\s*>(.*?)<\s*/\s*\1\s*>", r"**\2**", h)
+    h = re.sub(r"(?i)<\s*(br|/p|/div|/li|/h[1-6]|/tr|/pre|/blockquote)\s*/?\s*>", "\n", h)
+    h = re.sub(r"(?i)<\s*(p|div|li|h[1-6]|pre|blockquote)(\s[^<>]*)?>", "\n", h)
+    return html.unescape(re.sub(r"<[^<>]*>", "", h))
+
+try:
+    raw = json.load(sys.stdin)
+    if not isinstance(raw, list):
+        raise ValueError("not an array")
+    out = []
+    for i in raw:
+        if provider == "github":
+            item = (i["number"], "pr" if "pull_request" in i else "issue", i["created_at"], i.get("body"))
+        elif provider == "gitlab":
+            item = (i["iid"], kind, i["created_at"], i.get("description"))
+        elif kind == "issue":
+            f = i["fields"]
+            item = (i["id"], kind, f["System.CreatedDate"], md(f.get("System.Description") or ""))
+        else:
+            item = (i["pullRequestId"], kind, i["creationDate"], i.get("description"))
+        out.append(dict(zip(("number", "kind", "date", "body"), item)))
+except (ValueError, KeyError, TypeError, AttributeError):
+    print("pipeline-vcs: list-regresses: unreadable issue or PR list", file=sys.stderr)
+    sys.exit(1)
+print(json.dumps(out))
+' "$1" "${2:-}"
+}
+
+# _vcs_regresses_shape [<since YYYY-MM-DD>] -- one or more [{number, kind, date, body}]
+# arrays back to back on stdin; prints [{number, kind, date, regresses}], one entry per
+# `**Regresses:** #<n>` line (at the start of the line, whitespace, digits; case-sensitive,
+# the rest of the line ignored) of items created on or after <since>. No body is printed.
+_vcs_regresses_shape() {
+  python3 -I -c '
+import json, re, sys
+
+since = sys.argv[1]
+line_re = re.compile(r"\*\*Regresses:\*\*\s+#(\d+)")
+data, dec, idx, out = sys.stdin.read(), json.JSONDecoder(), 0, []
+try:
+    while True:
+        while idx < len(data) and data[idx].isspace():
+            idx += 1
+        if idx >= len(data):
+            break
+        items, idx = dec.raw_decode(data, idx)
+        for i in items:
+            if since and (i["date"] or "")[:10] < since:
+                continue
+            for line in (i["body"] or "").splitlines():
+                m = line_re.match(line)
+                if m:
+                    out.append({"number": i["number"], "kind": i["kind"], "date": i["date"],
+                                "regresses": int(m.group(1))})
+except (ValueError, KeyError, TypeError, AttributeError):
+    print("pipeline-vcs: list-regresses: unreadable issue or PR list", file=sys.stderr)
+    sys.exit(1)
+print(json.dumps(out))
+' "${1:-}"
 }
 
 # ── Cap-reached warning (shared by every provider that still caps list-issues
@@ -4179,16 +4318,17 @@ print(p.path.lstrip("/") + ("?" + p.query if p.query else ""))
 ' "$_GH_ROOT" "$1"
 }
 
-# _gh_pages <path> [<max-pages> <noun> [<key>]] -- every page of a REST list
+# _gh_pages <path> [<max-pages> <noun> [<key> [strict]]] -- every page of a REST list
 # endpoint, following Link: rel="next". Prints one JSON array; with <key> each
 # page is an object whose list sits under <key> (check runs, workflow runs) and
 # the result is {"total_count": N, "<key>": [...]}. <max-pages> stops there and
-# warns on stderr (#302: a truncated lookup must never look like an empty one).
+# warns on stderr (#302: a truncated lookup must never look like an empty one);
+# with <strict> it is a failure instead (#800: one note, nothing on stdout).
 # Returns 1 with NOTHING on stdout on any failed or wrong-shaped page (#319), so
 # callers read non-zero as "no usable data". Next links are pinned to the API
 # origin before a request carries a token (#320).
 _gh_pages() {
-  local _gp_path="$1" _gp_max="${2:-}" _gp_noun="${3:-items}" _gp_key="${4:-}"
+  local _gp_path="$1" _gp_max="${2:-}" _gp_noun="${3:-items}" _gp_key="${4:-}" _gp_strict="${5:-}"
   local _gp_all _gp_body _gp_next_file _gp_pages=0 _gp_url _gp_ref
   _gp_all="[]"
   [ -n "$_gp_key" ] && _gp_all="{\"$_gp_key\": []}"
@@ -4227,6 +4367,12 @@ json.dump(prev, sys.stdout)
     _gp_pages=$((_gp_pages + 1))
     if [ -n "$_gp_url" ]; then
       if [ -n "$_gp_max" ] && [ "$_gp_pages" -ge "$_gp_max" ]; then
+        if [ -n "$_gp_strict" ]; then
+          printf 'pipeline-vcs: %s: read stopped at the %s-page cap (github page cap); a partial list of %s is not printed\n' \
+            "$VERB" "$_gp_max" "$_gp_noun" >&2
+          rm -f "$_gp_next_file"
+          return 1
+        fi
         printf 'pipeline-vcs: %s: WARNING result capped at %s pages (github page cap) -- some %s may be missing\n' \
           "$VERB" "$_gp_max" "$_gp_noun" >&2
         break
@@ -4703,6 +4849,28 @@ _github() {
         return 0
       fi
       _vcs_shared_list_needs_owner _gh_no_items _gh_no_label_remove _gh_user_login "$@"
+      ;;
+    list-default-commits)
+      # The scoreboard's revert read (#800): the base branch's commits, newest first.
+      # Without base_branch the commits endpoint answers for the default branch.
+      local _ldc_since _ldc_ep="$_GH_API/commits?per_page=100" _ldc_raw
+      _ldc_since="$(_vcs_read_since "$verb" "$@")" || exit 1
+      [ -n "$BASE_BRANCH" ] && _ldc_ep="${_ldc_ep}&sha=${BASE_BRANCH}"
+      [ -n "$_ldc_since" ] && _ldc_ep="${_ldc_ep}&since=${_ldc_since}T00:00:00Z"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_ldc_ep (paginated via Link headers, up to $_VCS_READ_MAX_PAGES pages)"; return 0; }
+      _ldc_raw="$(_gh_pages "$_ldc_ep" "$_VCS_READ_MAX_PAGES" commits "" strict)" || exit 1
+      printf '%s' "$_ldc_raw" | _vcs_commits_shape github || exit 1
+      ;;
+    list-regresses)
+      # The scoreboard's fix-forward read (#800): the `**Regresses:** #<n>` lines of
+      # every issue and PR (the issues endpoint returns both, in any state).
+      local _lr_since _lr_ep="$_GH_API/issues?state=all&per_page=100" _lr_raw
+      _lr_since="$(_vcs_read_since "$verb" "$@")" || exit 1
+      [ -n "$_lr_since" ] && _lr_ep="${_lr_ep}&since=${_lr_since}T00:00:00Z"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_lr_ep (paginated via Link headers, up to $_VCS_READ_MAX_PAGES pages) | the **Regresses:** lines"; return 0; }
+      _lr_raw="$(_gh_pages "$_lr_ep" "$_VCS_READ_MAX_PAGES" "issues and PRs" "" strict)" || exit 1
+      _lr_raw="$(printf '%s' "$_lr_raw" | _vcs_regresses_items github)" || exit 1
+      printf '%s' "$_lr_raw" | _vcs_regresses_shape "$_lr_since" || exit 1
       ;;
     list-issues)
       # The REST issues endpoint returns pull requests too (they carry a
@@ -5827,6 +5995,35 @@ print(json.dumps(out))
       local _la_raw
       _la_raw="$(glab issue list --state opened --per-page 100 --output json $RARG)" || exit 1
       printf '%s' "$_la_raw" | _vcs_shared_assignee_map gitlab || exit 1
+      ;;
+    list-default-commits)
+      # The scoreboard's revert read (#800): the base branch's commits, newest
+      # first, every page (`glab api --paginate` has no page cap to hit).
+      local _gldc_since _gldc_ep _gldc_raw
+      _gldc_since="$(_vcs_read_since "$verb" "$@")" || exit 1
+      _gldc_ep="projects/$(_gl_api_project)/repository/commits?per_page=100"
+      [ -n "$BASE_BRANCH" ] && _gldc_ep="${_gldc_ep}&ref_name=${BASE_BRANCH}"
+      [ -n "$_gldc_since" ] && _gldc_ep="${_gldc_ep}&since=${_gldc_since}T00:00:00Z"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] glab api --paginate $_gldc_ep"; return 0; }
+      _gldc_raw="$(glab api --paginate "$_gldc_ep")" || exit 1
+      printf '%s' "$_gldc_raw" | _gh_paginate_merge | _vcs_commits_shape gitlab || exit 1
+      ;;
+    list-regresses)
+      # The scoreboard's fix-forward read (#800): the `**Regresses:** #<n>` lines
+      # of every issue and merge request, in any state.
+      local _glr_since _glr_q="scope=all&state=all&per_page=100" _glr_proj _glr_iss _glr_mrs
+      _glr_since="$(_vcs_read_since "$verb" "$@")" || exit 1
+      [ -n "$_glr_since" ] && _glr_q="${_glr_q}&created_after=${_glr_since}T00:00:00Z"
+      _glr_proj="projects/$(_gl_api_project)"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab api --paginate $_glr_proj/issues?$_glr_q; glab api --paginate $_glr_proj/merge_requests?$_glr_q | the **Regresses:** lines"
+        return 0
+      fi
+      _glr_iss="$(glab api --paginate "$_glr_proj/issues?$_glr_q")" || exit 1
+      _glr_mrs="$(glab api --paginate "$_glr_proj/merge_requests?$_glr_q")" || exit 1
+      _glr_iss="$(printf '%s' "$_glr_iss" | _gh_paginate_merge | _vcs_regresses_items gitlab issue)" || exit 1
+      _glr_mrs="$(printf '%s' "$_glr_mrs" | _gh_paginate_merge | _vcs_regresses_items gitlab pr)" || exit 1
+      printf '%s\n%s\n' "$_glr_iss" "$_glr_mrs" | _vcs_regresses_shape "$_glr_since" || exit 1
       ;;
     list-issues)
       # glab's default page size is well under 100; --per-page raises it to
@@ -7482,6 +7679,77 @@ json.dump({"headRefOid": sha,
         --output json)" || exit 1
       printf '%s' "$_la_raw" | _vcs_shared_assignee_map azure || exit 1
       ;;
+    list-default-commits)
+      # The scoreboard's revert read (#800): the commits API of the repo, newest
+      # first, $top/$skip pages. Without base_branch it answers for the default
+      # branch. A full last page at the page cap is a failed read.
+      local _azdc_since _azdc_gb _azdc_q _azdc_raw _azdc_page _azdc_n _azdc_all="" _azdc_pages=0 _azdc_skip=0
+      _azdc_since="$(_vcs_read_since "$verb" "$@")" || exit 1
+      _azdc_q="searchCriteria.\$top=100"
+      [ -n "$BASE_BRANCH" ] && _azdc_q="${_azdc_q}&searchCriteria.itemVersion.version=${BASE_BRANCH}&searchCriteria.itemVersion.versionType=branch"
+      [ -n "$_azdc_since" ] && _azdc_q="${_azdc_q}&searchCriteria.fromDate=${_azdc_since}"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] az rest GET <git base>/commits?${_azdc_q}&searchCriteria.\$skip=<n>&api-version=7.1 (up to $_VCS_READ_MAX_PAGES pages)"; return 0; }
+      _azdc_gb="$(_azure_git_base)" || {
+        echo "pipeline-vcs: $verb: needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2
+        exit 1; }
+      while :; do
+        _azdc_raw="$(az rest --method get --resource "$ADO_RESOURCE" \
+          --url "$_azdc_gb/commits?${_azdc_q}&searchCriteria.\$skip=${_azdc_skip}&api-version=7.1")" || exit 1
+        _azdc_page="$(printf '%s' "$_azdc_raw" | _vcs_commits_shape azure)" || exit 1
+        _azdc_all="$_azdc_all$_azdc_page"$'\n'
+        _azdc_n="$(printf '%s' "$_azdc_page" | _json_array_count)"
+        [ "$_azdc_n" -lt 100 ] && break
+        _azdc_pages=$((_azdc_pages + 1))
+        if [ "$_azdc_pages" -ge "$_VCS_READ_MAX_PAGES" ]; then
+          echo "pipeline-vcs: $verb: read stopped at the $_VCS_READ_MAX_PAGES-page cap (ADO commits API); a partial list of commits is not printed" >&2
+          exit 1
+        fi
+        _azdc_skip=$((_azdc_skip + 100))
+      done
+      printf '%s' "$_azdc_all" | _gh_paginate_merge || exit 1
+      ;;
+    list-regresses)
+      # The scoreboard's fix-forward read (#800): the `**Regresses:** #<n>` lines of
+      # every work item (WIQL, at most the 20000-item server ceiling) and every PR
+      # (newest first, --top/--skip pages, stopping once a page is older than --since).
+      # Reaching either cap is a failed read.
+      local _azr_since _azr_where _azr_wi _azr_wic _azr_page _azr_stat _azr_prs="" _azr_pages=0 _azr_skip=0
+      _azr_since="$(_vcs_read_since "$verb" "$@")" || exit 1
+      _azr_where="[System.Id] > 0"
+      [ -n "$_azr_since" ] && _azr_where="[System.CreatedDate] >= '${_azr_since}'"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az boards query $ORG_ARG $PROJ_ARG --wiql \"SELECT [System.Id], [System.Description], [System.CreatedDate] FROM WorkItems WHERE $_azr_where\" --output json; az repos pr list --status all --top 100 --skip <n> $ORG_ARG $PROJ_ARG --output json (up to $_VCS_READ_MAX_PAGES pages) | the **Regresses:** lines"
+        return 0
+      fi
+      _azr_wi="$(az boards query $ORG_ARG $PROJ_ARG \
+        --wiql "SELECT [System.Id], [System.Description], [System.CreatedDate] FROM WorkItems WHERE $_azr_where ORDER BY [System.CreatedDate] DESC" \
+        --output json)" || exit 1
+      _azr_wic="$(printf '%s' "$_azr_wi" | _json_array_len)" || { echo "pipeline-vcs: $verb: unreadable work item list" >&2; exit 1; }
+      if [ "$_azr_wic" -ge 20000 ]; then
+        echo "pipeline-vcs: $verb: read stopped at the ADO 20000-work-item ceiling; a partial list is not printed" >&2
+        exit 1
+      fi
+      while :; do
+        _azr_page="$(az repos pr list --status all --top 100 --skip "$_azr_skip" $ORG_ARG $PROJ_ARG --output json)" || exit 1
+        _azr_stat="$(printf '%s' "$_azr_page" | python3 -I -c '
+import json, sys
+d = json.load(sys.stdin)
+print(len(d), min((p.get("creationDate") or "")[:10] for p in d) if d else "")
+' 2>/dev/null)" || { echo "pipeline-vcs: $verb: unreadable PR list" >&2; exit 1; }
+        _azr_prs="$_azr_prs$_azr_page"$'\n'
+        [ "${_azr_stat%% *}" -lt 100 ] && break
+        [ -n "$_azr_since" ] && [[ "${_azr_stat#* }" < "$_azr_since" ]] && break
+        _azr_pages=$((_azr_pages + 1))
+        if [ "$_azr_pages" -ge "$_VCS_READ_MAX_PAGES" ]; then
+          echo "pipeline-vcs: $verb: read stopped at the $_VCS_READ_MAX_PAGES-page cap (az repos pr list); a partial list is not printed" >&2
+          exit 1
+        fi
+        _azr_skip=$((_azr_skip + 100))
+      done
+      _azr_wi="$(printf '%s' "$_azr_wi" | _vcs_regresses_items azure issue)" || exit 1
+      _azr_prs="$(printf '%s' "$_azr_prs" | _gh_paginate_merge | _vcs_regresses_items azure pr)" || exit 1
+      printf '%s\n%s\n' "$_azr_wi" "$_azr_prs" | _vcs_regresses_shape "$_azr_since" || exit 1
+      ;;
     list-issues)
       # ADO has no `az boards work-item list`. Discover work items with a WIQL
       # query instead. The GitHub adapter's "open issues only" maps to ADO's
@@ -8554,6 +8822,12 @@ _file() {
       # No assignees in file mode (#560): exit 2, nothing on stdout.
       echo "file mode: $verb not applicable in file mode" >&2
       exit 2
+      ;;
+    list-default-commits|list-regresses)
+      # The scoreboard's reads (#800) have no file-mode source: exit 1, one note,
+      # so the scoreboard shows the column as unknown rather than 0.
+      echo "pipeline-vcs: $verb: not available for provider file (no commits or PR bodies to read)" >&2
+      exit 1
       ;;
     diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       echo "file mode: $verb not applicable in file mode" >&2
