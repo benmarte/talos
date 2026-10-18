@@ -179,6 +179,7 @@
 25 test-red-check-747.sh
 25 test-red-check-drop-773.sh
 0 test-reference-reasons-documented.sh
+60 test-rereview-785.sh
 57 test-resolve-all.sh
 0 test-restamp-dispatch.sh
 48 test-role-profile-override.sh
