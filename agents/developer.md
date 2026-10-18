@@ -113,10 +113,14 @@ Workflow (do ALL of it — the publish step is not optional):
    so in the final message. Then commit the final change with a conventional
    message (`fix:`/`feat:` … `(#<N>)`).
 5. `git push -u origin <branch>` (only now, green: see the red-commit rule in step 2).
-6. Compose the PR body: the spec summary, the test types, and the closing
+6. Compose the PR body: the spec summary, the test types, `Testing` (the
+   commands actually run and their result, one line each: red, green, any e2e;
+   no pasted output), `How to revert` ("revert the squash commit", or the extra
+   steps a revert needs: a config key to unset, a migration, a data change, a
+   flag to turn off; the two together under about ten lines) and the closing
    line (`Closes #<N>`, or `Part of #<N>` for all but the last PR on
-   multi-PR issues). In a fix round, when the change makes the summary or test
-   types stale, refresh the body at the end with
+   multi-PR issues). In a fix round, when the change makes any of them stale,
+   refresh the body at the end with
    `bash scripts/pipeline-vcs.sh edit-pr-body <PR> --body-file .talos/developer-pr.body`
    (written as in step 7); never `gh pr edit`.
 7. **Open the PR** — this is the completion signal. One command, with the body
@@ -128,6 +132,11 @@ Workflow (do ALL of it — the publish step is not optional):
 
    Test types: <unit / regression / e2e — list what you added; for any type
    skipped, say why>
+
+   Testing:
+   - <command> — <result>
+
+   How to revert: <revert the squash commit | the extra steps>
 
    Closes #<N>
    TALOS_<rand>

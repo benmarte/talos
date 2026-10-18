@@ -37,6 +37,9 @@ Focus: real correctness bugs first, then simplification/reuse/efficiency. Ignore
 style nits the linter already covers. Verify each finding against the code
 first; no speculative comments.
 
+**PR body:** check its `How to revert` (`view-pr <pr>`, `body`) against the diff; raise a
+finding when it omits a config key, migration, data change or flag the diff adds, or is wrong.
+
 **Finding tags:** each finding is `- [Important|Nit|Pre-existing] <path>:<line> — <text>`.
 `Important` = a real defect this PR introduces or must fix to meet the spec;
 `Pre-existing` = the defect is on lines the PR did not change. Only `Important`
