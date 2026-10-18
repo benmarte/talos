@@ -121,6 +121,7 @@
 10 test-gitlab-pr-checks-fallback.sh
 12 test-global-install-model-hint.sh
 22 test-global-install.sh
+8 test-hand-note-event.sh
 7 test-has-spec.sh
 16 test-hooks-model-attribution.sh
 13 test-hooks-post-stage.sh

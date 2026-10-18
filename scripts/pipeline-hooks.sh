@@ -20,6 +20,7 @@
 #          [--pool api|plan]
 #        pipeline-hooks.sh stage_start <role> <issue> [--pr N]
 #        pipeline-hooks.sh run_end <stop line> [--issue N]
+#        pipeline-hooks.sh hand_note <kind> [--issue N] [--pr M] < body
 #
 # run_end appends one `run_end` event when a `talos.sh run` ends (talos.sh's run
 # exit hook calls it with the stop line as printed). The line's verdict=,
@@ -28,6 +29,14 @@
 # it), and --issue N is the run's target when the line names no issue. Same
 # only-appends, events.enabled / events.path and never-block contract as
 # stage_start.
+#
+# hand_note appends one `hand_note` event for a hand intervention (a person acting
+# outside a stage session): role `orchestrator` (so no cost view counts it),
+# `kind` (one of spec-revised, approval-posted, unblocked, relabelled,
+# code-pushed; any other exits 2), `issue` and `pr` (null when not given), `body`
+# (stdin, cut to 500 bytes on a character edge, null when empty) and `ts`.
+# `pipeline-events.sh note` is its front end. Same only-appends, events.enabled /
+# events.path and never-block contract as stage_start.
 #
 # stage_start (#550) appends one `stage_start` event to the events log when a
 # stage is dispatched (talos.sh prompt calls it), so the status line
@@ -361,6 +370,7 @@ _hooks_usage() {
   echo "Usage: pipeline-hooks.sh pre_dispatch <role> <issue> [<pr>] [<worktree_path>] [files_hint...]" >&2
   echo "       pipeline-hooks.sh stage_start <role> <issue> [--pr N]" >&2
   echo "       pipeline-hooks.sh run_end <stop line> [--issue N]" >&2
+  echo "       pipeline-hooks.sh hand_note <kind> [--issue N] [--pr M] < body" >&2
   echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\" | --summary - | --summary-file F] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R] [--input-tokens N] [--output-tokens N] [--cache-write-tokens N] [--cache-read-tokens N] [--pool api|plan]" >&2
 }
 
@@ -657,6 +667,40 @@ print(json.dumps({
 ')"
 }
 
+# hand_note KIND [--issue N] [--pr M], body on stdin: see the header.
+hand_note() {
+  local kind="${1:-}" issue="" pr=""
+  case "$kind" in
+    spec-revised|approval-posted|unblocked|relabelled|code-pushed) ;;
+    *) _hooks_usage; exit 2 ;;
+  esac
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --issue|--pr)
+        case "${2:-}" in ''|*[!0-9]*) _hooks_usage; exit 2 ;; esac
+        if [ "$1" = "--issue" ]; then issue="$2"; else pr="$2"; fi
+        shift 2 ;;
+      *) _hooks_usage; exit 2 ;;
+    esac
+  done
+  # python3 reads the body straight from stdin, so it never passes through a
+  # shell word or an environment variable; json.dumps keeps the line one line.
+  _events_append "$(TALOS_HN_KIND="$kind" TALOS_HN_ISSUE="$issue" TALOS_HN_PR="$pr" python3 -I -c '
+import datetime, json, os, sys
+e = os.environ
+text = sys.stdin.buffer.read(4096).decode("utf-8", "replace")
+body = text.encode("utf-8")[:500].decode("utf-8", "ignore")
+print(json.dumps({
+    "event": "hand_note", "role": "orchestrator", "kind": e["TALOS_HN_KIND"],
+    "issue": int(e["TALOS_HN_ISSUE"]) if e["TALOS_HN_ISSUE"] else None,
+    "pr": int(e["TALOS_HN_PR"]) if e["TALOS_HN_PR"] else None,
+    "body": body or None,
+    "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+}))
+')"
+}
+
 VERB="${1:-}"
 case "$VERB" in
   stage_start)
@@ -666,6 +710,10 @@ case "$VERB" in
   run_end)
     shift
     run_end "$@"
+    ;;
+  hand_note)
+    shift
+    hand_note "$@"
     ;;
   pre_dispatch)
     shift

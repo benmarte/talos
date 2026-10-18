@@ -1309,10 +1309,13 @@ Every `post_stage` payload is also appended as one JSON line to `<git common dir
 
 `talos.sh run` appends one `run_end` line when it ends, from its exit hook: the stop line as printed, parsed. Role `orchestrator`, plus `ts`, `issue` (the stop line's `issue=`, else the run's `--issue` target, else null), `pr`, `repo`, `verdict`, `reason` and `detail` (the same words of the stop line, null when absent), `stage` (the stop line's `role=`) and `line` (the stop line). A run that continues after a merge writes none; only its final image does, and a run with no stop line writes none. It runs no hook and no cost view counts it; `pipeline-events.sh list --event run_end` shows it.
 
+`pipeline-events.sh note --issue N [--pr M] --kind K [--body-file F|-]` appends one `hand_note` line for a hand intervention (it calls `pipeline-hooks.sh hand_note <kind> [--issue N] [--pr M]`, body on stdin). `--kind` is one of `spec-revised`, `approval-posted`, `unblocked`, `relabelled`, `code-pushed`; `--issue` is required, `--pr` optional, `--body-file -` reads the body from stdin. An unknown or missing kind, a missing or non-digit `--issue`, a non-digit `--pr` or an option with no value exits 2 with the usage and appends nothing. The line is role `orchestrator`, plus `ts`, `kind`, `issue`, `pr` (null when not given) and `body` (null when empty). The body is cut to 500 bytes on a character edge and stored as a JSON string only; nothing in it is run. It follows the same `events.enabled` / `events.path` rules and never blocks. Two call sites record one themselves, when they run with no `TALOS_ROLE` (not in a stage session) and no `TALOS_RUN_STARTED` (not inside `talos.sh run`), and make no provider read for it: a succeeded `pipeline-vcs.sh post-approval` (`approval-posted`, with its `--pr` and `--issue` when passed) and a succeeded `label-issue` / `label-pr --remove pipeline:blocked` (`unblocked`, with the issue or the PR). No cost view or the project map's Stuck state counts it; `pipeline-events.sh list --event hand_note` shows it.
+
 ```bash
 bash scripts/pipeline-events.sh path
 bash scripts/pipeline-events.sh list [--issue N] [--role R] [--event E] [--last K] [--json]
 bash scripts/pipeline-events.sh tail [--issue N]    # list --last 20
+bash scripts/pipeline-events.sh note --issue N [--pr M] --kind K [--body-file F|-]   # append a hand_note
 ```
 
 Output is oldest first, tab-separated (`ts`, `event`, `role`, `issue`, `pr`, `verdict`, `summary`) or JSON lines. Malformed lines are skipped.
