@@ -1480,7 +1480,7 @@ _talos_gate_merge() {
         _cnt="$(_talos_count_marker "<!-- talos:human-approval $_sha -->" "$_OUT")" || _talos_stop comments-unreadable
         _talos_isnum "$_cnt" || _talos_stop comments-unreadable
         if [ "$_cnt" -eq 0 ]; then
-          _talos_post "$_pr" "This PR touches paths listed in merge.human_paths, so it waits for a person to approve this exact head before Talos merges it."$'\n\n'"Matched paths:"$'\n'"$(printf '%s\n' "$_hpaths" | sed 's/^/- /')"$'\n\n'"To approve: create the PR label \`$_hlabel\` if it does not exist and apply it to this PR in the provider UI. A push changes the head and needs a new label."$'\n'"<!-- talos:human-approval $_sha -->"
+          _talos_post "$_pr" "This PR touches paths listed in merge.human_paths, so it waits for a person to approve this exact head before Talos merges it."$'\n\n'"Matched paths:"$'\n'"$(printf '%s\n' "$_hpaths" | sed 's/[<>]//g; s/^/- /')"$'\n\n'"To approve: create the PR label \`$_hlabel\` if it does not exist and apply it to this PR in the provider UI. A push changes the head and needs a new label."$'\n'"<!-- talos:human-approval $_sha -->"
           _talos_notify info "human-approval" "#$_n PR #$_pr waits for a person's approval of its head (merge.human_paths)" "$_n"
         fi
         _hpaths="$(printf '%s' "$_hpaths" | tr '\n' ',')"

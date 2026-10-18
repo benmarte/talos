@@ -255,6 +255,8 @@
 #                                             (that's check-pr-files). Fully paginated
 #                                             (#171 pattern) so PRs with >100 changed
 #                                             files are never silently truncated.
+#                                             `--with-previous` (github, gitlab; azure
+#                                             always) adds a renamed file's old path (#786).
 #                                             Used by the Step 3e Phase 1 docs-mode
 #                                             gate (#200) to decide whether the docs
 #                                             stage needs to run at all. github,
@@ -5211,7 +5213,7 @@ json.dump(out, sys.stdout)
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$n/files?per_page=100 (paginated via Link headers until exhausted) | print .filename, one per line"; return 0; }
       _pf_raw="$(_gh_pages "$_GH_API/pulls/$n/files?per_page=100")" || exit 1
       if [ "$verb" = "pr-files" ]; then
-        printf '%s' "$_pf_raw" | _gh_paths
+        printf '%s' "$_pf_raw" | _gh_paths "${2:-}"
       else
         printf '%s' "$_pf_raw" | _gh_paths \
           | CONFIGURED="$(cfg merge.forbidden_files)" REPLACE="$(cfg merge.forbidden_files_replace)" ALLOW="$(cfg merge.forbidden_files_allow)" _vcs_shared_check_pr_files
@@ -5457,14 +5459,17 @@ json.dump([dict(p, headRefName=(p.get('head') or {}).get('ref', '')) for p in pr
   esac
 }
 
-# _gh_paths -- stdin: a JSON array of changed files. Prints each .filename.
+# _gh_paths -- stdin: a JSON array of changed files. Prints each .filename; with
+# $1 = --with-previous, a renamed file's .previous_filename too (#786).
 _gh_paths() {
-  python3 -I -c "
-import json, sys
+  WITH_PREVIOUS="${1:-}" python3 -I -c "
+import json, os, sys
+prev = os.environ['WITH_PREVIOUS'] == '--with-previous'
 for f in json.load(sys.stdin):
-    path = f.get('filename', '')
-    if path:
-        print(path)
+    for key in ('filename', 'previous_filename') if prev else ('filename',):
+        path = f.get(key, '')
+        if path:
+            print(path)
 "
 }
 
@@ -5772,14 +5777,20 @@ json.dump({"headRefOid": sha,
   # every page. Returns non-zero with no stdout on an API failure or an
   # empty/unparseable response -- never a short or empty "no files" list.
   # GitLab itself truncates MRs above its instance diff limits.
+  # $2 = --with-previous adds a renamed file's old_path (#786).
   _gl_pr_files() {
     local _diffs
     _diffs="$(_gl_mr_diffs "$1")" || return 1
     # Strict parse: an entry without new_path (e.g. an error object) is a
     # failure, not an MR with no files -- raises before anything is printed.
-    printf '%s' "$_diffs" | python3 -I -c '
-import json, sys
-paths = [d["new_path"] for d in json.load(sys.stdin)]
+    printf '%s' "$_diffs" | WITH_PREVIOUS="${2:-}" python3 -I -c '
+import json, os, sys
+prev = os.environ["WITH_PREVIOUS"] == "--with-previous"
+paths = []
+for d in json.load(sys.stdin):
+    paths.append(d["new_path"])
+    if prev and d.get("old_path") and d["old_path"] != d["new_path"]:
+        paths.append(d["old_path"])
 for p in paths:
     print(p)
 ' 2>/dev/null
@@ -6347,7 +6358,7 @@ print(d.get('merge_status') or d.get('detailed_merge_status') or '')
         echo "[dry-run] glab api --paginate projects/$(_gl_api_project)/merge_requests/$n/diffs?per_page=100"
         return 0
       fi
-      _gl_pr_files "$n" || { echo "pipeline-vcs: pr-files: could not fetch the changed files of MR !$n" >&2; exit 1; }
+      _gl_pr_files "$n" "${2:-}" || { echo "pipeline-vcs: pr-files: could not fetch the changed files of MR !$n" >&2; exit 1; }
       ;;
     check-pr-files)
       # Forbidden-files merge gate (#303): pr-files output through the same
@@ -9954,7 +9965,8 @@ if [ "$VERB" = "human-paths" ]; then
   fi
   # No patterns: nothing to match, so the diff is not fetched (the default costs no API call).
   [ -n "${_hp_cfg//[[:space:]]/}" ] || exit 0
-  _hp_files="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-files "$_hp_n" 2>/dev/null)" || {
+  # A rename lists its new name in pr-files; the old name is what a pattern guards.
+  _hp_files="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-files "$_hp_n" --with-previous 2>/dev/null)" || {
     echo "pipeline-vcs: human-paths: could not read the changed files of PR #$_hp_n" >&2
     exit 2
   }
