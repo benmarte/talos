@@ -251,7 +251,7 @@ A higher layer overrides a lower one key by key: mappings merge, scalars replace
 
 The user-level file accepts every key except the repo-only ones (scope `repo` in the table).
 
-Repo-only keys: `base_branch`, `repo`, `vcs.provider`, `vcs.repo`, `vcs.azure.*`, `vcs.file.source.path`, `board.*`, `verify` (and `verify.commands`), `verify.qa_mode`, `verify.targeted_commands`, `verify.e2e`, `verify.e2e_artifacts.*`, `verify.ready`, `merge.required_checks`, `merge.forbidden_files`, `merge.forbidden_files_replace`, `merge.forbidden_files_allow`, `merge.approval_waiver_paths`, `merge.union_paths`, `merge.human_paths`, `issues.label_filter`, `issues.skip_labels`, `markers.trusted_authors`, `markers.verify_authors`. In the user-level file each is dropped with one stderr note naming the key, not the value. Their environment variables still apply.
+Repo-only keys: `base_branch`, `repo`, `vcs.provider`, `vcs.repo`, `vcs.azure.*`, `vcs.file.source.path`, `board.*`, `verify` (and `verify.commands`), `verify.qa_mode`, `verify.targeted_commands`, `verify.e2e`, `verify.e2e_artifacts.*`, `verify.ready`, `merge.required_checks`, `merge.forbidden_files`, `merge.forbidden_files_replace`, `merge.forbidden_files_allow`, `merge.approval_waiver_paths`, `merge.union_paths`, `issues.label_filter`, `issues.skip_labels`, `markers.trusted_authors`, `markers.verify_authors`. In the user-level file each is dropped with one stderr note naming the key, not the value. Their environment variables still apply.
 
 The user-level file drives `hooks.*` and `notifications.cmd`, so it is read only if it is a regular file (or your symlink to one) owned by you and not group- or world-writable. Otherwise one stderr line names the fix and the layer reads as absent, as does malformed or non-mapping content.
 
@@ -376,7 +376,6 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `merge.forbidden_files_allow` | list | - | - | repo |
 | `merge.approval_waiver_paths` | list | derived | - | repo |
 | `merge.union_paths` | list | derived | - | repo |
-| `merge.human_paths` | list | - | - | repo |
 | `merge.auto_sync` | bool | `true` | - | any |
 
 #### issues.*
@@ -974,10 +973,9 @@ Identity, resolved once per run: `issues.assignee` when it names a login, else `
 | 5 | Not a draft (only when `pr.draft` resolves true) | `redispatch` |
 | 6 | `pr-checks-required`; a red check is re-run at most twice per head SHA (`talos:ci-rerun` markers) | `wait` / `redispatch` |
 | 7 | Stale base: `pipeline-mergebase.sh`, then `update-branch` (`merge.auto_sync`), then a developer merge-base task | `wait` / `redispatch` |
-| 8 | `merge.auto` | `handoff` |
-| 9 | `merge.human_paths`: the PR touches a listed path and no person has approved this head (`reason=human-approval`), or the diff or config cannot be read (`reason=human-paths-unverified`); see [Human approval for listed paths](#human-approval-for-listed-paths) | `wait` |
+| 8 | `merge.auto` | `merge` / `handoff` |
 
-Every gate green answers `merge`. An unreadable gate answers `stop reason=<r>` (fail closed). Gates 3 and 4 set `pipeline:blocked`; only a human clears it.
+An unreadable gate answers `stop reason=<r>` (fail closed). Gates 3 and 4 set `pipeline:blocked`; only a human clears it.
 
 ### Verify once, QA trusts CI
 
@@ -1108,7 +1106,6 @@ Docs is decided by `talos.sh docs-gate <pr> --issue <N>`. With `docs:done` on th
 | `merge.method` | `squash` | `squash`, `merge` or `rebase` |
 | `merge.auto_sync` | `true` | `update-branch` on a stale base; sync sibling PRs after a merge |
 | `merge.union_paths` | `["CHANGELOG.md"]` | paths `pipeline-mergebase.sh` may union-merge |
-| `merge.human_paths` | `[]` | paths whose PRs wait for a person's approval of the head before `gate merge` answers `merge` |
 
 When `conflict-files <pr>` lists only `merge.union_paths` entries, `scripts/pipeline-mergebase.sh <pr>` resolves them with `git merge-file --union` (both sides kept, the PR's first) in a throwaway worktree and pushes, with no developer dispatch. Exit 0 pushed, 3 a path is not unionable (developer merge-base task), 1 setup error. Entries matching `scripts/**`, `tests/**`, pipeline config or forbidden patterns are rejected.
 
@@ -1123,18 +1120,6 @@ When `conflict-files <pr>` lists only `merge.union_paths` entries, `scripts/pipe
 | `merge.forbidden_files_allow` | exempt paths such as `.env.example`; an entry that would also exempt a denied path (e.g. `*.json`) fails validation and the gate fails closed |
 
 Every run prints `talos:forbidden-files-active patterns=N defaults=in-force|replaced`, plus `talos:forbidden-files-defaults-replaced patterns=N` when replaced.
-
-### Human approval for listed paths
-
-`merge.human_paths` (repo-only list, default empty: nothing changes) names paths a person must always approve, such as CI workflows, the installer, auth or billing code. Matching is the `merge.approval_waiver_paths` rule: each changed path, or its basename, against each glob (`.github/workflows/**`, `install.sh`). `pipeline-vcs.sh human-paths <pr>` prints the matching changed paths (exit 1), nothing (exit 0), or nothing with exit 2 when the diff or the config value cannot be read; it runs on GitHub, GitLab and Azure DevOps.
-
-When a PR touches a listed path, `gate merge` answers `verdict=wait` `reason=human-approval` `paths=<comma list>` until a person approves its current head. An agent's approval never counts, because stages approve under the same account. The signal is a PR label `talos:human-approved:<sha12>`, `<sha12>` being the first 12 characters of the head SHA, which `label-pr` and `label-issue` refuse to add (any case; removing it works).
-
-**How to approve.** The first wait on a head posts one PR comment naming the matched paths and the exact label, and sends an `info` notification; later runs post nothing. Create that label in the provider if it does not exist and apply it to the PR in its UI. The next `gate merge` run merges.
-
-**Per commit.** The label names a head, so a push makes it stale and needs a new label. A head that returns to an approved SHA matches again. Stale `talos:human-approved:*` labels are not removed.
-
-An unreadable diff or config waits (`reason=human-paths-unverified`), never merges. With `merge.auto: false` the gate still hands off, since a person merges.
 
 ### Human merge
 

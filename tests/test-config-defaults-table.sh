@@ -59,7 +59,7 @@ print("\n".join(bad))
 print("ROWS=%d" % len(rows))
 TALOS_PYtab7Gw3Nd5Xk
 )"
-assert_eq "ROWS=132" "$(printf '%s\n' "$_out" | tail -n1)" "AC10 the table has one row per config key (132 rows)"
+assert_eq "ROWS=131" "$(printf '%s\n' "$_out" | tail -n1)" "AC10 the table has one row per config key (131 rows)"
 assert_eq "" "$(printf '%s\n' "$_out" | sed '$d')" \
   "every row has six fields, a unique key, a valid type/derived/env/scope column, and a default of the right shape"
 
@@ -72,7 +72,7 @@ board.azure_states.in_review board.azure_states.done verify verify.commands veri
 verify.targeted verify.targeted_commands verify.e2e verify.e2e_artifacts.dir verify.e2e_artifacts.include verify.e2e_artifacts.max_files verify.e2e_artifacts.max_mb verify.ready verify.ci_wait_s verify.ci_requeue_stuck verify.timeout_ms merge.auto merge.method
 merge.required_checks merge.forbidden_files
 merge.forbidden_files_replace merge.forbidden_files_allow merge.approval_waiver_paths
-merge.union_paths merge.human_paths merge.auto_sync issues.label_filter issues.skip_labels
+merge.union_paths merge.auto_sync issues.label_filter issues.skip_labels
 issues.max_parallel issues.assignee issues.claim identity.name execution.isolation execution.worktree_warn_threshold execution.orchestrator execution.context_budget_tokens
 roles.validator roles.pm roles.pm_skip_when_spec_present roles.qa roles.reviewer
 roles.security roles.adversarial roles.docs roles.docs_mode roles.planner docs.paths
