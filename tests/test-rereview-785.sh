@@ -289,14 +289,18 @@ approval_body "$SANDBOX/ap.rev" reviewer "$SHA_A"
 comments "owner1:$SANDBOX/f.rev" "owner1:$SANDBOX/ap.rev"
 render_rr security
 is_full "AC7 only reviewer markers on the PR" no-reviewed-sha
+fixture
 findings_body "$SANDBOX/f.sec" security "$BASE_SHA"
 comments "owner1:$SANDBOX/f.rev" "owner1:$SANDBOX/f.sec" "owner1:$SANDBOX/ap.rev"
 render_rr security
 is_delta "AC7 security's own findings comment" "$BASE_SHA"
+fixture
 approval_body "$SANDBOX/ap.sec" security "$SHA_A"
 comments "owner1:$SANDBOX/f.sec" "owner1:$SANDBOX/ap.sec"
 render_rr security
 is_delta "AC7 security's own approval" "$SHA_A"
+fixture
+comments "owner1:$SANDBOX/f.sec" "owner1:$SANDBOX/ap.sec"
 render_rr reviewer
 is_full "AC7 a security marker never supplies the reviewer's sha" no-reviewed-sha
 
@@ -341,7 +345,7 @@ for role in reviewer security; do
   done
   same_bytes "$SANDBOX/norm.github" "$SANDBOX/norm.gitlab" "AC10 $role: gitlab renders the github prompt, bar its provider line and token"
   same_bytes "$SANDBOX/norm.github" "$SANDBOX/norm.azure" "AC10 $role: azure renders the github prompt, bar its provider line and token"
-  assert_contains "$(cat "$SANDBOX/norm.github")" "reviewed_sha=$SHA_A" "AC10 $role: the control is a re-review prompt"
+  assert_contains "$(cat "$SANDBOX/norm.github")" "judge the new commits" "AC10 $role: the control is a re-review prompt"
 done
 
 # ── AC11: the profiles define the tags ────────────────────────────────────────
@@ -356,6 +360,28 @@ done
 for role in reviewer security; do
   assert_contains "$(tr '\n' ' ' < "$TALOS_ROOT/agents/$role.md" | tr -s ' ')" 'Re-review' "AC11 $role: the profile knows the Re-review block"
 done
+
+# ── AC16: `talos.sh run` still passes --embed-change on the three first-shape dispatches ──
+# The run-driver cases are pinned by the sibling file; its green run is this criterion.
+if bash "$TALOS_ROOT/tests/test-prompt-embed-change.sh" > "$SANDBOX/embed.out" 2>&1; then
+  pass "AC16 test-prompt-embed-change.sh passes: a run embeds on a first-shape reviewer, security and docs dispatch and on no other"
+else
+  fail "AC16 test-prompt-embed-change.sh passes" "$(grep '^FAIL' "$SANDBOX/embed.out" | head -n 3)"
+fi
+
+# ── AC17: the same-area check ignores everything under **Non-blocking notes:** ──
+eval "$(sed -n "/^_TALOS_AREA_PY='/,/^'\$/p" "$TALOS_ROOT/scripts/talos.sh")"
+notes_body() {  # FILE IMPORTANT-PATH NOTE-PATH: one Important finding, a Nit and a Pre-existing note
+  printf '**Agent:** reviewer (talos)\n\n**Review:** CHANGES — 1 finding\n\n- [Important] %s:1 — a real defect\n\n**Non-blocking notes:**\n- [Nit] %s:9 — naming\n- [Pre-existing] %s:3 — old\n' "$2" "$3" "$3" > "$1"
+}
+fixture
+notes_body "$SANDBOX/n.1" x.sh n.sh
+notes_body "$SANDBOX/n.2" y.sh n.sh
+comments "owner1:$SANDBOX/n.1" "owner1:$SANDBOX/n.2"
+assert_eq "" "$(python3 -I -c "$_TALOS_AREA_PY" 2 "**Agent:** reviewer (talos)" 0 "" < "$STUB_DIR/read-comments.77")" "AC17 a file cited only as a Nit or Pre-existing note in two rounds asks nothing"
+notes_body "$SANDBOX/n.3" x.sh n.sh
+comments "owner1:$SANDBOX/n.1" "owner1:$SANDBOX/n.3"
+assert_eq "ask x.sh" "$(python3 -I -c "$_TALOS_AREA_PY" 2 "**Agent:** reviewer (talos)" 0 "" < "$STUB_DIR/read-comments.77" | head -n 1)" "AC17 the Important finding's file, cited in two rounds, is the area"
 
 # ── fixture: `done` on a stubbed scripts dir ──────────────────────────────────
 DONE_GS="$SANDBOX/dgs"
