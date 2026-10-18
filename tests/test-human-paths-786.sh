@@ -75,10 +75,12 @@ scripts/install.sh" "$OUT" "AC2 $prov human-paths prints the full-path and the b
   assert_eq "0" "$RC" "AC3 $prov human-paths exits 0 when merge.human_paths is empty"
   assert_eq "" "$OUT" "AC3 $prov human-paths prints nothing when merge.human_paths is empty"
 
-  setcfg "$prov" '"not-a-list"'
-  hp "$prov" .github/workflows/ci.yml
-  assert_eq "2" "$RC" "AC4 $prov human-paths exits 2 when merge.human_paths is not a list"
-  assert_eq "" "$OUT" "AC4 $prov human-paths prints nothing when merge.human_paths is not a list"
+  for notlist in '5' '{"a": 1}'; do
+    setcfg "$prov" "$notlist"
+    hp "$prov" .github/workflows/ci.yml
+    assert_eq "2" "$RC" "AC4 $prov human-paths exits 2 when merge.human_paths is not a list ($notlist)"
+    assert_eq "" "$OUT" "AC4 $prov human-paths prints nothing when merge.human_paths is not a list ($notlist)"
+  done
 done
 
 setcfg github "$HP"
@@ -99,20 +101,23 @@ assert_eq "2" "$RC" "AC4 provider file human-paths exits 2"
 assert_eq "" "$OUT" "AC4 provider file human-paths prints nothing"
 
 # ── AC10: label-pr / label-issue refuse to add the human label ───────────────
+# What reached a provider CLI or API; azure's local `az extension list` preflight
+# is not a call about the label.
+provider_calls() { cat "$GH_LOG" "$CURL_LOG" | grep -v '^AZ ARGS: \[extension\] \[list\]' || true; }
 for prov in github gitlab azure; do
   setcfg "$prov" "$HP"
   for verb in label-pr label-issue; do
     : > "$GH_LOG"; : > "$CURL_LOG"
     bash "$VCS" "$verb" 9 --add talos:human-approved:abc123abc123 >/dev/null 2>&1; RC=$?
     assert_eq "1" "$RC" "AC10 $prov $verb refuses --add talos:human-approved:<sha12> (exit 1)"
-    assert_eq "" "$(cat "$GH_LOG" "$CURL_LOG")" "AC10 $prov $verb sends no provider call for the refused label"
+    assert_eq "" "$(provider_calls)" "AC10 $prov $verb sends no provider call for the refused label"
     bash "$VCS" "$verb" 9 --add Talos:Human-Approved:ABC123ABC123 >/dev/null 2>&1; RC=$?
     assert_eq "1" "$RC" "AC10 $prov $verb refuses the label in other letter case"
     bash "$VCS" "$verb" 9 talos:human-approved:abc123abc123 >/dev/null 2>&1; RC=$?
     assert_eq "1" "$RC" "AC10 $prov $verb refuses the label as a positional add"
     bash "$VCS" "$verb" 9 --add pipeline:review --add talos:human-approved:abc123abc123 >/dev/null 2>&1; RC=$?
     assert_eq "1" "$RC" "AC10 $prov $verb refuses the whole call when one added label is the human label"
-    assert_eq "" "$(cat "$GH_LOG" "$CURL_LOG")" "AC10 $prov $verb sends nothing when one added label is the human label"
+    assert_eq "" "$(provider_calls)" "AC10 $prov $verb sends nothing when one added label is the human label"
     bash "$VCS" "$verb" 9 --remove talos:human-approved:abc123abc123 >/dev/null 2>&1; RC=$?
     assert_eq "0" "$RC" "AC10 $prov $verb still removes the human label"
     bash "$VCS" "$verb" 9 --add pipeline:review >/dev/null 2>&1; RC=$?

@@ -133,6 +133,7 @@ merge.forbidden_files_replace	bool	false	-	-	repo
 merge.forbidden_files_allow	list		-	-	repo
 merge.approval_waiver_paths	list		derived	-	repo
 merge.union_paths	list		derived	-	repo
+merge.human_paths	list		-	-	repo
 merge.auto_sync	bool	true	-	-	any
 issues.label_filter	str	pipeline:ready	-	-	repo
 issues.skip_labels	list	pipeline:blocked\nwontfix	-	-	repo

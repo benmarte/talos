@@ -293,6 +293,19 @@
 #                                             before QA's CI wait, since GitHub
 #                                             schedules no `pull_request` run for a
 #                                             CONFLICTING PR.
+#   human-paths <n>                           Print the PR's changed paths that match
+#                                             merge.human_paths (#786; fnmatch of the
+#                                             path or its basename, as for
+#                                             merge.approval_waiver_paths), one per line.
+#                                             Exit 0 with no output when none match or
+#                                             the key is empty; exit 1 with the matches;
+#                                             exit 2 with nothing on stdout when the
+#                                             files or the config value cannot be read
+#                                             (a gate fails closed on it). github, gitlab
+#                                             and azure; `file` exits 2. label-pr and
+#                                             label-issue refuse to add any label that
+#                                             starts with talos:human-approved: only a
+#                                             person applies it, in the provider UI.
 #   conflict-files <n>                        Print the paths that conflict between
 #                                             PR <n>'s head and origin/<base_branch>,
 #                                             one per line (#256). Resolved with a
@@ -1029,6 +1042,16 @@ _parse_label_args() {
   done
   ADD_LABELS="${ADD_LABELS# }"
   REMOVE_LABELS="${REMOVE_LABELS# }"
+  # talos:human-approved:<sha12> is the one signal no stage may create (#786, the
+  # merge.human_paths gate): adding it is refused before any provider call.
+  local _pl_l
+  for _pl_l in ${ADD_LABEL_ARR[@]+"${ADD_LABEL_ARR[@]}"}; do
+    case "$(printf '%s' "$_pl_l" | tr '[:upper:]' '[:lower:]')" in
+      talos:human-approved*)
+        echo "pipeline-vcs: ${VERB:-${_VERB:-label-issue}}: refusing to add '$_pl_l': a person applies the human-approval label in the provider UI" >&2
+        exit 1 ;;
+    esac
+  done
 }
 
 # ── Epic acceptance-checkbox scan (shared by check-epic-acceptance, #168) ────
@@ -9895,6 +9918,75 @@ print('none')
 
   _pa_result "marker posted and $_pa_label label applied"
   exit $?
+fi
+
+# ── human-paths: merge.human_paths match (#786) ─────────────────────────────
+# The changed paths of a PR that match merge.human_paths, from the provider's own
+# pr-files. Same fnmatch rule as merge.approval_waiver_paths: the full path or its
+# basename against each pattern. Exit 0 with no output (no match, or no patterns),
+# 1 with the matches, 2 with nothing on stdout when the files or the config value
+# cannot be read (a gate fails closed on it). One block for github, gitlab and azure.
+if [ "$VERB" = "human-paths" ]; then
+  case "$PROVIDER" in
+    github|github-api|gitlab|azure) ;;
+    *)
+      echo "pipeline-vcs: human-paths: not implemented for provider '$PROVIDER'" >&2
+      exit 2
+      ;;
+  esac
+  _hp_n="${ARGS[0]:-}"
+  case "$_hp_n" in
+    ''|*[!0-9]*)
+      echo "pipeline-vcs: human-paths: PR number must be an integer, got '$_hp_n'" >&2
+      exit 2
+      ;;
+  esac
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] human-paths $_hp_n: pr-files $_hp_n | match against merge.human_paths" >&2
+    exit 2
+  fi
+  _hp_files="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-files "$_hp_n" 2>/dev/null)" || {
+    echo "pipeline-vcs: human-paths: could not read the changed files of PR #$_hp_n" >&2
+    exit 2
+  }
+  _hp_py='
+import fnmatch, json, os, sys
+raw = os.environ.get("HUMAN_PATHS", "").strip()
+if not raw:
+    sys.exit(0)
+try:
+    pats = json.loads(raw)
+except ValueError:
+    pats = raw.split("\n")  # a list as pipeline-config.sh prints it
+else:
+    if not isinstance(pats, list) or not all(isinstance(p, str) for p in pats):
+        sys.exit(2)
+pats = [p.strip() for p in pats if p.strip()]
+hits = []
+for path in sys.stdin.read().split("\n"):
+    base = os.path.basename(path)
+    if path and any(fnmatch.fnmatch(base, p) or fnmatch.fnmatch(path, p) for p in pats):
+        hits.append(path)
+if hits:
+    print("\n".join(hits))
+    sys.exit(1)
+'
+  _hp_cfg="$(cfg merge.human_paths)"
+  # A mapping under the key flattens into merge.human_paths.<k> dump pairs and leaves
+  # the key itself empty: that is a config that is not a list, not "no patterns".
+  if [ -f "${_CFG_CACHE_FILE:-}" ] && tr '\0' '\n' < "$_CFG_CACHE_FILE" | grep -q '^merge\.human_paths\.'; then
+    echo "pipeline-vcs: human-paths: merge.human_paths is not a list of patterns" >&2
+    exit 2
+  fi
+  _hp_out="$(printf '%s\n' "$_hp_files" | HUMAN_PATHS="$_hp_cfg" python3 -I -c "$_hp_py")"; _hp_rc=$?
+  case "$_hp_rc" in
+    0) exit 0 ;;
+    1) printf '%s\n' "$_hp_out"; exit 1 ;;
+    *)
+      echo "pipeline-vcs: human-paths: merge.human_paths is not a list of patterns" >&2
+      exit 2
+      ;;
+  esac
 fi
 
 # ── conflict-files: mechanical-merge eligibility check (#256) ────────────────
