@@ -142,6 +142,9 @@ assert_contains "$(cat "$P")" "+++ b/b.py" "AC5 prompt holds the diff"
 assert_contains "$(cat "$P")" "- [Important] <path>:<line> — <text>" "AC5 prompt states the output shape"
 assert_contains "$(cat "$P")" "Do not post" "AC5 prompt says to post nothing"
 assert_contains "$(cat "$P")" "run any tests" "AC5 prompt says to run no tests"
+tok="$(sed -n 's/^----- BEGIN SPEC \([A-Za-z0-9]*\) -----$/\1/p' "$P")"
+assert_eq "24" "${#tok}" "AC5 prompt fences the spec with a 24 character token"
+assert_eq "4" "$(grep -c -- "^----- \(BEGIN\|END\) \(SPEC\|DIFF\) $tok -----\$" "$P")" "AC5 BEGIN and END line for the spec and for the diff"
 assert_eq "0" "$(vcs_calls)" "AC5 run calls the provider for nothing"
 assert_eq "" "$(cat "$GH_LOG")" "AC5 run calls gh for nothing"
 assert_contains "$OUT" "reviewer-pr11	bug	found" "AC6 within the tolerance (2 lines) is found"
@@ -182,6 +185,9 @@ printf 'nothing\n' > "$FIX/out/reviewer-pr15"
 rm -rf "${RUNS:?}"
 ev run
 assert_eq "0" "$RC" "AC8 run (all roles) exits 0"
+tok_a="$(sed -n 's/^----- BEGIN SPEC \([A-Za-z0-9]*\) -----$/\1/p' "$EVAL_PROMPTS/reviewer-pr14")"
+tok_b="$(sed -n 's/^----- BEGIN SPEC \([A-Za-z0-9]*\) -----$/\1/p' "$EVAL_PROMPTS/reviewer-pr15")"
+assert_eq "true" "$([ -n "$tok_a" ] && [ "$tok_a" != "$tok_b" ] && echo true || echo false)" "AC5 the fence token is new on every render"
 assert_contains "$OUT" "reviewer-pr14	clean	false-alarm x2" "AC8 table row with false-alarm count"
 assert_contains "$OUT" "reviewer-pr15	bug	missed" "AC8 table row missed"
 assert_contains "$OUT" "score reviewer: 1/2 50% false_alarms=2" "AC8 reviewer score line"
@@ -259,8 +265,11 @@ cat > "$FIX/regresses" <<'JSON'
  {"number": 51, "kind": "pr", "date": "2026-10-12", "regresses": 98},
  {"number": 52, "kind": "pr", "date": "2026-10-12", "regresses": 40}]
 JSON
+: > "$EVAL_VCS_LOG"
 ev candidates
 assert_eq "0" "$RC" "AC12 candidates exits 0"
+assert_eq "list-default-commits --since 2026-10-10
+list-regresses --since 2026-10-10" "$(cat "$EVAL_VCS_LOG")" "AC12 both provider reads are bounded by the earliest merged day"
 assert_eq "40	revert
 41	fix-forward" "$OUT" "AC12 reverted and fixed-forward merged PRs, PRs in a case skipped, others ignored"
 mv "$FIX/regresses" "$FIX/regresses.keep"
