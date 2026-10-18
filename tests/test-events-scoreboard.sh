@@ -8,7 +8,8 @@
 #   AC5 --repo, an event without repo attributed through its issue, --since
 #   AC6 a missing, empty or all-malformed log prints the header only, exit 0
 #   AC7 a bad --since or an option with no value exits 2 with the usage
-#   AC8 no provider call, the log is unchanged
+#   AC8 no provider call without a merged event (the reverts and fix-forwards
+#       reads are in test-events-reverts-fixforwards-800.sh), the log is unchanged
 #   AC9 list, tail, cost and note behave as before
 set -u
 . "$(dirname "$0")/helpers.sh"
@@ -23,7 +24,7 @@ export PIPELINE_CONFIG="$SANDBOX/talos.pipeline.json"
 printf '{"vcs": {"provider": "github", "repo": "acme/widget"}}\n' > "$PIPELINE_CONFIG"
 unset TALOS_ROLE TALOS_RUN_STARTED
 
-HEADER="$(printf 'repo\tweek\tmerged\thands_free\tfix_rounds_per_pr\ttokens_per_pr\trun_ends\tfinding_outcomes')"
+HEADER="$(printf 'repo\tweek\tmerged\thands_free\tfix_rounds_per_pr\ttokens_per_pr\trun_ends\tfinding_outcomes\treverts\tfix_forwards')"
 W42="2026-10-14T10:00:00Z"   # ISO week 2026-W42 (Mon 2026-10-12 .. Sun 2026-10-18)
 W43="2026-10-20T10:00:00Z"   # ISO week 2026-W43
 
@@ -224,8 +225,8 @@ bad "--json then --since with no value" --json --since
 
 # ── AC8 ─────────────────────────────────────────────────────────────────────
 fresh
-ev "$W42" merged orchestrator 1 10 acme/widget
 ev "$W42" run_end orchestrator 1 "" acme/widget '{"reason": "idle"}'
+ev "$W42" finding_outcome orchestrator 1 10 acme/widget '{"stage": "reviewer", "outcome": "fixed"}'
 BEFORE="$(cksum < "$LOG")"
 : > "$GH_LOG"; : > "$CURL_LOG"
 sb >/dev/null; sb --json --since 2026-10-01 --repo acme/widget >/dev/null
@@ -234,6 +235,9 @@ assert_eq "0" "$(wc -c < "$GH_LOG" | tr -d ' ')" "AC8 no gh call"
 assert_eq "0" "$(wc -c < "$CURL_LOG" | tr -d ' ')" "AC8 no curl call"
 
 # ── AC9 ─────────────────────────────────────────────────────────────────────
+fresh
+ev "$W42" merged orchestrator 1 10 acme/widget
+ev "$W42" run_end orchestrator 1 "" acme/widget '{"reason": "idle"}'
 OUT="$(bash "$EVENTS" list --event merged 2>/dev/null)"
 assert_contains "$OUT" "merged" "AC9 list still prints events"
 assert_eq "2" "$(bash "$EVENTS" tail 2>/dev/null | wc -l | tr -d ' ')" "AC9 tail still prints events"

@@ -202,6 +202,8 @@ rec = {"ts": ts, "event": event, "role": role,
        "issue": int(issue) if issue else None, "pr": int(pr) if pr else None}
 if repo:
     rec["repo"] = repo
+if len(sys.argv) > 7:
+    rec.update(json.loads(sys.argv[7]))
 print(json.dumps(rec))' "$@" >> "$LOG"
 }
 fresh() { rm -f "$LOG"; mkdir -p "$(dirname "$LOG")"; : > "$LOG"; }
@@ -328,6 +330,20 @@ OTHERS="$(grep -l -e 'list-default-commits' -e 'list-regresses' "$TALOS_ROOT"/sc
 assert_eq "" "$OTHERS" "AC10 only pipeline-vcs.sh and pipeline-events.sh name the two verbs (talos.sh run reads nothing)"
 assert_eq "0" "$(awk '/^cmd_scoreboard\(\)/ {f = 1} !f && !/^[[:space:]]*#/ && /list-default-commits|list-regresses/ {n++} /^}/ {f = 0} END {print n + 0}' "$EVENTS")" \
   "AC10 pipeline-events.sh names the two verbs only inside cmd_scoreboard (and in comments)"
+
+# ── AC11 ────────────────────────────────────────────────────────────────────
+fresh
+ev "$W42" developer developer 1 10 acme/widget '{"tokens": 1000}'
+ev "$W42" developer developer 1 10 acme/widget '{"tokens": 500}'
+ev "$W42" merged orchestrator 1 10 acme/widget
+ev "$W42" run_end orchestrator 1 "" acme/widget '{"reason": "idle"}'
+ev "$W42" finding_outcome orchestrator 1 10 acme/widget '{"stage": "reviewer", "outcome": "fixed"}'
+seed_github '[]' '[]'
+sb
+assert_eq "0" "$RC" "AC11 exits 0 with no reverts or fix-forwards"
+assert_eq "$HEADER" "$(row 0)" "AC11 the header is the #799 one plus the two appended columns"
+assert_eq "acme/widget	2026-W42	1	1	1.0	1500	idle:1	reviewer/fixed:1	0	0" "$(row 1)" "AC11 the existing columns are unchanged, the two new ones are 0"
+assert_eq "" "$ERR" "AC11 no note on stderr"
 
 # ── AC12 ────────────────────────────────────────────────────────────────────
 for f in pm developer; do

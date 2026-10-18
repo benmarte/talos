@@ -119,7 +119,8 @@ Workflow (do ALL of it — the publish step is not optional):
    steps a revert needs: a config key to unset, a migration, a data change, a
    flag to turn off; the two together under about ten lines) and the closing
    line (`Closes #<N>`, or `Part of #<N>` for all but the last PR on
-   multi-PR issues). In a fix round, when the change makes any of them stale,
+   multi-PR issues). A regression fix gets `**Regresses:** #<pr>` on its own
+   line in the body, not `**Regression:**`. In a fix round, when the change makes any of them stale,
    refresh the body at the end with
    `bash scripts/pipeline-vcs.sh edit-pr-body <PR> --body-file .talos/developer-pr.body`
    (written as in step 7); never `gh pr edit`.

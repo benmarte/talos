@@ -102,6 +102,7 @@
 60 test-env-refs.sh
 2 test-epic-acceptance.sh
 14 test-events-log.sh
+30 test-events-reverts-fixforwards-800.sh
 5 test-events-scoreboard.sh
 15 test-events-spend-line.sh
 31 test-events-spend-report.sh
