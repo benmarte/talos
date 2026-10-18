@@ -21,6 +21,7 @@
 #        pipeline-hooks.sh stage_start <role> <issue> [--pr N]
 #        pipeline-hooks.sh run_end <stop line> [--issue N]
 #        pipeline-hooks.sh hand_note <kind> [--issue N] [--pr M] < body
+#        pipeline-hooks.sh finding_outcome <role> <issue> --pr N --prev-file F --now-file F [--reply-file F]
 #
 # run_end appends one `run_end` event when a `talos.sh run` ends (talos.sh's run
 # exit hook calls it with the stop line as printed). The line's verdict=,
@@ -37,6 +38,21 @@
 # (stdin, cut to 500 bytes on a character edge, null when empty) and `ts`.
 # `pipeline-events.sh note` is its front end. Same only-appends, events.enabled /
 # events.path and never-block contract as stage_start.
+#
+# finding_outcome appends one `finding_outcome` event per blocking review finding of
+# the stage's previous round (role reviewer, security or adversarial; any other
+# exits 2), saying how it ended: role `orchestrator` (so no cost view counts it),
+# `stage`, `issue`, `pr`, `finding` (`<path>:<line>`), `text` (cut to 200 chars),
+# `outcome`, `note` (the marker's reason, cut to 200 chars, else null) and `ts`.
+# A finding is a `- [Important] <path>:<line> — <text>` line of --prev-file (the
+# stage's previous final message; the first 20). Its outcome, first rule that
+# applies: a `FINDING <path>:<line> <wrong|intentional|not-worth-it>: <reason>`
+# line of --reply-file (the developer's fix-round final message; the first marker
+# of a finding wins, one naming no previous finding is ignored); `fixed` when no
+# `Important` line of --now-file (the stage's final message now) cites the same
+# <path>; else `unclassified`. It reads three files and makes no provider call.
+# Same only-appends, events.enabled / events.path and never-block contract as
+# stage_start.
 #
 # stage_start (#550) appends one `stage_start` event to the events log when a
 # stage is dispatched (talos.sh prompt calls it), so the status line
@@ -371,6 +387,7 @@ _hooks_usage() {
   echo "       pipeline-hooks.sh stage_start <role> <issue> [--pr N]" >&2
   echo "       pipeline-hooks.sh run_end <stop line> [--issue N]" >&2
   echo "       pipeline-hooks.sh hand_note <kind> [--issue N] [--pr M] < body" >&2
+  echo "       pipeline-hooks.sh finding_outcome <role> <issue> --pr N --prev-file F --now-file F [--reply-file F]" >&2
   echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\" | --summary - | --summary-file F] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R] [--input-tokens N] [--output-tokens N] [--cache-write-tokens N] [--cache-read-tokens N] [--pool api|plan]" >&2
 }
 
@@ -701,6 +718,66 @@ print(json.dumps({
 ')"
 }
 
+# finding_outcome ROLE ISSUE --pr N --prev-file F --now-file F [--reply-file F]: see the header.
+finding_outcome() {
+  local role="${1:-}" issue="${2:-}" pr="" prev="" now="" reply="" out line
+  case "$role" in reviewer|security|adversarial) ;; *) _hooks_usage; exit 2 ;; esac
+  case "$issue" in ''|*[!0-9]*) _hooks_usage; exit 2 ;; esac
+  shift 2
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pr)
+        case "${2:-}" in ''|*[!0-9]*) _hooks_usage; exit 2 ;; esac
+        pr="$2"; shift 2 ;;
+      --prev-file|--now-file|--reply-file)
+        [ -n "${2:-}" ] || { _hooks_usage; exit 2; }
+        case "$1" in --prev-file) prev="$2" ;; --now-file) now="$2" ;; *) reply="$2" ;; esac
+        shift 2 ;;
+      *) _hooks_usage; exit 2 ;;
+    esac
+  done
+  [ -n "$pr" ] && [ -n "$prev" ] && [ -n "$now" ] || { _hooks_usage; exit 2; }
+  out="$(TALOS_FO_ROLE="$role" TALOS_FO_ISSUE="$issue" TALOS_FO_PR="$pr" \
+    TALOS_FO_PREV="$prev" TALOS_FO_NOW="$now" TALOS_FO_REPLY="$reply" python3 -I -c '
+import datetime, json, os, re
+e = os.environ
+def read(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read().splitlines()
+    except OSError:
+        return []
+IMPORTANT = re.compile(r"- \[Important\] (\S+):(\d+) — (.*)")
+def findings(lines):
+    return [(m.group(1), m.group(1) + ":" + m.group(2), m.group(3).strip())
+            for m in (IMPORTANT.fullmatch(ln) for ln in lines) if m]
+prev = findings(read(e["TALOS_FO_PREV"]))[:20]
+cited = {path for path, _, _ in findings(read(e["TALOS_FO_NOW"]))}
+known = {cit for _, cit, _ in prev}
+marks = {}
+if e["TALOS_FO_REPLY"]:
+    for ln in read(e["TALOS_FO_REPLY"]):
+        m = re.fullmatch(r"FINDING (\S+:\d+) (wrong|intentional|not-worth-it):[ \t]*(.*)", ln)
+        if m and m.group(1) in known and m.group(1) not in marks:
+            marks[m.group(1)] = (m.group(2), m.group(3).strip()[:200])
+ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+for path, cit, text in prev:
+    if cit in marks:
+        outcome, note = marks[cit]
+    else:
+        outcome, note = ("unclassified" if path in cited else "fixed"), None
+    print(json.dumps({
+        "event": "finding_outcome", "role": "orchestrator", "stage": e["TALOS_FO_ROLE"],
+        "issue": int(e["TALOS_FO_ISSUE"]), "pr": int(e["TALOS_FO_PR"]),
+        "finding": cit, "text": text[:200], "outcome": outcome, "note": note or None, "ts": ts,
+    }))
+')" || out=""
+  # One append per event: each line is its own write, as every other event.
+  while IFS= read -r line; do
+    [ -z "$line" ] || _events_append "$line"
+  done <<<"$out"
+}
+
 VERB="${1:-}"
 case "$VERB" in
   stage_start)
@@ -714,6 +791,10 @@ case "$VERB" in
   hand_note)
     shift
     hand_note "$@"
+    ;;
+  finding_outcome)
+    shift
+    finding_outcome "$@"
     ;;
   pre_dispatch)
     shift

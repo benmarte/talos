@@ -348,6 +348,11 @@
 #         security or adversarial ended with the same verdict at the same PR
 #         head as its previous dispatch in this run, and no approval of that
 #         role is stamped at that head, exit 0, #640, #671).
+#         Review finding outcomes (#798): a fix-round developer's final message is
+#         kept as `dev-reply.<pr>` and a failing reviewer / security / adversarial
+#         message as `findings.<pr>.<role>`, both in the run's scratch; that
+#         role's next APPROVED, CLEAR, CHANGES or FINDINGS (no RESTAMP_*) calls
+#         `pipeline-hooks.sh finding_outcome` with them, one event per finding.
 #         stdout carries `merged=pr=<M>`, `warn` lines and the end line; a
 #         stage's final message never does (stderr has the `note` lines and the
 #         `dispatch-failed ... reason=<why>` line). The playbook's end-state
@@ -4574,6 +4579,8 @@ print(min(new) if new else "")' "$_o0" "$_o1")" || _w=""
   if [ "$_role" = developer ] && [ -z "$_pr" ]; then
     case "$_v" in "PR_OPENED "*) _talos_run_red_check "${_v#PR_OPENED }" "$_n" ;; esac
   fi
+  # #798: before the repeat check, so a repeat stop does not skip the record.
+  _talos_run_finding_outcome "$_role" "$_pr" "$_n" "$_v"
   # #640: a review-side stage that ends the same way at the same head as its
   # last dispatch on this PR would only be dispatched again: the run stops.
   case "$_role:$_next" in
@@ -4609,6 +4616,33 @@ print(min(new) if new else "")' "$_o0" "$_o1")" || _w=""
       esac ;;
   esac
   return 0
+}
+
+# _talos_run_finding_outcome <role> <pr> <issue> <verdict> (#798): the data for
+# the `finding_outcome` events, all of it already in the run's scratch, no
+# provider read. A fix-round developer's final message is kept as
+# `dev-reply.<pr>`. A reviewer / security / adversarial dispatch that ends
+# APPROVED, CLEAR, CHANGES or FINDINGS (a RESTAMP_* verdict is neither) hands its
+# previous failing message (`findings.<pr>.<role>`, when it exists) with the reply
+# and this final message to `pipeline-hooks.sh finding_outcome`, then drops the
+# record; a failing one stores its message as the new record. Best effort, silent.
+_talos_run_finding_outcome() {
+  local _r="$1" _p="$2" _i="$3" _vd="$4" _out="$_CFG_CACHE_DIR/agent.out"
+  local _rec="$_CFG_CACHE_DIR/findings.$2.$1" _rep="$_CFG_CACHE_DIR/dev-reply.$2"
+  case "$_r" in
+    developer) [ -z "$_p" ] || cp "$_out" "$_rep" 2>/dev/null || :; return 0 ;;
+    reviewer | security | adversarial) : ;;
+    *) return 0 ;;
+  esac
+  case "$_vd" in APPROVED | CLEAR | CHANGES | FINDINGS) : ;; *) return 0 ;; esac
+  if [ -f "$_rec" ]; then
+    local _ra=()
+    [ ! -f "$_rep" ] || _ra=(--reply-file "$_rep")
+    bash "$SCRIPT_DIR/pipeline-hooks.sh" finding_outcome "$_r" "$_i" --pr "$_p" \
+      --prev-file "$_rec" --now-file "$_out" ${_ra[@]+"${_ra[@]}"} >/dev/null 2>&1 || :
+    rm -f "$_rec"
+  fi
+  case "$_vd" in CHANGES | FINDINGS) cp "$_out" "$_rec" 2>/dev/null || : ;; esac
 }
 
 # _talos_run_repeat_check <role> <pr> <verdict> (#640): records the PR's head
