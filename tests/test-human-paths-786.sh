@@ -83,6 +83,25 @@ scripts/install.sh" "$OUT" "AC2 $prov human-paths prints the full-path and the b
   done
 done
 
+# ── AC2: a rename out of a listed path still matches by its old name ────────
+# The listing guards the old name; a rename's pr-files entry carries the new one.
+setcfg github "$HP"
+OUT="$(STUB_GH_PR_FILES_RAW='[{"filename":"docs/ci.yml","previous_filename":".github/workflows/ci.yml","status":"renamed"},{"filename":"README.md"}]' \
+  bash "$VCS" human-paths 9 2>/dev/null)"; RC=$?
+assert_eq "1" "$RC" "AC2 github human-paths exits 1 when a listed path is renamed away"
+assert_eq ".github/workflows/ci.yml" "$OUT" "AC2 github human-paths prints the old name of a renamed file"
+setcfg gitlab "$HP"
+OUT="$(STUB_GITLAB_MR_DIFFS='[{"old_path":"install.sh","new_path":"tools/setup.sh","renamed_file":true},{"old_path":"a.txt","new_path":"a.txt"}]' \
+  bash "$VCS" human-paths 9 2>/dev/null)"; RC=$?
+assert_eq "1" "$RC" "AC2 gitlab human-paths exits 1 when a listed path is renamed away"
+assert_eq "install.sh" "$OUT" "AC2 gitlab human-paths prints the old name of a renamed file"
+setcfg azure "$HP"
+OUT="$(STUB_AZURE_PR_ITERATIONS='{"count":1,"value":[{"id":1}]}' \
+  STUB_AZURE_PR_CHANGES='{"changeEntries":[{"item":{"path":"/docs/ci.yml"},"originalPath":"/.github/workflows/ci.yml","changeType":"rename"}],"nextSkip":0,"nextTop":0}' \
+  bash "$VCS" human-paths 9 2>/dev/null)"; RC=$?
+assert_eq "1" "$RC" "AC2 azure human-paths exits 1 when a listed path is renamed away"
+assert_eq ".github/workflows/ci.yml" "$OUT" "AC2 azure human-paths prints the old name of a renamed file"
+
 setcfg github "$HP"
 OUT="$(STUB_GH_API_FAIL=pr-files STUB_PR_FILES=install.sh bash "$VCS" human-paths 9 2>/dev/null)"; RC=$?
 assert_eq "2" "$RC" "AC4 github human-paths exits 2 when pr-files fails"
