@@ -1307,6 +1307,8 @@ Every `post_stage` payload is also appended as one JSON line to `<git common dir
 
 `talos.sh prompt` also appends a `stage_start` line (role `orchestrator`, field `stage`) per dispatched stage. It runs no hook and no cost view counts it.
 
+`talos.sh run` appends one `run_end` line when it ends, from its exit hook: the stop line as printed, parsed. Role `orchestrator`, plus `ts`, `issue` (the stop line's `issue=`, else the run's `--issue` target, else null), `pr`, `repo`, `verdict`, `reason` and `detail` (the same words of the stop line, null when absent), `stage` (the stop line's `role=`) and `line` (the stop line). A run that continues after a merge writes none; only its final image does, and a run with no stop line writes none. It runs no hook and no cost view counts it; `pipeline-events.sh list --event run_end` shows it.
+
 ```bash
 bash scripts/pipeline-events.sh path
 bash scripts/pipeline-events.sh list [--issue N] [--role R] [--event E] [--last K] [--json]

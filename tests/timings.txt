@@ -189,6 +189,7 @@
 68 test-routing-e2e-github.sh
 52 test-routing-e2e-gitlab.sh
 31 test-run-docs-worktree.sh
+8 test-run-end-event.sh
 25 test-run-id-740.sh
 35 test-run-repeat-stamped-671.sh
 4 test-run-tests-count.sh

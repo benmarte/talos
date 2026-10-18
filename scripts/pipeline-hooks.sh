@@ -19,6 +19,15 @@
 #          [--input-tokens N] [--output-tokens N] [--cache-write-tokens N] [--cache-read-tokens N]
 #          [--pool api|plan]
 #        pipeline-hooks.sh stage_start <role> <issue> [--pr N]
+#        pipeline-hooks.sh run_end <stop line> [--issue N]
+#
+# run_end appends one `run_end` event when a `talos.sh run` ends (talos.sh's run
+# exit hook calls it with the stop line as printed). The line's verdict=,
+# reason=, detail=, issue= and pr= words become fields, its role= word is the
+# field `stage` (the event's role stays `orchestrator`, so no cost view counts
+# it), and --issue N is the run's target when the line names no issue. Same
+# only-appends, events.enabled / events.path and never-block contract as
+# stage_start.
 #
 # stage_start (#550) appends one `stage_start` event to the events log when a
 # stage is dispatched (talos.sh prompt calls it), so the status line
@@ -351,6 +360,7 @@ _HOOKS_SUMMARY_MAX=4096
 _hooks_usage() {
   echo "Usage: pipeline-hooks.sh pre_dispatch <role> <issue> [<pr>] [<worktree_path>] [files_hint...]" >&2
   echo "       pipeline-hooks.sh stage_start <role> <issue> [--pr N]" >&2
+  echo "       pipeline-hooks.sh run_end <stop line> [--issue N]" >&2
   echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\" | --summary - | --summary-file F] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R] [--input-tokens N] [--output-tokens N] [--cache-write-tokens N] [--cache-read-tokens N] [--pool api|plan]" >&2
 }
 
@@ -615,11 +625,47 @@ print(json.dumps({
 ')"
 }
 
+# run_end STOP_LINE [--issue N]: see the header.
+run_end() {
+  local line="${1:-}" issue=""
+  [ -n "$line" ] || { _hooks_usage; exit 2; }
+  shift
+  if [ "${1:-}" = "--issue" ]; then
+    case "${2:-}" in ''|*[!0-9]*) _hooks_usage; exit 2 ;; esac
+    issue="$2"
+  fi
+  _events_append "$(TALOS_RE_LINE="$line" TALOS_RE_ISSUE="$issue" TALOS_RE_REPO="$(_hooks_repo)" python3 -I -c '
+import datetime, json, os
+e = os.environ
+words = {}
+for w in e["TALOS_RE_LINE"].split():
+    k, eq, v = w.partition("=")
+    if eq and k not in words:
+        words[k] = v
+def text(k):
+    return words.get(k) or None
+def num(v):
+    return int(v) if v and v.isascii() and v.isdigit() else None
+issue = num(words.get("issue")) or num(e["TALOS_RE_ISSUE"])
+print(json.dumps({
+    "event": "run_end", "role": "orchestrator", "stage": text("role"),
+    "issue": issue, "pr": num(words.get("pr")), "repo": e["TALOS_RE_REPO"] or None,
+    "verdict": text("verdict"), "reason": text("reason"), "detail": text("detail"),
+    "line": e["TALOS_RE_LINE"][:1024],
+    "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+}))
+')"
+}
+
 VERB="${1:-}"
 case "$VERB" in
   stage_start)
     shift
     stage_start "$@"
+    ;;
+  run_end)
+    shift
+    run_end "$@"
     ;;
   pre_dispatch)
     shift
