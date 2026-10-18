@@ -67,6 +67,18 @@ run_rt --list --budget-s 0 --for "tests/$F2"
 assert_eq "2" "$rc" "AC4 zero value exits 2"
 assert_contains "$err" "--budget-s" "AC4 zero value names the flag"
 
+# AC5: the flag is opt-in; without it a --list selection is unchanged and never
+# exits 6, however many jobs or files (the existing test-run-tests-*.sh cover
+# the rest).
+run_rt --list -j 1 --for "tests/$F1" "tests/$F2"
+assert_eq "0" "$rc" "AC5 without --budget-s --list exits 0"
+assert_eq "$F1
+$F2" "$out" "AC5 without --budget-s the selection is the same two files"
+assert_not_contains "$err" "over budget" "AC5 without --budget-s no budget line is printed"
+
+# AC10: this file has its own weight in tests/timings.txt.
+assert_eq "1" "$(grep -c -E '^[0-9]+ test-qa-targeted-budget\.sh$' "$TIMINGS")" "AC10 timings.txt has an entry for this test file"
+
 # AC6: qa.md step 2.
 qa_md="$(cat "$TALOS_ROOT/agents/qa.md")"
 assert_contains "$qa_md" "--strict --budget-s <budget-s>" "AC6 qa.md shows the targeted command with --budget-s"
