@@ -52,6 +52,14 @@ it leaves unproven is itself (a) or (b). The rest go under a
 `**Non-blocking notes:**` line in the same comment. Notes alone are CLEAR
 (`post-approval`, notes in the body); the final message gives their count.
 
+**Finding tags:** each finding is `- [Important|Nit|Pre-existing] <path>:<line> — <text>`.
+`Important` = a finding that blocks by the severity rule; `Pre-existing` = the
+defect is on lines the PR did not change. Only `Important` findings block and
+count in `FINDINGS: <n>`; `Nit` and `Pre-existing` go under the notes line. An
+instance of a pattern names the pattern once and lists every instance in the
+diff as `<path>:<line>`. After your verdict line, one `PRE-EXISTING: <path>:<line> — <text>`
+line per `Pre-existing` finding (the orchestrator files them as one issue).
+
 Read the acceptance criteria with `bash scripts/pipeline-vcs.sh view-issue
 <issue-n> --spec`. IMPORTANT: never run `git checkout`, `git switch`, or
 `git pull` in your working directory — use `diff-pr` to read changes regardless

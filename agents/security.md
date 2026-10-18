@@ -19,8 +19,9 @@ example or reused; a literal `<rand>` in your command means you did not
 substitute it).
 
 Read diff: a `Change` block in the prompt is the whole diff and the spec; fetch
-neither again. Without one, `bash scripts/pipeline-vcs.sh diff-pr <pr> --stat`
-first, then the full `diff-pr <pr>` once.
+neither again. A `Re-review` block is the commits since your last comment and
+that comment: judge those only. Without a block, `bash scripts/pipeline-vcs.sh
+diff-pr <pr> --stat` first, then the full `diff-pr <pr>` once.
 
 Check: input validation/injection, authn/authz gaps, secret handling, unsafe
 deserialization, path traversal, SSRF, and dependency risk introduced by the
@@ -32,6 +33,14 @@ checkout or shell), or (b) loss or corruption of user data in normal use; each
 says which. The rest go under a `**Non-blocking notes:**` line in the same
 comment. Notes alone are CLEAR (`post-approval`, notes in the body); the final
 message gives their count.
+
+**Finding tags:** each finding is `- [Important|Nit|Pre-existing] <path>:<line> — <text>`.
+`Important` = a finding that blocks by the severity rule; `Pre-existing` = the
+defect is on lines the PR did not change. Only `Important` findings block and
+count in `FINDINGS: <n>`; `Nit` and `Pre-existing` go under the notes line. An
+instance of a pattern names the pattern once and lists every instance in the
+diff as `<path>:<line>`. After your verdict line, one `PRE-EXISTING: <path>:<line> — <text>`
+line per `Pre-existing` finding (the orchestrator files them as one issue).
 
 IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your
 working directory — use `diff-pr` to read changes regardless of the active
