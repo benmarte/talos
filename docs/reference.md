@@ -1338,6 +1338,27 @@ bash scripts/pipeline-hooks.sh finding_outcome <role> <issue> --pr N --prev-file
 
 Output is oldest first, tab-separated (`ts`, `event`, `role`, `issue`, `pr`, `verdict`, `summary`) or JSON lines. Malformed lines are skipped.
 
+### The eval set
+
+`bash scripts/pipeline-eval.sh` replays the reviewer, security or QA stage against stored cases and scores it, so a prompt, tool or model change can be measured before it is merged. **Run it on demand, before merging a change to `agents/`, `templates/prompts/` or model routing**, and compare the result with the last run. Nothing runs it for you: `talos.sh`, the hooks and the skills never call it, a run is never in the background, and it appends nothing to the events log. Each case is a full stage run, so keep the set small (about 10 cases).
+
+A case is a merged PR that was later reverted or fixed forward (a **bug** case, with the file and line of the real bug) or a known-clean merged PR (a **clean** case). A person confirms every case: nothing adds one automatically.
+
+```bash
+bash scripts/pipeline-eval.sh candidates                                  # merged PRs that were reverted or fixed forward
+bash scripts/pipeline-eval.sh add --pr N --issue I --role reviewer|security|qa (--bug <path>:<line> | --clean) --confirmed-by NAME
+bash scripts/pipeline-eval.sh list                                        # id, role, kind, bug location, confirmed_by
+bash scripts/pipeline-eval.sh run [--role R] [--max-cases N] [--tolerance N]
+bash scripts/pipeline-eval.sh compare [--role R] [A B]
+```
+
+- **`candidates`:** the PRs with a `merged` event in the events log that a `Revert "..."` commit or a `**Regresses:** #<pr>` line names (the scoreboard's rules), one per line as `<pr>`, a tab, then `revert` or `fix-forward`; PRs already in a case are left out. It reads the provider through `list-default-commits` and `list-regresses`; a failed read exits 1.
+- **`add`:** snapshots `pipeline-vcs.sh diff-pr N` and the spec (the body of the newest `**PM spec:**` comment of issue `I`, else the issue body), so a replay never reads the provider. Exit 2, nothing written, when `--bug` names a path that is not in the diff, an option is missing or has no value, neither or both of `--bug` and `--clean` are given, the role is unknown, or the case exists.
+- **Layout:** `<git common dir>/talos/eval/cases/<role>-pr<N>.json` (the directory of `events.jsonl`, outside every git tree, so a target repo has its own set) holds `id`, `repo`, `pr`, `issue`, `role`, `kind` (`bug` or `clean`), `bug` (`{"file", "line"}`, null for clean), `confirmed_by`, `added`, `diff` and `spec`. `runs/<UTC timestamp>-<role>.json` holds `role`, `model` (from `pipeline-agent.sh --resolve`), `cases` (`case`, `kind`, `result`, `false_alarms`), `found`, `bugs`, `false_alarms` and `score`.
+- **`run`:** feeds each case to `pipeline-agent.sh <role> -` as a prompt holding the spec and diff, telling the stage to review only that text, post nothing, change no label, run no tests, and end with one `- [Important] <path>:<line> — <text>` line per blocking finding. Only those lines of the final message are scored. It prints a table (`case`, `kind`, `result`) and one `score <role>: <found>/<bugs> <percent> false_alarms=<k>` line per role with cases, and saves one run file per role. More selected cases than `--max-cases` (default 10) exits 2 and runs nothing.
+- **Matching rule:** a finding is **found** when its path equals the case's bug file and its line is within `--tolerance` (default 5) lines of the bug line; otherwise the bug case is `missed`, as it is when the stage run fails. On a clean case each `Important` finding is a **false alarm** (`false-alarm xK`; `clean` when none; `error` when the stage run failed). Extra findings on a bug case are neither found nor false alarms. The **score** is `found` over the bug cases as a whole percent (rounded down; `n/a`, saved as null, with no bug case); false alarms are reported beside it, never folded into it.
+- **`compare`:** prints found/bugs, false alarms and score of two saved runs (default: the two newest of the role, or of the newest run's role) and the delta; exit 1 when the later run has a lower score or more false alarms, else 0; fewer than two runs exits 2.
+
 ### Spend
 
 Talos records tokens, never a price. Sources: on the native path the orchestrator passes the completion notification's usage to `talos.sh done --tokens --tool-uses --duration-s [--model]`; on the adapter path `pipeline-agent.sh` records the claude runner's usage (`agents.capture_usage`, default true; input + output + cache creation, cache reads excluded) and a `custom` runner's sidecar file `$TALOS_USAGE_FILE` (`{"tokens":N,"tool_uses":N,"model":"..."}`, every key optional). Other runners report nothing. A missing figure is `unrecorded`, shown as such and never as 0; totals read `(+K unrecorded)`.
