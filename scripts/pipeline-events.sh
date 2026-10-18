@@ -13,8 +13,9 @@
 #        pipeline-events.sh cost --issue N [--pr M] --line
 #        pipeline-events.sh cost --issue N [--pr M] --markdown
 #        pipeline-events.sh cost --summary --issue A [--issue B ...]
+#        pipeline-events.sh note --issue N [--pr M] --kind K [--body-file F|-]
 #
-#   path   Prints the resolved absolute path to the events log (does not
+#   path  Prints the resolved absolute path to the events log (does not
 #          require the file to exist).
 #   list   Prints matching events, oldest first. Default output is a compact
 #          one-line-per-event table (ts, event, role, issue, pr, verdict,
@@ -63,9 +64,9 @@
 #          and pool_unrecorded (events with no pool or any other value;
 #          orchestrator rows are left out of the total's count). With no such
 #          event the output is unchanged.
-#          A `stage_start` event (#550, the dispatch marker the status line reads)
-#          and a `run_end` event (a run's stop line) are not stage runs: every
-#          cost form skips them. list and tail show them.
+#          A `stage_start` event (#550, the dispatch marker the status line reads),
+#          a `run_end` event (a run's stop line) and a `hand_note` event (a hand
+#          intervention) are not stage runs: every cost form skips them. list and tail show them.
 #          --pr M keeps only events whose pr is M (an event with pr null never
 #          matches), in the table, --json and --line alike.
 #          --line (needs --issue; wins over --json) prints one summary line
@@ -147,6 +148,16 @@
 #          A token count that is not a finite non-negative number (a string,
 #          boolean, negative, Infinity, NaN) is unrecorded in every cost form,
 #          and --json is always strict JSON.
+#
+#   note   The one writing verb: appends a `hand_note` event for a hand
+#          intervention, through `pipeline-hooks.sh hand_note` (which holds the
+#          events.enabled / events.path / never-block contract). --kind is one of
+#          spec-revised, approval-posted, unblocked, relabelled, code-pushed;
+#          --issue (digits) is required, --pr (digits) optional; --body-file -
+#          reads the body from stdin, --body-file F from the file F (the first
+#          500 bytes are kept). An unknown kind, a missing --kind or --issue, a
+#          non-digit number or an option with no value exits 2 with the usage and
+#          appends nothing. Exit 0 otherwise, even when nothing could be written.
 #
 # A malformed line (not valid JSON, or not a JSON object) is skipped rather
 # than aborting the read; the count of skipped lines is reported once on
@@ -417,8 +428,9 @@ with open(log_path if os.path.isfile(log_path) else os.devnull, "r", errors="rep
             skipped += 1
             continue
         # #550: a dispatch marker for the status line, not a finished stage;
-        # a run_end is the run's stop line, not a stage either.
-        if rec.get("event") in ("stage_start", "run_end"):
+        # a run_end is the run's stop line, not a stage either, and a hand_note
+        # records a person's intervention.
+        if rec.get("event") in ("stage_start", "run_end", "hand_note"):
             continue
         if not matches(rec):
             continue
@@ -877,6 +889,7 @@ _usage() {
   echo "       pipeline-events.sh cost --issue N [--pr M] --line" >&2
   echo "       pipeline-events.sh cost --issue N [--pr M] --markdown" >&2
   echo "       pipeline-events.sh cost --summary --issue A [--issue B ...]" >&2
+  echo "       pipeline-events.sh note --issue N [--pr M] --kind <spec-revised|approval-posted|unblocked|relabelled|code-pushed> [--body-file F|-]" >&2
 }
 
 # _need_value OPTION ARGC -- exit 2 with usage when a value-taking option is
@@ -977,6 +990,43 @@ case "$VERB" in
     else
       cmd_cost "$issue" "$json_mode" "$pr"
     fi
+    ;;
+  note)
+    shift
+    issue="" pr="" kind="" body_file=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --issue) _need_value "$1" $#; _need_digits "$1" "$2"; issue="$2"; shift 2 ;;
+        --pr) _need_value "$1" $#; _need_digits "$1" "$2"; pr="$2"; shift 2 ;;
+        --kind) _need_value "$1" $#; kind="$2"; shift 2 ;;
+        --body-file) _need_value "$1" $#; body_file="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    case "$kind" in
+      spec-revised|approval-posted|unblocked|relabelled|code-pushed) ;;
+      *) echo "pipeline-events: --kind must be one of spec-revised, approval-posted, unblocked, relabelled, code-pushed" >&2; _usage; exit 2 ;;
+    esac
+    if [ -z "$issue" ]; then
+      echo "pipeline-events: note needs --issue" >&2
+      _usage
+      exit 2
+    fi
+    if [ "$body_file" != "-" ] && [ -n "$body_file" ] && { [ ! -f "$body_file" ] || [ ! -r "$body_file" ]; }; then
+      echo "pipeline-events: --body-file '$body_file' is not readable" >&2
+      _usage
+      exit 2
+    fi
+    if [ ! -f "$SCRIPT_DIR/pipeline-hooks.sh" ]; then
+      echo "pipeline-events: pipeline-hooks.sh missing; reinstall Talos" >&2
+      exit 0
+    fi
+    # The body goes to the writer on stdin, never through argv or the environment.
+    case "$body_file" in
+      '') bash "$SCRIPT_DIR/pipeline-hooks.sh" hand_note "$kind" --issue "$issue" ${pr:+--pr "$pr"} </dev/null ;;
+      -)  bash "$SCRIPT_DIR/pipeline-hooks.sh" hand_note "$kind" --issue "$issue" ${pr:+--pr "$pr"} ;;
+      *)  bash "$SCRIPT_DIR/pipeline-hooks.sh" hand_note "$kind" --issue "$issue" ${pr:+--pr "$pr"} < "$body_file" ;;
+    esac
     ;;
   *)
     _usage

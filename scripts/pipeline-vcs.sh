@@ -9457,6 +9457,16 @@ if [ "$VERB" = "forbidden-files-patterns" ]; then
   exit 0
 fi
 
+# _vcs_hand_note KIND [--issue N] [--pr M] -- records a hand_note event (see
+# pipeline-hooks.sh) for a call made by a person: no stage role (TALOS_ROLE) and
+# not inside `talos.sh run` (TALOS_RUN_STARTED). It reads nothing from the
+# provider, writes nothing on stdout and never fails the verb.
+_vcs_hand_note() {
+  [ "$DRY_RUN" != "true" ] && [ -z "${TALOS_ROLE:-}" ] && [ -z "${TALOS_RUN_STARTED:-}" ] \
+    && [ -f "$SCRIPT_DIR/pipeline-hooks.sh" ] || return 0
+  bash "$SCRIPT_DIR/pipeline-hooks.sh" hand_note "$@" </dev/null >/dev/null || :
+}
+
 # ── label-pr: approval-marker guard (#94) ────────────────────────────────────
 # Recognised approval labels and their role names (same set as check-approval-sha).
 # Two modes:
@@ -9756,6 +9766,7 @@ if [ "$VERB" = "post-approval" ]; then
     _r_out="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" check-approval-sha "$_pa_n" --stale-list \
       ${REPO:+--repo "$REPO"} 2>&1)"; _r_rc=$?
     if [ "$_r_rc" -eq 0 ] && grep -q 'all approval labels are current' <<<"$_r_out"; then
+      _vcs_hand_note approval-posted --pr "$_pa_n" ${_pa_issue:+--issue "$_pa_issue"}
       printf 'post-approval: PR #%s %s %s; stamp ok\n' "$_pa_n" "$_pa_role" "$1"
       return 0
     fi
@@ -9764,6 +9775,7 @@ if [ "$VERB" = "post-approval" ]; then
       case ",$_r_stale," in
         *",$_pa_role,"*) ;;
         *)
+          _vcs_hand_note approval-posted --pr "$_pa_n" ${_pa_issue:+--issue "$_pa_issue"}
           printf 'post-approval: PR #%s %s %s; stamp ok (stale elsewhere: %s)\n' "$_pa_n" "$_pa_role" "$1" "$_r_stale"
           return 0
           ;;
@@ -10107,6 +10119,24 @@ _DISPATCH_RC=$?
 # configured; a successful non-idempotent verb appends its name (no body) so a
 # provider failure after a write is never rerun on another runner. Unset: no-op.
 [ "$_DISPATCH_RC" -eq 0 ] && _vcs_journal_write
+
+# ── Post-dispatch: hand_note for a hand-removed pipeline:blocked ──────────────
+# A label-issue / label-pr that removed pipeline:blocked (see _vcs_hand_note for
+# who counts as a hand). Only a succeeded call is recorded.
+if [ "$_DISPATCH_RC" -eq 0 ] && { [ "$VERB" = "label-issue" ] || [ "$VERB" = "label-pr" ]; } \
+    && [ "${#ARGS[@]}" -ge 2 ]; then
+  case "${ARGS[0]}" in
+    ''|*[!0-9]*) ;;
+    *)
+      for ((_hn_i = 1; _hn_i < ${#ARGS[@]} - 1; _hn_i++)); do
+        if [ "${ARGS[$_hn_i]}" = "--remove" ] && [ "${ARGS[$((_hn_i + 1))]}" = "pipeline:blocked" ]; then
+          _vcs_hand_note unblocked "--${VERB#label-}" "${ARGS[0]}"
+          break
+        fi
+      done
+      ;;
+  esac
+fi
 
 # ── Post-dispatch: label-pr approval-marker warning (#94, #115) ──────────────
 # After label-pr successfully adds a recognised approval label, verify that a

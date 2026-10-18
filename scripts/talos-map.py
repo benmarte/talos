@@ -286,7 +286,7 @@ def main(argv):
         if not late:
             continue
         moved.add(n)
-        said = [e for e in late if e.get("event") not in ("stage_start", "stage_complete", "run_end")]
+        said = [e for e in late if e.get("event") not in ("stage_start", "stage_complete", "run_end", "hand_note")]
         if n in running:
             continue
         if said and said[-1].get("verdict") == "BLOCKED":
