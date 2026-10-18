@@ -326,8 +326,8 @@ sb
 assert_eq "0" "$(cat "$CURL_LOG" "$GH_LOG" | wc -c | tr -d ' ')" "AC10 a log with no merged event makes no provider read"
 assert_eq "0" "$(cell "$(row 1)" 9)" "AC10 no merged event: reverts 0"
 assert_eq "0" "$(cell "$(row 1)" 10)" "AC10 no merged event: fix_forwards 0"
-OTHERS="$(grep -l -e 'list-default-commits' -e 'list-regresses' "$TALOS_ROOT"/scripts/*.sh "$TALOS_ROOT"/scripts/*.py | grep -v -e '/pipeline-vcs.sh$' -e '/pipeline-events.sh$' || true)"
-assert_eq "" "$OTHERS" "AC10 only pipeline-vcs.sh and pipeline-events.sh name the two verbs (talos.sh run reads nothing)"
+OTHERS="$(grep -l -e 'list-default-commits' -e 'list-regresses' "$TALOS_ROOT"/scripts/*.sh "$TALOS_ROOT"/scripts/*.py | grep -v -e '/pipeline-vcs.sh$' -e '/pipeline-events.sh$' -e '/pipeline-eval.sh$' || true)"
+assert_eq "" "$OTHERS" "AC10 only pipeline-vcs.sh, pipeline-events.sh and the on-demand pipeline-eval.sh name the two verbs (talos.sh run reads nothing)"
 assert_eq "0" "$(awk '/^cmd_scoreboard\(\)/ {f = 1} !f && !/^[[:space:]]*#/ && /list-default-commits|list-regresses/ {n++} /^}/ {f = 0} END {print n + 0}' "$EVENTS")" \
   "AC10 pipeline-events.sh names the two verbs only inside cmd_scoreboard (and in comments)"
 

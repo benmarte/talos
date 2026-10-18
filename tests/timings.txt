@@ -101,6 +101,7 @@
 5 test-env-allowlist.sh
 60 test-env-refs.sh
 2 test-epic-acceptance.sh
+3 test-eval-set-792.sh
 14 test-events-log.sh
 30 test-events-reverts-fixforwards-800.sh
 5 test-events-scoreboard.sh

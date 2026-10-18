@@ -129,7 +129,7 @@ assert_eq "0:1" "$RC:$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" "AC4 no cases:
 mv "$STATE/cases.keep" "$CASES"
 
 # ── AC5 / AC6 / AC7 ──────────────────────────────────────────────────────────
-rm -rf "$RUNS"
+rm -rf "${RUNS:?}"
 : > "$EVAL_VCS_LOG"
 printf -- '- [Important] a.py:12 — off by two\n' > "$FIX/out/reviewer-pr11"
 printf -- '- [Important] c.py:1 — noise\nnot a finding\n- [Suggestion] c.py:2 — nit\n  - [Important] c.py:3 — indented\n' > "$FIX/out/security-pr12"
@@ -179,7 +179,7 @@ ev add --pr 15 --issue 5 --role reviewer --bug b.py:7 --confirmed-by ben
 printf -- '- [Important] a.py:10 — real\n' > "$FIX/out/reviewer-pr11"
 printf -- '- [Important] c.py:1 — noise\n- [Important] c.py:2 — noise\n' > "$FIX/out/reviewer-pr14"
 printf 'nothing\n' > "$FIX/out/reviewer-pr15"
-rm -rf "$RUNS"
+rm -rf "${RUNS:?}"
 ev run
 assert_eq "0" "$RC" "AC8 run (all roles) exits 0"
 assert_contains "$OUT" "reviewer-pr14	clean	false-alarm x2" "AC8 table row with false-alarm count"
@@ -220,7 +220,7 @@ ev run --max-cases 3
 assert_eq "2" "$RC" "AC10 --max-cases lowers it, all roles counted together"
 
 # ── AC11 ─────────────────────────────────────────────────────────────────────
-rm -rf "$RUNS"; mkdir -p "$RUNS"
+rm -rf "${RUNS:?}"; mkdir -p "$RUNS"
 mkrun() {  # timestamp found bugs false_alarms score
   printf '{"role": "reviewer", "model": "m", "cases": [], "found": %s, "bugs": %s, "false_alarms": %s, "score": %s}\n' "$2" "$3" "$4" "$5" > "$RUNS/$1-reviewer.json"
 }
