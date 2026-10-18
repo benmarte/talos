@@ -19,9 +19,8 @@ second line
 CI is the authoritative full run. Never run the full suite: targeted tests only
 (`--for <path> --strict`) through `pipeline-verify.sh` (it exports the identity
 itself; never export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand). With
-Talos's own `tests/run-tests.sh` add `--budget-s <budget-s>` (agents/qa.md step 2):
-exit 6 means the selection was over budget and not run, which is reported, not a
-block. Step 1:
+`tests/run-tests.sh` add `--budget-s <budget-s>`: exit 6 is over budget, not run, not a
+block (qa.md step 2). Step 1:
   bash scripts/pipeline-criteria.sh qa-run 468 77
 A criterion `qa-run` reports `red@<sha8> green@head` has its proof, as does a `guard green@head` line: do not re-run or hand-exercise it. Exercise real behaviour for every other criterion (`green@head (red: missing)`, `prose hand-checked`, any `qa-run` did not run).
 post-approval verifies its own stamp: do not re-read your comment or re-check labels.
