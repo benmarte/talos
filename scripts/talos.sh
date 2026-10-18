@@ -3962,6 +3962,9 @@ for k, v in zip(parts[0::2], parts[1::2]):
 print(last)' "$_TALOS_OUT" 2>/dev/null)"
   fi
   _talos_lease_release_run_all
+  # The run_end event, before the render so the map reads it. Best effort, silent.
+  [ -z "$_end" ] || [ ! -f "$SCRIPT_DIR/pipeline-hooks.sh" ] \
+    || bash "$SCRIPT_DIR/pipeline-hooks.sh" run_end "$_end" ${_TALOS_RUN_ISSUE:+--issue "$_TALOS_RUN_ISSUE"} >/dev/null 2>&1 || :
   _talos_run_map end "$_end"
 }
 
@@ -4125,6 +4128,7 @@ _talos_run_loop() {
     esac
   done
   [ -z "$_issue" ] || _talos_isnum "$_issue" || _talos_stop usage 2
+  _TALOS_RUN_ISSUE="$_issue"   # the run_end event's issue when the stop line names none
   [ -z "$_max" ] || _talos_isnum "$_max" || _talos_stop usage 2
   [ -z "$_max" ] || [ "$_max" -ge 1 ] || _talos_stop usage 2
   # The passes a run already used before a merge made it exec this script again
