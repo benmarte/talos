@@ -356,7 +356,6 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `verify.targeted_commands` | list | - | - | repo |
 | `verify.e2e` | str | - | - | repo |
 | `verify.guide` | str | `VERIFY.md` | - | repo |
-| `review.guide` | str | `REVIEW.md` | - | repo |
 | `verify.e2e_artifacts.dir` | str | - | - | repo |
 | `verify.e2e_artifacts.include` | list | - | - | repo |
 | `verify.e2e_artifacts.max_files` | int | `12` | - | repo |
@@ -365,6 +364,12 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `verify.ci_wait_s` | int | `900` | - | any |
 | `verify.ci_requeue_stuck` | bool | `true` | - | any |
 | `verify.timeout_ms` | int | `600000` | - | any |
+
+#### review.*
+
+| Key | Type | Default | Env override | Scope |
+|---|---|---|---|---|
+| `review.guide` | str | `REVIEW.md` | - | repo |
 
 #### merge.*
 

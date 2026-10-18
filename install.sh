@@ -712,6 +712,12 @@ if [ "$GLOBAL" = "true" ]; then
   # repo (#276).
   echo ""
   echo "Templates:"
+  # The files at the top of templates/ (the REVIEW.md / VERIFY.md examples, #789).
+  for tmpl in "$SRC"/templates/*; do
+    [ -f "$tmpl" ] || continue
+    install_file "$tmpl" "$TALOS_HOME_DIR/templates/$(basename "$tmpl")"
+    ship "templates/$(basename "$tmpl")"
+  done
   for dir_path in "$SRC"/templates/*/; do
     [ -d "$dir_path" ] || continue
     dir="$(basename "$dir_path")"
