@@ -47,6 +47,26 @@ case "$args" in
     _page_var="STUB_AZURE_PR_CHANGES_SKIP_${_skip:-0}"
     if [ -n "${!_page_var:-}" ]; then printf '%s\n' "${!_page_var}"; exit 0; fi
     if [ -n "${STUB_AZURE_PR_CHANGES:-}" ]; then printf '%s\n' "$STUB_AZURE_PR_CHANGES"; exit 0; fi ;;
+  "rest "*"/commits?"*)
+    # list-default-commits (#800): STUB_AZURE_COMMITS is the {"value": [...]} page at
+    # searchCriteria.$skip=0 (later pages are empty); STUB_AZURE_COMMITS_FULL=1 answers
+    # every page with searchCriteria.$top commits (a history that never ends).
+    [ "${STUB_AZURE_COMMITS_FAIL:-}" = "1" ] && _stub_fail "TF401019: The Git repository does not exist."
+    _skip="${args##*searchCriteria.\$skip=}"; _skip="${_skip%%[!0-9]*}"
+    _top="${args##*searchCriteria.\$top=}"; _top="${_top%%[!0-9]*}"
+    if [ "${STUB_AZURE_COMMITS_FULL:-}" = "1" ]; then
+      python3 -I -c '
+import json, sys
+skip, top = int(sys.argv[1] or 0), int(sys.argv[2] or 1)
+print(json.dumps({"value": [{"commitId": "%040d" % (skip + i), "comment": "chore: c%d" % (skip + i),
+                             "committer": {"date": "2026-10-14T10:00:00Z"}} for i in range(top)]}))
+' "${_skip:-0}" "${_top:-1}"
+      exit 0
+    fi
+    if [ "${_skip:-0}" = "0" ] && [ -n "${STUB_AZURE_COMMITS:-}" ]; then printf '%s\n' "$STUB_AZURE_COMMITS"; exit 0; fi
+    printf '{"value": []}\n'; exit 0 ;;
+  "boards query "*)
+    [ "${STUB_AZURE_WORKITEM_LIST_FAIL:-}" = "1" ] && _stub_fail "TF400813: The user is not authorized to access this resource." ;;
   "rest "*"/pullRequests/"*"/iterations?"*)
     [ "${STUB_AZURE_PR_ITERATIONS_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found."
     if [ -n "${STUB_AZURE_PR_ITERATIONS:-}" ]; then printf '%s\n' "$STUB_AZURE_PR_ITERATIONS"; exit 0; fi ;;
