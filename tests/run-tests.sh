@@ -23,6 +23,14 @@
 #   --count-only  run only the base-ref count check (missing test files vs
 #               tests/retired-tests.txt) and exit; an unresolvable base ref is
 #               an error here, not a skip (#556).
+#   --budget-s N  bound the run: estimate the selection's wall time from
+#               tests/timings.txt as max(ceil(sum of weights / jobs), heaviest
+#               weight) seconds (after pattern / --for / --shard, before --list
+#               prints or any file runs); if it is over N, print
+#               `run-tests.sh: estimated <n> s over budget <N> s (<k> test
+#               file(s)); not run` to stderr, run nothing and exit 6. N is a
+#               positive integer, else exit 2. Opt-in: QA passes it so a
+#               targeted run never starts if it cannot finish in its timeout.
 #   --list      print the selected test file basenames, one per line (after
 #               pattern / --for / --shard), and exit without running them.
 #   --quiet     print one line per file (pass/fail/cached) plus full output
@@ -147,6 +155,7 @@ SHARD_I=""
 SHARD_N=""
 COUNT_ONLY=0
 LIST_ONLY=0
+BUDGET_S=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --base-ref)
@@ -207,6 +216,13 @@ while [ $# -gt 0 ]; do
     --count-only)
       COUNT_ONLY=1
       shift
+      ;;
+    --budget-s)
+      case "${2:-}" in
+        ''|*[!0-9]*|0*) echo "run-tests.sh: --budget-s needs a positive integer (seconds), got '${2:-}'" >&2; exit 2 ;;
+      esac
+      BUDGET_S="$2"
+      shift 2
       ;;
     --list)
       LIST_ONLY=1
@@ -688,6 +704,27 @@ $(basename "$t")
   ALL_FILES=()
   [ "${#_in_shard[@]}" -gt 0 ] && ALL_FILES=("${_in_shard[@]}")
   echo "SHARD $SHARD_I/$SHARD_N: ${#ALL_FILES[@]} test file(s)" >&2
+fi
+
+# --budget-s N (#806): refuse a selection whose estimated wall time is over N
+# before anything is listed or run. Weights are timings_weights'; the estimate
+# is the larger of the even split over $JOBS and the heaviest single file.
+if [ -n "$BUDGET_S" ]; then
+  _est=0
+  if [ "${#ALL_FILES[@]}" -gt 0 ]; then
+    _sel_names="$(for t in "${ALL_FILES[@]}"; do basename "$t"; done | tr '\n' ' ')"
+    _est="$(timings_weights | awk -v jobs="$JOBS" -v sel="$_sel_names" '
+      BEGIN { n = split(sel, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 }
+      ($2 in want) { sum += $1; if ($1 > max) max = $1 }
+      END {
+        e = int((sum + jobs - 1) / jobs)
+        print (e > max) ? e : max + 0
+      }')"
+  fi
+  if [ "$_est" -gt "$BUDGET_S" ]; then
+    echo "run-tests.sh: estimated $_est s over budget $BUDGET_S s (${#ALL_FILES[@]} test file(s)); not run" >&2
+    exit 6
+  fi
 fi
 
 if [ "$LIST_ONLY" -eq 1 ]; then

@@ -85,10 +85,23 @@ foreground ends QA: the final message's first line is
    must already be green, when configured). Run ONLY targeted tests, with
    `--strict` so an unmapped path is skipped instead of falling back to the
    full suite (`--for <each path from pr-files>` also works):
-   `bash scripts/pipeline-verify.sh --issue <issue-n> --worktree <worktree-path> -- bash tests/run-tests.sh --changed origin/<base-branch> --strict`
+   `bash scripts/pipeline-verify.sh --issue <issue-n> --worktree <worktree-path> -- bash tests/run-tests.sh --changed origin/<base-branch> --strict --budget-s <budget-s>`
    Do not export TALOS_ISSUE_NUMBER/TALOS_WORKTREE_PATH by hand. The bare form is refused
    for QA (no `-- <cmd>`). Never run the full suite. Exit 3 means no targeted
    tests map to this change — report that in the verdict and rely on CI.
+   `<budget-s>` = `min(verify.timeout_ms, 600000)/1000 - 60` seconds (540 at the
+   default). `run-tests.sh` estimates the selection from `tests/timings.txt` and,
+   over the budget, prints `estimated <n> s over budget` and exits 6 without
+   running anything. Exit 6 is not a block and not a pass; report it, never end
+   `BLOCKED: verify`. Which wording depends on `merge.required_checks`, in both
+   `qa_mode` values (`qa_mode` only decides whether you also wait for CI):
+   - non-empty (CI is the oracle; `pr-checks-required` must already be green):
+     `targeted run skipped: estimated <n> s over budget; CI is the full run`.
+   - empty (no oracle): the targeted run was not run, not a pass for those
+     files; say so with the estimate.
+   The budget applies only to Talos's own `tests/run-tests.sh`. For a target
+   repo with another runner keep `verify.targeted_commands` (or the repo's own
+   command) as before, with no `--budget-s`.
    - `ci` — beyond the targeted tests above, also run this single bounded
      foreground command and wait for it to finish before continuing — it
      blocks in one shell call and returns only once every check named in

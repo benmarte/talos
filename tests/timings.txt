@@ -180,6 +180,7 @@
 5 test-qa-run-merged-base-658.sh
 33 test-qa-run.sh
 17 test-qa-spec-fault-678.sh
+3 test-qa-targeted-budget.sh
 5 test-ready-gate.sh
 25 test-red-check-747.sh
 25 test-red-check-drop-773.sh
