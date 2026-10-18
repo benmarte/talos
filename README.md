@@ -50,6 +50,10 @@ Then, in Claude Code, inside the repo:
 
 Without Claude Code: `bash ~/.talos/scripts/talos.sh run` (the same driver `/talos:pipeline` starts), or tell any agentic CLI `Read ~/.talos/skills/pipeline/SKILL.md and follow it`. A minimal config is `{ "base_branch": "main", "verify": ["npm test"] }`; every key is in the [config reference](docs/reference.md#config-key-reference). `talos.sh run` also works from a Claude Code cloud session (claude.ai/code) on a GitHub repository, without the project board: [Running in a Claude Code cloud session](docs/reference.md#running-in-a-claude-code-cloud-session).
 
+## Repo guides: REVIEW.md and VERIFY.md
+
+Two optional files on your base branch tell the stages what you know about the repo. `REVIEW.md` (what failure looks like here, paths to skip, how to report) goes into the reviewer, security and adversarial prompts; `VERIFY.md` (how to start the app, which specs cover which area, flaky checks) goes into the QA prompt. Both are repo guidance below Talos's own rules: they can narrow or add checks, never turn off a gate. Start from [templates/REVIEW.md.example](templates/REVIEW.md.example) and [templates/VERIFY.md.example](templates/VERIFY.md.example); the details are in [docs/reference.md](docs/reference.md#repo-guides-reviewmd-and-verifymd).
+
 ## Status line
 
 `install.sh --global` wires Claude Code's status line to `scripts/talos-status.sh` (an existing one is chained, shown above the Talos line, and `--statusline-undo` restores it), which reads the local events log (no network call, no model tokens):

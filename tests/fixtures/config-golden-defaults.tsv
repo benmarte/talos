@@ -108,6 +108,7 @@ notifications.threading	true	table	pipeline-notify.sh
 pr.draft		empty	pipeline-draft-check.sh:_dc_cfg
 pr.ready_gate	off	table	pipeline-draft-check.sh:_dc_cfg (#535, new)
 repo		empty	pipeline-hooks.sh
+review.guide	REVIEW.md	table	talos.sh
 roles.adversarial	false	table	pipeline-status-file.sh:_sf_role_on
 roles.docs	true	table	pipeline-status-file.sh:_sf_role_on
 roles.docs_mode	auto	table	docs
@@ -132,6 +133,7 @@ verify.ci_requeue_stuck	true	table	pipeline-vcs.sh
 verify.ci_wait_s	900	table	docs
 verify.e2e_artifacts.max_files	12	table	pipeline-criteria.sh
 verify.e2e_artifacts.max_mb	25	table	pipeline-criteria.sh
+verify.guide	VERIFY.md	table	talos.sh
 verify.qa_mode	local	table	pipeline/SKILL.md
 verify.targeted	true	table	docs
 verify.timeout_ms	600000	table	docs

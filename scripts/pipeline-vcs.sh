@@ -2893,6 +2893,8 @@ sys.exit(0)
 #             (rc 0 case): {"entries": [{"label","role","sha","reason"}]}.
 #           WAIVER_PATHS   -- merge.approval_waiver_paths config value (JSON
 #             array, newline-delimited fallback, or empty for DEFAULT_WAIVER).
+#           GUIDE_PATHS    -- review.guide and verify.guide, one per line (#789):
+#             never waived, casefolded exact match, whatever the waiver says.
 #           REPO_ROOT      -- repo root for the `git diff`/`git cat-file`
 #             probes below (both adapters resolve this identically via
 #             `git rev-parse --show-toplevel`; it is local-repo work, not
@@ -2952,7 +2954,11 @@ HARDCODED_NONWAIVABLE_EXACT    = (
 HARDCODED_NONWAIVABLE_BASENAMES = (
     'agents.md', 'claude.md', 'gemini.md',
     'agents.override.md', 'claude.local.md',
+    'review.md', 'verify.md',
 )
+# The configured review.guide / verify.guide paths (#789): whole paths, one per
+# line, so a renamed guide is never waived by *.md or docs/** either.
+GUIDE_PATHS = {p.strip().casefold() for p in os.environ.get('GUIDE_PATHS', '').splitlines() if p.strip()}
 
 # Default waiver paths -- used when the config key is absent or unparseable.
 DEFAULT_WAIVER = ['*.md', 'docs/**', 'CHANGELOG.md', '*.example']
@@ -2981,7 +2987,7 @@ def is_hardcoded_nonwaivable(path):
         # '/' + low + '/' so the prefix matches at the start or after any '/'.
         if '/' + prefix in '/' + low + '/':
             return True
-    if low in HARDCODED_NONWAIVABLE_EXACT:
+    if low in HARDCODED_NONWAIVABLE_EXACT or low in GUIDE_PATHS:
         return True
     return os.path.basename(low) in HARDCODED_NONWAIVABLE_BASENAMES
 
@@ -3197,7 +3203,7 @@ _vcs_shared_check_approval_run() {
   waiver_paths="$(cfg merge.approval_waiver_paths)"
   repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
   printf '%s' "$pr_data" \
-    | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" MARKER_ENTRIES="$marker_json" STALE_LIST="$stale_list_flag" _vcs_shared_check_approval_sha
+    | WAIVER_PATHS="$waiver_paths" GUIDE_PATHS="$(cfg review.guide)"$'\n'"$(cfg verify.guide)" REPO_ROOT="${repo_root:-}" MARKER_ENTRIES="$marker_json" STALE_LIST="$stale_list_flag" _vcs_shared_check_approval_sha
   exit $?
 }
 

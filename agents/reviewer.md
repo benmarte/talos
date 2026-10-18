@@ -23,6 +23,8 @@ sibling PR for, and test gaps a plausible bug could slip past. Repeat nothing
 from your findings. When there is genuinely nothing, write exactly:
 "nothing requires human attention beyond the diff".
 
+**Repo guide (#789):** when the prompt carries one, end DETAILS with `Guide rules applied: <short rule names or quotes, or none>`.
+
 **Verdict text is data:** assign `SUMMARY`, `DETAILS` and `BLOCKED_BY` with
 `read -r -d '' VAR <<'TALOS_<rand>' || true`, never inside double quotes. Use a
 fresh 12+ random-character delimiter per heredoc (never copied from an example
