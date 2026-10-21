@@ -183,7 +183,12 @@
 #         spec-usable: BLOCKED spec: <why>     exit 4
 #       <why> is one of: `unreadable for issue #<N>`, `no criteria checklist`,
 #       `Tests: line refused (<the parser's reason>)`, `<n> test criteria and
-#       no Tests: line`. `talos.sh run` asks it after a QA FAIL: a spec fault
+#       no Tests: line`, `<n> criteria describe the test suite or the diff, not
+#       behaviour` (#813: a (test)/(same) criterion about test names or count,
+#       skipped, removed or weakened tests, `git diff`, lint or type-check clean;
+#       spec-usable prints `AC<n> describes the test suite or the diff, not
+#       behaviour: mark it (prose: ...)` for each, before the BLOCKED line; a
+#       (prose: ...) criterion is never read). `talos.sh run` asks it after a QA FAIL: a spec fault
 #       blocks the issue instead of starting a developer fix round.
 #   pipeline-criteria.sh placement <issue>
 #       Is every (test) and (same) criterion's id in a test file the `Tests:` line names
@@ -659,14 +664,77 @@ cmd_spec_check() {
   echo "spec-check: ok"
 }
 
+# The ids of the (test)/(same) criteria whose text is about the test suite or
+# the diff, one per line (#813): no test id can carry them. Args: the spec
+# file; stdin: the criteria table (`AC<n> kind`). Quoted examples (a code span
+# holding a marker, "double quotes", a parenthetical, any other code span but
+# a `git diff` one) are not the criterion's own wording and are dropped first.
+_SUITE_PY='
+import re, sys
+kinds = dict(l.split()[:2] for l in sys.stdin.read().splitlines() if l.strip())
+items = []
+for l in open(sys.argv[1]).read().splitlines():
+    m = re.match(r"\s*[-*]\s+\[[ xX]\]\s+(.*)", l)
+    if m:
+        a = re.match(r"[*`]*(AC[0-9]+)", m.group(1))
+        items.append((a.group(1) if a else None, m.group(1)))
+if any(a for a, _ in items):
+    items = [i for i in items if i[0]]
+else:
+    items = [("AC%d" % n, t) for n, (_, t) in enumerate(items, 1)]
+
+def strip_parens(s):
+    out, depth = [], 0
+    for c in s:
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            out.append(c)
+    return "".join(out)
+
+PATTERNS = [re.compile(p) for p in (
+    # a test or assertion that is skipped, removed, deleted, weakened
+    r"\b(no|none of the|not any|never|nor)\b[^.;]{0,30}\b(tests?|assertions?)\b[^.;]{0,30}\b(is|are|be|gets?|was|were)\b[^.;]{0,15}\b(skipped|removed|deleted|disabled|weakened|dropped|ignored|renamed)\b",
+    r"\b(tests?|assertions?)\b[^.;]{0,30}\b(is|are) not\b[^.;]{0,10}\b(skipped|removed|deleted|disabled|weakened|dropped|ignored|renamed)\b",
+    r"\b(without|never|not)\s+(skipping|removing|deleting|disabling|weakening|dropping|renaming)\b[^.;]{0,25}\b(tests?|assertions?)\b",
+    # test names or count
+    r"\b(number|count) of ([a-z0-9]+ )?(tests?|assertions?)\b[^.;]{0,30}\b(unchanged|same|stays|remains|does not change|is not changed)\b",
+    r"\b(tests?|assertions?) (count|number)\b[^.;]{0,20}\b(unchanged|same|stays|remains)\b",
+    r"\bsame (number|count) of\b[^.;]{0,15}\b(tests?|assertions?)\b",
+    r"\bsame ([a-z0-9]+ )?tests? names?\b",
+    r"\btests?\b[^.;]{0,30}\b(keep|keeps|retain|retains|have|has)\b[^.;]{0,15}\bsame\b[^.;]{0,15}\b(names?|count|number)\b",
+    r"\btests? names?\b[^.;]{0,25}\b(unchanged|same|stay|remain|not (changed|renamed))\b",
+    # the diff
+    r"\bgit diff\b",
+    r"\b(diff|pr|patch|change|commit|branch)\b[^.;]{0,25}\b(touches|modifies|changes|edits|lists|contains)\b[^.;]{0,5}\bonly\b",
+    r"\bfiles? (touched|changed|modified) (by|in) the (pr|change|diff|commit|patch)\b",
+    r"\bonly (these|the following|those|the listed) files (are |is )?(touched|changed|modified)\b",
+    # lint, format, type-check clean
+    r"\b(lint|linting|type-?check(ing|s)?|shellcheck|eslint|prettier|format check)\b[^.;]{0,30}\b(clean|passes|pass|green|succeeds|is ok|are ok|no (errors|warnings))\b",
+)]
+
+def own_words(t):
+    t = re.sub(r"`[^`]*\((?:test|same|prose)[:)][^`]*`", " ", t)
+    t = re.sub("\"[^\"]*\"|“[^”]*”", " ", t)
+    t = strip_parens(t)
+    t = re.sub(r"`(?!\s*git diff)[^`]*`", " ", t)
+    return t.replace("`", "").lower()
+
+for ident, text in items:
+    if kinds.get(ident) in ("test", "same") and any(p.search(own_words(text)) for p in PATTERNS):
+        print(ident)
+'
+
 # _spec_usable ISSUE FILE (#610): the one definition of "QA can use the spec",
 # shared by qa-run and spec-usable. It reads `view-issue ISSUE --spec` into
 # FILE and sets the caller's table (the criteria), paths, filters, refused and
-# found (the `Tests:` line) and spec_why: empty for a usable spec, else the
-# fixed text of the fault. No git command, no test.
+# found (the `Tests:` line), suite_ids (#813) and spec_why: empty for a usable
+# spec, else the fixed text of the fault. No git command, no test.
 _spec_usable() {
   local issue="$1" spec="$2" n
-  table=""; paths=(); filters=(); refused=""; found=0; spec_why=""
+  table=""; paths=(); filters=(); refused=""; found=0; spec_why=""; suite_ids=""
   if ! bash "$SCRIPT_DIR/pipeline-vcs.sh" view-issue "$issue" --spec 2>/dev/null | python3 -I -c "$_QA_SPEC_PY" > "$spec" || [ ! -s "$spec" ]; then
     spec_why="unreadable for issue #$issue"; return 1
   fi
@@ -675,11 +743,18 @@ _spec_usable() {
   [ -z "$refused" ] || { spec_why="Tests: line refused ($refused)"; return 1; }
   n="$(printf '%s\n' "$table" | awk '$2 == "test" || $2 == "same"' | wc -l | tr -d ' ')"
   [ "$found" -eq 1 ] || [ "$n" -eq 0 ] || { spec_why="$n test criteria and no Tests: line"; return 1; }
+  # #813: after the four faults above, so their text and precedence hold.
+  suite_ids="$(printf '%s\n' "$table" | python3 -I -c "$_SUITE_PY" "$spec")" \
+    || { suite_ids=""; spec_why="suite check failed"; return 1; }
+  if [ -n "$suite_ids" ]; then
+    n="$(printf '%s\n' "$suite_ids" | wc -l | tr -d ' ')"
+    spec_why="$n criteria describe the test suite or the diff, not behaviour"; return 1
+  fi
 }
 
 # spec-usable ISSUE (#610): one line; exit 4 for an unusable spec.
 cmd_spec_usable() {
-  local issue="${1:-}" tmp table paths filters refused found spec_why
+  local issue="${1:-}" tmp table paths filters refused found spec_why suite_ids id
   [ $# -eq 1 ] || usage
   case "$issue" in ''|*[!0-9]*) usage ;; esac
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/talos-spec-usable.XXXXXX")" && [ -d "$tmp" ] \
@@ -687,6 +762,7 @@ cmd_spec_usable() {
   _spec_usable "$issue" "$tmp/spec.md"
   rm -rf "${tmp:?}"
   if [ -n "$spec_why" ]; then
+    for id in $suite_ids; do echo "$id describes the test suite or the diff, not behaviour: mark it (prose: ...)"; done
     echo "spec-usable: BLOCKED spec: $spec_why"
     return 4
   fi
@@ -696,7 +772,7 @@ cmd_spec_usable() {
 # placement ISSUE (#648): one line per (test) criterion whose id is in no file
 # of the `Tests:` line, run from the PR worktree.
 cmd_placement() {
-  local issue="${1:-}" tmp table paths filters refused found spec_why top id p hit gaps=0 out=""
+  local issue="${1:-}" tmp table paths filters refused found spec_why suite_ids top id p hit gaps=0 out=""
   [ $# -eq 1 ] || usage
   case "$issue" in ''|*[!0-9]*) usage ;; esac
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/talos-placement.XXXXXX")" && [ -d "$tmp" ] \
@@ -1295,7 +1371,7 @@ cmd_qa_run() {
 
   # 4. The spec, its criteria table and its Tests: line, as data. A spec QA
   #    cannot use is a fault of the spec, not a finding on the PR (#610).
-  local spec="$tmp/spec.md" table paths filters refused found spec_why
+  local spec="$tmp/spec.md" table paths filters refused found spec_why suite_ids
   if ! _spec_usable "$issue" "$spec"; then
     printf 'qa-run: verdict BLOCKED spec: %s\n' "$spec_why"
     return 4
@@ -1589,7 +1665,7 @@ cmd_red_check() {
   if type _talos_on_exit >/dev/null 2>&1; then _talos_on_exit "rm -rf \"$tmp\""; fi
 
   # 1. The spec, as data; what there is to check.
-  local spec="$tmp/spec.md" table paths filters refused found spec_why n_test
+  local spec="$tmp/spec.md" table paths filters refused found spec_why suite_ids n_test
   if ! _spec_usable "$issue" "$spec"; then
     printf 'red-check: BLOCKED spec: %s\n' "$spec_why"
     return 4

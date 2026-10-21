@@ -223,6 +223,7 @@
 5 test-spec-check.sh
 12 test-spec-check-752.sh
 39 test-spec-fault-648.sh
+6 test-spec-usable-suite-813.sh
 33 test-spend-cache-split.sh
 9 test-spend-format.sh
 10 test-spend-wiring.sh

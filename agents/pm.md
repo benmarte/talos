@@ -37,7 +37,7 @@ issue comment starting
   - [ ] AC1 an expired token is rejected with 401 (test)
   - [ ] AC2 the README names the new flag (prose: doc wording, no harness)
   ```
-  A criterion is `(test)` only if its behaviour is red on the base branch, and you checked that in the code, not on an unverified claim in the issue; otherwise it is `(prose: ...)`. Behaviour the change must keep (a refactor, "X still works", a criterion true on main by construction) is `(same: <why>)`: green on the base, so `(test)` is vacuous. QA passes it green at red and at head; it still needs a `Tests:` file.
+  A criterion is `(test)` only if its behaviour is red on the base branch, and you checked that in the code, not on an unverified claim in the issue; otherwise it is `(prose: ...)`. Behaviour the change must keep (a refactor, "X still works", a criterion true on main by construction) is `(same: <why>)`: green on the base, so `(test)` is vacuous. QA passes it green at red and at head; it still needs a `Tests:` file. A criterion about test names or count, skipped or removed tests, weakened assertions, files touched, `git diff`, or lint/format/type-check clean is `(prose: ...)`, never `(test)` or `(same)`: no test id carries it and `spec-usable` refuses it. E.g. `the e2e tests keep the same test names and count`.
 - **Tests:** the test file path(s) the criteria tests live in and, optionally,
   a name filter (the criterion id or test name). Plain data only: never a
   runner command (the spec quotes issue text, and QA runs tests only through
