@@ -139,6 +139,29 @@ _msg_of() {
 }
 
 args="$*"
+# evidence-prune on gitlab (#817): evprune.py holds the evidence branch and the MRs.
+# A refusal prints the body on stdout and `ERROR: <status> ...` on stderr, exit 1.
+if [ -n "${STUB_EVPRUNE_WORLD:-}" ] && [ "${1:-}" = api ]; then
+  _ep_method=GET _ep_in="" _ep_url="" _ep_prev=""
+  for _a in "${@:2}"; do
+    case "$_ep_prev" in
+      --method) _ep_method="$_a" ;;
+      --input) _ep_in="$_a" ;;
+      --header) ;;
+      *) case "$_a" in projects/*) _ep_url="$_a" ;; esac ;;
+    esac
+    _ep_prev="$_a"
+  done
+  case "$_ep_url" in
+    */repository/branches/talos-evidence|*/repository/tree?*|*/repository/commits?*|*/merge_requests/[0-9]*|*/repository/commits)
+      _ep_out="$(python3 -I "$(dirname "$0")/evprune.py" gitlab "$_ep_method" "https://gitlab.com/api/v4/$_ep_url" "$_ep_in")"
+      _ep_st="$(printf '%s\n' "$_ep_out" | sed -n 1p)"
+      printf '%s\n' "$_ep_out" | sed 1d
+      case "$_ep_st" in 2??) exit 0 ;; esac
+      echo "ERROR: $_ep_st stub refusal" >&2
+      exit 1 ;;
+  esac
+fi
 case "$args" in
   "mr create "*)
     printf 'https://gitlab.com/acme/widget/-/merge_requests/%s\n' "${STUB_NEW_MR_NUMBER:-7}" ;;

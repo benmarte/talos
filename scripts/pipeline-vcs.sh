@@ -451,6 +451,32 @@
 #                                             posted and the verb exits 0 (#811). Only a
 #                                             failure to post the comment itself is non-zero.
 #                                             --dry-run prints the planned calls, exit 0.
+#   evidence-prune [--merged] [--older-than <days>] [--list]
+#                                             Remove the pr-<n>/ folders of finished PRs from
+#                                             the `talos-evidence` branch in ONE commit (#817;
+#                                             github, github-api, gitlab, azure; file exits 2
+#                                             `not implemented for provider 'file'`). --merged
+#                                             picks a merged or closed PR, --older-than <days>
+#                                             a folder whose newest commit on the branch is
+#                                             over <days> days old; both: either. An open PR,
+#                                             and a PR whose state cannot be read, keep their
+#                                             folder; paths outside pr-<n>/ are never touched.
+#                                             The commit: github, the Git Data API (a tree with
+#                                             sha null per file, a commit, the ref moved, no
+#                                             force); azure, one pushes POST of delete changes;
+#                                             gitlab, one commits POST of delete actions.
+#                                             --list prints `would-prune pr=<n> reason=merged|
+#                                             closed|older` per folder and writes nothing (the
+#                                             global --dry-run prints the planned calls). Else
+#                                             `pruned pr=<n> reason=...` per folder, then
+#                                             `pruned folders=<k> files=<m>`. No branch:
+#                                             `evidence-prune: no talos-evidence branch`; no
+#                                             selection: `evidence-prune: nothing to prune`;
+#                                             both exit 0. A refused read or write prints
+#                                             `evidence-prune: <provider> refused (<status>):
+#                                             <message>` and exits 1. No selector, <days> not a
+#                                             positive integer or an unknown flag: usage, exit 2,
+#                                             before any call.
 #   edit-pr-body <pr> --body-file <path|->    Replace the description of PR <pr> (#455;
 #                                             github, github-api: PATCH pulls/<n>;
 #                                             gitlab: PUT merge_requests/<n>; azure:
@@ -2360,6 +2386,105 @@ _vcs_shared_attach_post() {
   } > "$_TALOS_ATTACH_BODY_FILE"
   _check_body_caps "$(cat "$_TALOS_ATTACH_BODY_FILE")"
   _vcs_shared_upsert_pr_comment "$_ap_pr" qa-evidence "$_TALOS_ATTACH_BODY_FILE" "$@"
+}
+
+# evidence-prune (#817), once for the three providers. Each provider hands in four
+# callbacks; a refusal sets _EP_ST (the HTTP status, empty when there was no
+# answer) and _EP_MSG (the provider's message).
+#   <list-fn> <file>    writes every path on the evidence branch to <file>, one per
+#                       line; 0 = done, 3 = there is no such branch, else a refusal
+#   <state-fn> <n>      prints merged, closed or open for PR <n>; non-zero or any
+#                       other word = the state cannot be read (the folder stays)
+#   <newest-fn> <n>     prints the date of the newest evidence-branch commit that
+#                       touches pr-<n>; non-zero = unreadable (the folder stays)
+#   <remove-fn> <file>  deletes the paths in <file> in ONE commit; non-zero = refused
+_EP_ST="" _EP_MSG=""
+
+# _vcs_ev_older <iso-date> <days> -- 0 when the date is more than <days> days ago.
+_vcs_ev_older() {
+  python3 -I -c '
+import datetime as dt, re, sys
+s = re.sub(r"Z$", "+00:00", sys.argv[1].strip())
+s = re.sub(r"\.(\d+)", lambda m: "." + (m.group(1) + "000000")[:6], s)
+try:
+    t = dt.datetime.fromisoformat(s)
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=dt.timezone.utc)
+    old = dt.datetime.now(dt.timezone.utc) - t > dt.timedelta(days=int(sys.argv[2]))
+except (ValueError, OverflowError):
+    old = False
+sys.exit(0 if old else 1)' "$1" "$2"
+}
+
+# _vcs_ev_refuse <provider> -- the one stderr line for a refused read or write.
+_vcs_ev_refuse() {
+  local _er_msg="${_EP_MSG//[[:cntrl:]]/ }"
+  echo "evidence-prune: $1 refused (${_EP_ST:-no response}): ${_er_msg:0:300}" >&2
+}
+
+# _vcs_shared_evidence_prune <provider> <list-fn> <state-fn> <newest-fn> <remove-fn>
+#   Selects the pr-<n>/ folders of the paths <list-fn> gives (nothing else on the
+#   branch is looked at): a PR that is merged or closed with _EP_MERGED, one whose
+#   newest evidence commit is over _EP_DAYS days old with --older-than. An open PR
+#   is never selected and a state that cannot be read keeps its folder. _EP_LIST
+#   only prints the selection; otherwise <remove-fn> is the one write.
+_vcs_shared_evidence_prune() {
+  local _ep_name="$1" _ep_listfn="$2" _ep_statefn="$3" _ep_newestfn="$4" _ep_removefn="$5"
+  local _ep_dir _ep_rc=0
+  _ep_dir="$(mktemp -d)" && [ -n "$_ep_dir" ] && [ -d "$_ep_dir" ] || { echo "evidence-prune: could not create a temp directory" >&2; return 1; }
+  _vcs_ev_prune_run "$_ep_name" "$_ep_listfn" "$_ep_statefn" "$_ep_newestfn" "$_ep_removefn" "$_ep_dir" || _ep_rc=$?
+  rm -rf "${_ep_dir:?}"
+  return "$_ep_rc"
+}
+
+_vcs_ev_prune_run() {
+  local _ep_name="$1" _ep_listfn="$2" _ep_statefn="$3" _ep_newestfn="$4" _ep_removefn="$5" _ep_dir="$6"
+  local _ep_rc=0 _ep_n _ep_st _ep_reason _ep_date _ep_folders _ep_k=0 _ep_files
+  "$_ep_listfn" "$_ep_dir/paths" || _ep_rc=$?
+  case "$_ep_rc" in
+    0) ;;
+    3) echo "evidence-prune: no $_TALOS_EVIDENCE_BRANCH branch"; return 0 ;;
+    *) _vcs_ev_refuse "$_ep_name"; return 1 ;;
+  esac
+  _ep_folders="$(python3 -I -c '
+import re, sys
+n = {int(m.group(1)) for m in (re.match(r"pr-([0-9]+)/.", l) for l in open(sys.argv[1]).read().split("\n")) if m}
+print("\n".join(str(i) for i in sorted(n)))' "$_ep_dir/paths")" || { echo "evidence-prune: could not read the branch listing" >&2; return 1; }
+  : > "$_ep_dir/sel"
+  for _ep_n in $_ep_folders; do
+    _ep_st="$("$_ep_statefn" "$_ep_n")" || continue
+    case "$_ep_st" in merged|closed) ;; *) continue ;; esac
+    _ep_reason=""
+    [ "$_EP_MERGED" = "true" ] && _ep_reason="$_ep_st"
+    if [ -z "$_ep_reason" ] && [ -n "$_EP_DAYS" ]; then
+      _ep_date="$("$_ep_newestfn" "$_ep_n")" || _ep_date=""
+      if [ -n "$_ep_date" ] && _vcs_ev_older "$_ep_date" "$_EP_DAYS"; then _ep_reason=older; fi
+    fi
+    [ -z "$_ep_reason" ] || printf '%s %s\n' "$_ep_n" "$_ep_reason" >> "$_ep_dir/sel"
+  done
+  if [ ! -s "$_ep_dir/sel" ]; then
+    echo "evidence-prune: nothing to prune"
+    return 0
+  fi
+  if [ "$_EP_LIST" = "true" ]; then
+    while read -r _ep_n _ep_reason; do
+      echo "would-prune pr=$_ep_n reason=$_ep_reason"
+    done < "$_ep_dir/sel"
+    return 0
+  fi
+  python3 -I -c '
+import re, sys
+sel = {l.split()[0] for l in open(sys.argv[2]) if l.strip()}
+out = [l for l in open(sys.argv[1]).read().split("\n") if (re.match(r"pr-([0-9]+)/.", l) and re.match(r"pr-([0-9]+)", l).group(1) in sel)]
+open(sys.argv[3], "w").write("".join(l + "\n" for l in out))' "$_ep_dir/paths" "$_ep_dir/sel" "$_ep_dir/del" \
+    || { echo "evidence-prune: could not select the paths" >&2; return 1; }
+  "$_ep_removefn" "$_ep_dir/del" || { _vcs_ev_refuse "$_ep_name"; return 1; }
+  _ep_files="$(grep -c . "$_ep_dir/del" || true)"
+  while read -r _ep_n _ep_reason; do
+    echo "pruned pr=$_ep_n reason=$_ep_reason"
+    _ep_k=$((_ep_k + 1))
+  done < "$_ep_dir/sel"
+  echo "pruned folders=$_ep_k files=$_ep_files"
 }
 
 # _vcs_shared_mark_needs_owner <n> <text> <post-fn> <label-fn> <user-fn>
@@ -4883,6 +5008,87 @@ open(out, "w").write(json.dumps(body))
   _vcs_shared_attach_post "$_af_pr" "$_af_sha8" "$_af_manifest" _gh_upc_read _gh_upc_write _gh_user_login
 }
 
+# evidence-prune on GitHub (#817): the callbacks of _vcs_shared_evidence_prune. The
+# removal is the Git Data API's three calls (a tree without the paths, a commit on
+# it, the ref moved to it); only the last one changes the branch.
+_EP_GH_HEAD="" _EP_GH_TREE="" _EP_BODY=""
+
+# _gh_ev_call <METHOD> <path> [<json>] -- one call; sets _EP_BODY, and on a refusal
+# _EP_ST (the HTTP status) and _EP_MSG (GitHub's message). 0 on a 2xx.
+_gh_ev_call() {
+  local _ec_o _ec_e _ec_f="" _ec_rc=0
+  _ec_o="$(mktemp)" && _ec_e="$(mktemp)" || return 1
+  if [ $# -ge 3 ]; then
+    _ec_f="$(mktemp)" && printf '%s' "$3" > "$_ec_f" || { rm -f "${_ec_o:?}" "${_ec_e:?}"; return 1; }
+  fi
+  _GH_STATUS=""; _GH_ERR_BODY=""
+  # Not in a command substitution: _GH_STATUS and _GH_ERR_BODY must survive the call.
+  _with_retry "$VERB" _gh_once "$1" "$2" "$_GH_JSON" "$_ec_f" >"$_ec_o" 2>"$_ec_e" || _ec_rc=$?
+  _EP_BODY="$(cat "$_ec_o")"
+  _EP_ST="$_GH_STATUS"
+  _EP_MSG=""
+  if [ "$_ec_rc" -ne 0 ]; then
+    _EP_MSG="$(printf '%s' "$_GH_ERR_BODY" | _gh_field message 2>/dev/null)" || _EP_MSG=""
+    [ -n "$_EP_ST" ] || _EP_MSG="$(cat "$_ec_e")"
+  fi
+  rm -f "${_ec_o:?}" "${_ec_e:?}" ${_ec_f:+"$_ec_f"}
+  return "$_ec_rc"
+}
+
+_gh_ev_list() {
+  _gh_ev_call GET "$_GH_API/git/ref/heads/$_TALOS_EVIDENCE_BRANCH" || { [ "$_EP_ST" = 404 ] && return 3; return 1; }
+  _EP_GH_HEAD="$(printf '%s' "$_EP_BODY" | _gh_field object.sha)"
+  [ -n "$_EP_GH_HEAD" ] || { _EP_ST=200; _EP_MSG="the branch head names no commit"; return 1; }
+  _gh_ev_call GET "$_GH_API/git/trees/$_EP_GH_HEAD?recursive=1" || return 1
+  # A truncated tree is a refused read: pruning from part of the branch could miss files.
+  _EP_GH_TREE="$(printf '%s' "$_EP_BODY" | python3 -I -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit(4)
+if d.get("truncated"):
+    sys.exit(3)
+open(sys.argv[1], "w").write("".join(e["path"] + "\n" for e in d.get("tree") or [] if e.get("type") == "blob"))
+print(d.get("sha") or "")' "$1")" || { _EP_ST=200; _EP_MSG="the evidence tree is truncated or unreadable; nothing pruned"; return 1; }
+  [ -n "$_EP_GH_TREE" ] || { _EP_ST=200; _EP_MSG="the evidence tree has no sha"; return 1; }
+}
+
+_gh_ev_state() {
+  _gh_ev_call GET "$_GH_API/pulls/$1" || return 1
+  printf '%s' "$_EP_BODY" | python3 -I -c '
+import json, sys
+d = json.load(sys.stdin)
+print("merged" if d.get("merged_at") else d.get("state") if d.get("state") in ("open", "closed") else "")'
+}
+
+_gh_ev_newest() {
+  _gh_ev_call GET "$_GH_API/commits?sha=$_TALOS_EVIDENCE_BRANCH&path=pr-$1&per_page=1" || return 1
+  printf '%s' "$_EP_BODY" | python3 -I -c '
+import json, sys
+c = (json.load(sys.stdin) or [{}])[0].get("commit") or {}
+print((c.get("committer") or c.get("author") or {}).get("date") or "")'
+}
+
+_gh_ev_remove() {
+  local _er_tree _er_commit
+  _gh_ev_call POST "$_GH_API/git/trees" "$(python3 -I -c '
+import json, sys
+paths = [l for l in open(sys.argv[1]).read().split("\n") if l]
+print(json.dumps({"base_tree": sys.argv[2], "tree": [{"path": p, "mode": "100644", "type": "blob", "sha": None} for p in paths]}))' "$1" "$_EP_GH_TREE")" || return 1
+  _er_tree="$(printf '%s' "$_EP_BODY" | _gh_field sha)"
+  [ -n "$_er_tree" ] || { _EP_ST=200; _EP_MSG="the new tree has no sha"; return 1; }
+  _gh_ev_call POST "$_GH_API/git/commits" "$(python3 -I -c '
+import json, sys
+print(json.dumps({"message": "Prune QA evidence of finished PRs", "tree": sys.argv[1], "parents": [sys.argv[2]]}))' "$_er_tree" "$_EP_GH_HEAD")" || return 1
+  _er_commit="$(printf '%s' "$_EP_BODY" | _gh_field sha)"
+  [ -n "$_er_commit" ] || { _EP_ST=200; _EP_MSG="the new commit has no sha"; return 1; }
+  # No force: a branch that moved since the read is refused, not overwritten.
+  _gh_ev_call PATCH "$_GH_API/git/refs/heads/$_TALOS_EVIDENCE_BRANCH" "$(python3 -I -c '
+import json, sys
+print(json.dumps({"sha": sys.argv[1]}))' "$_er_commit")"
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GITHUB ADAPTER  (providers `github` and `github-api`)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4920,6 +5126,12 @@ _github() {
       ;;
     attach-files)
       _gh_attach_files "$@"
+      ;;
+    evidence-prune)
+      # evidence-prune [--merged] [--older-than <days>] [--list] (#817): the pr-<n>/
+      # folders of merged or closed (or old) PRs leave the evidence branch in one commit.
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/git/ref/heads/$_TALOS_EVIDENCE_BRANCH; GET $_GH_API/git/trees/<head>?recursive=1; per pr-<n> folder GET $_GH_API/pulls/<n> (merged_at, state) and, with --older-than, GET $_GH_API/commits?sha=$_TALOS_EVIDENCE_BRANCH&path=pr-<n>&per_page=1; then the one commit: POST $_GH_API/git/trees (base_tree, sha null per file), POST $_GH_API/git/commits, PATCH $_GH_API/git/refs/heads/$_TALOS_EVIDENCE_BRANCH (no force); no write with --list"; return 0; }
+      _vcs_shared_evidence_prune github _gh_ev_list _gh_ev_state _gh_ev_newest _gh_ev_remove || exit 1
       ;;
     mark-needs-owner)
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/issues/$1/comments (read-comments); unless the newest trusted marker comment already has this body and is unanswered: POST $_GH_API/issues/$1/comments; POST $_GH_API/issues/$1/labels ($_TALOS_NEEDS_OWNER_LABEL)"; return 0; }
@@ -5702,6 +5914,86 @@ for f in json.load(sys.stdin):
     if path:
         print(path)
 "
+}
+
+# evidence-prune on GitLab (#817): the callbacks of _vcs_shared_evidence_prune over
+# `glab api`; the project reference (_EP_PROJ) is set by the verb's arm. The removal
+# is one repository/commits call with a `delete` action per file.
+_EP_PROJ="" _EP_STAGE=""
+
+# _gl_ev_call <glab api args...> -- one call; sets _EP_BODY, and on a failure _EP_ST
+# (the HTTP status in glab's error text) and _EP_MSG (GitLab's message, else glab's
+# own line). 0 on success.
+_gl_ev_call() {
+  local _gc_o _gc_e _gc_rc=0 _gc_r
+  _gc_o="$(mktemp)" && _gc_e="$(mktemp)" || return 1
+  glab api "$@" >"$_gc_o" 2>"$_gc_e" || _gc_rc=$?
+  _EP_BODY="$(cat "$_gc_o")"
+  _EP_ST=""
+  _EP_MSG=""
+  if [ "$_gc_rc" -ne 0 ]; then
+    _gc_r="$(python3 -I -c '
+import json, re, sys
+body, err = open(sys.argv[1]).read(), open(sys.argv[2]).read().strip()
+msg = ""
+try:
+    d = json.loads(body)
+    m = (d.get("message") or d.get("error")) if isinstance(d, dict) else None
+    msg = json.dumps(m) if isinstance(m, (dict, list)) else (m or "")
+except ValueError:
+    pass
+if not msg:
+    msg = re.sub(r"^(ERROR|glab):\s*", "", err.split("\n")[0])
+m = re.search(r"\b([45][0-9][0-9])\b", err)
+print((m.group(1) if m else "") + "\t" + msg)' "$_gc_o" "$_gc_e")" || _gc_r=""
+    _EP_ST="${_gc_r%%$'\t'*}"
+    _EP_MSG="${_gc_r#*$'\t'}"
+  fi
+  rm -f "${_gc_o:?}" "${_gc_e:?}"
+  return "$_gc_rc"
+}
+
+_gl_ev_list() {
+  _gl_ev_call "projects/$_EP_PROJ/repository/branches/$(_gh_urlenc "$_TALOS_EVIDENCE_BRANCH" /)" || { [ "$_EP_ST" = 404 ] && return 3; return 1; }
+  _gl_ev_call --paginate "projects/$_EP_PROJ/repository/tree?ref=$_TALOS_EVIDENCE_BRANCH&recursive=true&per_page=100" || return 1
+  # --paginate prints the pages back to back: [..][..]
+  printf '%s' "$_EP_BODY" | python3 -I -c '
+import json, sys
+raw, dec, pos, out = sys.stdin.read(), json.JSONDecoder(), 0, []
+while True:
+    while pos < len(raw) and raw[pos].isspace():
+        pos += 1
+    if pos >= len(raw):
+        break
+    page, pos = dec.raw_decode(raw, pos)
+    out += [i["path"] for i in page if i.get("type") == "blob" and i.get("path")]
+open(sys.argv[1], "w").write("".join(p + "\n" for p in out))' "$1" \
+    || { _EP_ST=200; _EP_MSG="the tree listing is unreadable"; return 1; }
+}
+
+_gl_ev_state() {
+  _gl_ev_call "projects/$_EP_PROJ/merge_requests/$1" || return 1
+  printf '%s' "$_EP_BODY" | python3 -I -c '
+import json, sys
+print({"merged": "merged", "closed": "closed", "opened": "open"}.get(json.load(sys.stdin).get("state"), ""))'
+}
+
+_gl_ev_newest() {
+  _gl_ev_call "projects/$_EP_PROJ/repository/commits?ref_name=$_TALOS_EVIDENCE_BRANCH&path=pr-$1&per_page=1" || return 1
+  printf '%s' "$_EP_BODY" | python3 -I -c '
+import json, sys
+c = (json.load(sys.stdin) or [{}])[0]
+print(c.get("committed_date") or c.get("created_at") or "")'
+}
+
+_gl_ev_remove() {
+  python3 -I -c '
+import json, sys
+out, branch, paths = sys.argv[1:4]
+actions = [{"action": "delete", "file_path": p} for p in open(paths).read().split("\n") if p]
+open(out, "w").write(json.dumps({"branch": branch, "commit_message": "Prune QA evidence of finished MRs", "actions": actions}))
+' "$_EP_STAGE" "$_TALOS_EVIDENCE_BRANCH" "$1" || { _EP_ST=""; _EP_MSG="could not stage the commit"; return 1; }
+  _gl_ev_call --method POST "projects/$_EP_PROJ/repository/commits" --input "$_EP_STAGE" --header 'Content-Type: application/json'
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6575,6 +6867,16 @@ open(out, "w").write(json.dumps(body))
       rm -f "${_af_body:?}" "${_af_err:?}"
       _vcs_shared_attach_post "$_af_pr" "$_af_sha8" "$_af_manifest" _gl_upc_read _gl_upc_write _gl_current_user
       ;;
+    evidence-prune)
+      # evidence-prune [--merged] [--older-than <days>] [--list] (#817): the pr-<n>/
+      # folders of merged or closed (or old) MRs leave the evidence branch in ONE
+      # repository/commits call with a `delete` action per file.
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] glab api projects/$(_gl_api_project)/repository/branches/$_TALOS_EVIDENCE_BRANCH; glab api --paginate projects/$(_gl_api_project)/repository/tree?ref=$_TALOS_EVIDENCE_BRANCH&recursive=true&per_page=100; per pr-<n> folder glab api projects/$(_gl_api_project)/merge_requests/<n> (state) and, with --older-than, glab api projects/$(_gl_api_project)/repository/commits?ref_name=$_TALOS_EVIDENCE_BRANCH&path=pr-<n>&per_page=1; then one glab api --method POST projects/$(_gl_api_project)/repository/commits --input <json file> (a delete action per file); no write with --list"; return 0; }
+      _EP_PROJ="$(_gl_api_project)"
+      _EP_STAGE="$(mktemp)" && [ -n "$_EP_STAGE" ] || { echo "pipeline-vcs: evidence-prune: could not create a temp file" >&2; exit 1; }
+      _talos_on_exit 'rm -f "'"$_EP_STAGE"'"'
+      _vcs_shared_evidence_prune gitlab _gl_ev_list _gl_ev_state _gl_ev_newest _gl_ev_remove || exit 1
+      ;;
     mark-needs-owner)
       _gl_require_iid mark-needs-owner "${1:-}" || exit 1
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] glab api --paginate projects/$(_gl_api_project)/merge_requests/$1/notes?per_page=100 (read-comments); unless the newest trusted marker note already has this body and is unanswered: glab mr note $1 --message <body>; glab mr update $1 --label $_TALOS_NEEDS_OWNER_LABEL"; return 0; }
@@ -7030,6 +7332,57 @@ open(out, "w").write(json.dumps({"refUpdates": [{"name": "refs/heads/" + branch,
 ' "$_AZ_STAGE" "$_TALOS_EVIDENCE_BRANCH" "$_AZ_OID" "QA evidence for PR #$_es_pr at $_es_sha8" "$_es_ex" "${_es_pairs[@]}" \
     || { _AZ_WHY="could not read the files"; return 1; }
   _az_ev_req POST "$_AZ_GB/pushes?api-version=7.1" "$_AZ_STAGE" || { _az_ev_refused; return 1; }
+}
+
+# evidence-prune on azure (#817): the callbacks of _vcs_shared_evidence_prune, over
+# the same curl calls as _az_ev_store (_AZ_GB and _AZ_TOK set by the verb's arm).
+_EP_OID=""
+
+# _az_ev_fail -- a refused _az_ev_req becomes the shared refusal (_EP_ST, _EP_MSG).
+_az_ev_fail() {
+  _az_ev_refused
+  _EP_ST="$_AZ_ST"
+  _EP_MSG="$_AZ_WHY"
+  return 1
+}
+
+_az_ev_list() {
+  _az_ev_head "$_TALOS_EVIDENCE_BRANCH" || { _EP_ST="$_AZ_ST"; _EP_MSG="$_AZ_WHY"; return 1; }
+  [ -n "$_AZ_OID" ] || return 3
+  _EP_OID="$_AZ_OID"
+  _az_ev_req GET "$_AZ_GB/items?scopePath=/&recursionLevel=Full&versionDescriptor.version=$_TALOS_EVIDENCE_BRANCH&versionDescriptor.versionType=branch&api-version=7.1" || { _az_ev_fail; return 1; }
+  printf '%s' "$_AZ_RESP" | python3 -I -c '
+import json, sys
+items = json.load(sys.stdin).get("value") or []
+open(sys.argv[1], "w").write("".join(i["path"].lstrip("/") + "\n" for i in items
+                                     if not i.get("isFolder") and i.get("gitObjectType") != "tree" and i.get("path")))' "$1" \
+    || { _EP_ST="$_AZ_ST"; _EP_MSG="the item listing is unreadable"; return 1; }
+}
+
+_az_ev_state() {
+  _az_ev_req GET "$_AZ_GB/pullRequests/$1?api-version=7.1" || return 1
+  printf '%s' "$_AZ_RESP" | python3 -I -c '
+import json, sys
+print({"completed": "merged", "abandoned": "closed", "active": "open"}.get(json.load(sys.stdin).get("status"), ""))'
+}
+
+_az_ev_newest() {
+  _az_ev_req GET "$_AZ_GB/commits?searchCriteria.itemVersion.version=$_TALOS_EVIDENCE_BRANCH&searchCriteria.itemVersion.versionType=branch&searchCriteria.itemPath=/pr-$1"'&searchCriteria.$top=1&api-version=7.1' || return 1
+  printf '%s' "$_AZ_RESP" | python3 -I -c '
+import json, sys
+c = (json.load(sys.stdin).get("value") or [{}])[0]
+print((c.get("committer") or c.get("author") or {}).get("date") or "")'
+}
+
+_az_ev_remove() {
+  python3 -I -c '
+import json, sys
+out, branch, old, paths = sys.argv[1:5]
+changes = [{"changeType": "delete", "item": {"path": "/" + p}} for p in open(paths).read().split("\n") if p]
+open(out, "w").write(json.dumps({"refUpdates": [{"name": "refs/heads/" + branch, "oldObjectId": old}],
+                                 "commits": [{"comment": "Prune QA evidence of finished PRs", "changes": changes}]}))
+' "$_AZ_STAGE" "$_TALOS_EVIDENCE_BRANCH" "$_EP_OID" "$1" || { _EP_ST=""; _EP_MSG="could not stage the push"; return 1; }
+  _az_ev_req POST "$_AZ_GB/pushes?api-version=7.1" "$_AZ_STAGE" || { _az_ev_fail; return 1; }
 }
 
 # Convert a markdown string to HTML for Azure DevOps HTML-rendered fields.
@@ -8612,6 +8965,20 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
       rm -f "${_AZ_STAGE:?}"
       _vcs_shared_attach_post "$_af_pr" "$_af_sha8" "$_af_manifest" _az_upc_read _az_upc_write _az_user_login
       ;;
+    evidence-prune)
+      # evidence-prune [--merged] [--older-than <days>] [--list] (#817): the pr-<n>/
+      # folders of completed or abandoned (or old) PRs leave the evidence branch in
+      # ONE push of delete changes, over the same curl calls and token as attach-files.
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] az account get-access-token --resource $ADO_RESOURCE; curl GET .../refs?filter=heads/$_TALOS_EVIDENCE_BRANCH; GET .../items?scopePath=/&recursionLevel=Full; per pr-<n> folder GET .../pullRequests/<n> (status) and, with --older-than, GET .../commits?searchCriteria.itemPath=/pr-<n>&searchCriteria.\$top=1; then one curl POST .../pushes with a delete change per file (oldObjectId = the head read); no write with --list"; return 0; }
+      _AZ_GB="$(_azure_git_base)" || {
+        echo "pipeline-vcs: evidence-prune: needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2
+        exit 1; }
+      _AZ_TOK="$(az account get-access-token --resource "$ADO_RESOURCE" --query accessToken --output tsv 2>/dev/null)"
+      [ -n "$_AZ_TOK" ] || { echo "evidence-prune: azure refused (no response): could not get an Azure DevOps access token (az login?)" >&2; exit 1; }
+      _AZ_STAGE="$(mktemp)" && [ -n "$_AZ_STAGE" ] || { echo "pipeline-vcs: evidence-prune: could not create a temp file" >&2; exit 1; }
+      _talos_on_exit 'rm -f "'"$_AZ_STAGE"'"'
+      _vcs_shared_evidence_prune azure _az_ev_list _az_ev_state _az_ev_newest _az_ev_remove || exit 1
+      ;;
     mark-needs-owner)
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] az rest GET .../pullRequests/$1/threads (read-comments); unless the newest trusted marker comment already has this body and is unanswered: POST .../pullRequests/$1/threads; POST .../pullRequests/$1/labels ($_TALOS_NEEDS_OWNER_LABEL)"; return 0; }
       _vcs_shared_mark_needs_owner "${1:-}" "${2-}" _az_no_post_comment _az_no_label_add _az_user_login
@@ -9582,7 +9949,7 @@ fi
 # stdin or a file, so a caller reads it as "unsupported, skip" and not as the
 # exit 1 of a failed call.
 case "$VERB" in
-  mark-needs-owner|list-needs-owner|upsert-pr-comment|attach-files)
+  mark-needs-owner|list-needs-owner|upsert-pr-comment|attach-files|evidence-prune)
     if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ] && [ "$PROVIDER" != "gitlab" ] && [ "$PROVIDER" != "azure" ]; then
       echo "pipeline-vcs: $VERB: not implemented for provider '$PROVIDER'" >&2
       exit 2
@@ -9805,6 +10172,40 @@ print("\n".join(out))
 ' "${ARGS[@]:1}")
 EOF
   unset _af_usage _af_f
+fi
+
+# evidence-prune [--merged] [--older-than <days>] [--list] (#817). The flags are read
+# here, once for every provider and before any call: a selector is required, <days> is
+# a positive integer and an unknown flag or a stray word is exit 2 with the usage.
+# --list only prints what would go (the global --dry-run prints the planned calls).
+_EP_MERGED=false _EP_DAYS="" _EP_LIST=false
+if [ "$VERB" = "evidence-prune" ]; then
+  _ep_usage="Usage: evidence-prune [--merged] [--older-than <days>] [--list]"
+  _ep_i=0
+  while [ "$_ep_i" -lt "${#ARGS[@]}" ]; do
+    case "${ARGS[$_ep_i]}" in
+      --merged) _EP_MERGED=true ;;
+      --list) _EP_LIST=true ;;
+      --older-than)
+        _ep_i=$((_ep_i + 1))
+        _EP_DAYS="${ARGS[$_ep_i]-}"
+        if ! [[ "$_EP_DAYS" =~ ^[1-9][0-9]{0,8}$ ]]; then
+          echo "pipeline-vcs: evidence-prune: --older-than needs a positive whole number of days (got '$_EP_DAYS'); $_ep_usage" >&2
+          exit 2
+        fi
+        ;;
+      *)
+        echo "pipeline-vcs: evidence-prune: unknown argument '${ARGS[$_ep_i]}'; $_ep_usage" >&2
+        exit 2
+        ;;
+    esac
+    _ep_i=$((_ep_i + 1))
+  done
+  if [ "$_EP_MERGED" != "true" ] && [ -z "$_EP_DAYS" ]; then
+    echo "pipeline-vcs: evidence-prune: give --merged, --older-than <days> or both; $_ep_usage" >&2
+    exit 2
+  fi
+  unset _ep_usage _ep_i
 fi
 
 # ── assert-sync: working-tree precondition (provider-agnostic) ───────────────

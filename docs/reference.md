@@ -34,7 +34,7 @@ Paths such as `scripts/talos.sh` are relative to the Talos install (`~/.talos` a
 
 `run --issue <N>` works one issue and ends after its merge with `stop merged pr=<M>`.
 
-Verbs: `env`, `state [--summary]`, `next [--issue N]`, `prompt`, `done`, `gate fix-round|merge`, `docs-gate`, `post-merge`, `sweep`, `summary`, `claim`, `lease prune`, `map`, `run`.
+Verbs: `env`, `state [--summary]`, `next [--issue N]`, `prompt`, `done`, `gate fix-round|merge`, `docs-gate`, `post-merge`, `sweep`, `summary`, `claim`, `lease prune`, `evidence prune`, `map`, `run`.
 
 ### Stages
 
@@ -823,6 +823,7 @@ Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azu
 | `conflict-files` | yes | yes (fetches `refs/merge-requests/<iid>/head`) | yes (fetches the source branch) | exception: no PRs |
 | `upsert-pr-comment` | yes | yes (merge requests) | yes | exception: no PRs |
 | `attach-files` | yes (commits to the `talos-evidence` branch) | yes (commits to the `talos-evidence` branch) | yes (pushes to the `talos-evidence` branch) | exception: no PRs |
+| `evidence-prune` | yes (one Git Data API commit) | yes (one commits call) | yes (one push) | exception: no PRs |
 | `mark-needs-owner` | yes | yes (merge requests) | yes | exception: local-only |
 | `list-needs-owner` | yes | yes (merge requests) | yes | exception: local-only |
 | `record-attempt`, `read-attempt` | yes | yes | yes | exception: local-only (no comments) |
@@ -1011,7 +1012,7 @@ An unreadable gate answers `stop reason=<r>` (fail closed). Gates 3 and 4 set `p
 - **Growth.** Every QA round that reaches the head run adds a `pr-<n>/<sha8>/` folder (a re-run at the same head overwrites its own). A PR with videos is typically a few MB per round; `verify.e2e_artifacts.max_files` and `.max_mb` cap one round, nothing caps the branch. Git keeps history, so deleting files from the branch does not shrink the repository by itself; deleting or resetting the whole branch does, once the host collects the unreferenced objects.
 - **Check the size.** The branch's current files: `git fetch origin talos-evidence && git ls-tree -r -l FETCH_HEAD | awk '{s+=$4} END {print s}'` (bytes). The whole repository, history included: GitHub `gh api repos/<owner>/<repo> --jq .size` (KB); GitLab `glab api 'projects/<id>?statistics=true'` (`statistics.repository_size`, bytes); Azure DevOps `az repos show --repository <repo> --query size` (bytes).
 - **Reclaim space.**
-  - Drop old folders in one commit, on any provider: clone only the branch (`git clone --single-branch --branch talos-evidence <repo-url> evidence`), `git rm -r pr-12 pr-13`, commit, `git push origin talos-evidence`.
+  - Drop the folders of finished PRs in one commit: `bash scripts/talos.sh evidence prune [--merged] [--older-than <days>] [--dry-run]`, on GitHub, Azure DevOps and GitLab. `--merged` picks the folders of merged or closed PRs, `--older-than <days>` those whose newest commit on the branch is more than that many days old (an open PR's folder is never picked, and a PR whose state cannot be read keeps its folder); with both, either. `--dry-run` prints one `would-prune pr=<n> reason=merged|closed|older` line per folder and writes nothing. Otherwise it prints `pruned pr=<n> reason=...` per folder and `pruned folders=<k> files=<m>`, as one commit (GitHub: a tree, a commit and a ref update through the Git Data API; Azure: one push of `delete` changes; GitLab: one commits call of `delete` actions). With no branch, or nothing selected, it says so and exits 0; a refused read or write exits 1 with `evidence-prune: <provider> refused (<status>): <message>`. Only `pr-<n>/` paths are touched. The same by hand, on any provider: clone only the branch (`git clone --single-branch --branch talos-evidence <repo-url> evidence`), `git rm -r pr-12 pr-13`, commit, `git push origin talos-evidence`.
   - Delete the whole branch, which Talos recreates on the next run: GitHub `git push origin --delete talos-evidence` (or `gh api -X DELETE repos/<owner>/<repo>/git/refs/heads/talos-evidence`); GitLab `git push origin --delete talos-evidence` (or `glab api -X DELETE projects/<id>/repository/branches/talos-evidence`); Azure DevOps `git push origin --delete talos-evidence` (or `az repos ref delete --name refs/heads/talos-evidence --object-id <head> --repository <repo>`, with the head from `az repos ref list --filter heads/talos-evidence`).
   - Links in older PR comments to a folder or branch you removed stop working; the comment text stays.
 - **Clones.** A plain `git clone` and `git fetch` download the branch with everything else. Narrow it with `git clone --single-branch` (only the default branch), or exclude it from an existing clone with `git config --add remote.origin.fetch '^refs/heads/talos-evidence'` (Git 2.29 or later) and `git branch -dr origin/talos-evidence`.
