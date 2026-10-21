@@ -8,8 +8,8 @@
 #        built from the returned markdown
 #   AC9  github: each file committed to talos-evidence at pr-<n>/<sha8>/<name>;
 #        the comment holds the ?raw=true blob links, images inline
-#   AC10 a second attach-files edits the evidence comment; a failed upload
-#        posts nothing and exits 1 (all three providers)
+#   AC10 a second attach-files edits the evidence comment; a failed upload is
+#        listed as not attached, the comment is posted, exit 0 (#811; all three providers)
 #   AC11 a symlink, a missing file or a non-numeric PR exits 1 before any
 #        network call; the file provider exits 2
 set -u
@@ -98,13 +98,14 @@ for LEG in gh curl; do
   assert_eq "0" "$(awk -F'\t' '$4=="POST" && $1 ~ /\/comments$/' "$CURL_LOG" | wc -l | tr -d ' ')" "AC10 [$LEG] no second comment is POSTed"
   assert_eq "0" "$(awk -F'\t' '$4=="POST" && $1 ~ /\/git\/refs$/' "$CURL_LOG" | wc -l | tr -d ' ')" "AC10 [$LEG] the existing branch is reused"
 
-  # AC10: a failed upload posts nothing and exits 1.
+  # AC10: a failed upload is listed as not attached; the comment is posted and the verb exits 0 (#811).
   rm -rf "${EVD:?}"/*; printf '[]' > "$STORE"; : > "$CURL_LOG"
   export STUB_EVIDENCE_PUT_FAIL=b.webm STUB_PR_HEAD_SHA="$SHA"
   out="$(bash "$VCS" attach-files 7 "$EV/a.png" "$EV/b.webm" 2>"$SANDBOX/err")"; rc=$?
   unset STUB_EVIDENCE_PUT_FAIL
-  assert_eq "1" "$rc" "AC10 [$LEG] a failed upload exits 1"
-  assert_eq "0" "$(store_bodies "$STORE" | grep -c .)" "AC10 [$LEG] a failed upload posts no comment"
+  assert_eq "0" "$rc" "AC10 [$LEG] a failed upload still exits 0"
+  assert_eq "1" "$(store_bodies "$STORE" | grep -c .)" "AC10 [$LEG] a failed upload still posts the comment"
+  assert_contains "$(store_bodies "$STORE")" 'b.webm: not attached (500: Server Error)' "AC10 [$LEG] the failed file is listed as not attached with its reason"
 done
 
 # ── AC7 + AC10 (azure) ───────────────────────────────────────────────────────
@@ -157,8 +158,9 @@ assert_eq "1" "$(az_patches)" "AC10 azure: a second attach-files edits the evide
 
 az_fresh
 out="$(STUB_AZURE_UPLOAD_FAIL=b.webm bash "$VCS" attach-files 9 "$EV/a.png" "$EV/b.webm" 2>"$SANDBOX/err")"; rc=$?
-assert_eq "1" "$rc" "AC10 azure: a failed upload exits 1"
-assert_eq "0" "$(az_posts)" "AC10 azure: a failed upload posts nothing"
+assert_eq "0" "$rc" "AC10 azure: a failed upload still exits 0"
+assert_eq "1" "$(az_posts)" "AC10 azure: a failed upload still posts the comment"
+assert_contains "$(az_content 1)" 'b.webm: not attached (500: Server Error)' "AC10 azure: the failed file is listed as not attached with its reason"
 
 # ── AC8 + AC10 (gitlab) ──────────────────────────────────────────────────────
 git remote set-url origin git@gitlab.com:acme/widget.git
@@ -206,8 +208,9 @@ assert_eq "1" "$(count_log "$GH_LOG" "^GLAB api --method PUT $GL_NOTES/")" "AC10
 
 gl_fresh
 out="$(STUB_GITLAB_UPLOAD_FAIL=b.webm bash "$VCS" attach-files 9 "$EV/a.png" "$EV/b.webm" 2>"$SANDBOX/err")"; rc=$?
-assert_eq "1" "$rc" "AC10 gitlab: a failed upload exits 1"
-assert_eq "0" "$(count_log "$GH_LOG" "^GLAB api --method (POST|PUT) $GL_NOTES")" "AC10 gitlab: a failed upload posts nothing"
+assert_eq "0" "$rc" "AC10 gitlab: a failed upload still exits 0"
+assert_eq "1" "$(count_log "$GH_LOG" "^GLAB api --method POST $GL_NOTES")" "AC10 gitlab: a failed upload still posts the note"
+assert_contains "$(gl_bodies)" 'b.webm: not attached (ERROR: 500 Internal Server Error)' "AC10 gitlab: the failed file is listed as not attached with the glab error"
 
 # ── AC11: refused before any network call ────────────────────────────────────
 no_calls() {  # <label> <args...>: exit 1, and not one request or CLI call
