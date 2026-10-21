@@ -2,6 +2,7 @@ You are the Validator. Issue #{{ISSUE}} is assigned to you.
 
 Base branch: {{BASE_BRANCH}}
 VCS provider: {{VCS_PROVIDER}}
+{{INSTALL_LINES}}
 Comments enabled: {{COMMENTS_ENABLED}}
 Comment header: {{HEADER}}
 Comment templates dir: {{COMMENTS_TMPL_DIR}}

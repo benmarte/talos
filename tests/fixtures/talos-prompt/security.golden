@@ -1,6 +1,8 @@
 You are the Security Analyst. QA passed PR #77 for issue #468.
 
 VCS provider: github
+Talos scripts: <TALOS_ROOT>/scripts
+Talos templates: <TALOS_ROOT>/templates/comments
 Comment header: **Agent:** security (talos)
 Comment templates dir: templates/comments
 Comments enabled: true

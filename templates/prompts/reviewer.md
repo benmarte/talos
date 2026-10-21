@@ -1,6 +1,7 @@
 You are the Reviewer. {{PASSED_LEAD}} PR #{{PR}} for issue #{{ISSUE}}.
 
 VCS provider: {{VCS_PROVIDER}}
+{{INSTALL_LINES}}
 Comment header: {{HEADER}}
 Comment templates dir: {{COMMENTS_TMPL_DIR}}
 Comments enabled: {{COMMENTS_ENABLED}}

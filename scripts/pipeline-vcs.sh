@@ -600,6 +600,20 @@
 #                                             --issue <n> tags the calling stage's
 #                                             worktree for issue <n> (best effort; the
 #                                             main checkout is never tagged).
+#   post-verdict <pr> qa --fail [--issue n] [--summary s] --body-file <path|->
+#                                             (#814; github, github-api, azure, gitlab)
+#                                             QA's FAIL in one call: renders qa-verdict
+#                                             (comments.templates_dir, else the install's
+#                                             copy), appends the talos:qa-verdict marker
+#                                             at the PR head, posts it, then adds
+#                                             pipeline:blocked and removes pipeline:review
+#                                             on the PR (and adds pipeline:blocked on
+#                                             --issue). The body is the DETAILS; SUMMARY is
+#                                             --summary or its first non-blank line. One
+#                                             comment per head: a repeat posts nothing and
+#                                             still ensures the labels. Any other role, no
+#                                             --fail, a non-numeric --issue or an empty
+#                                             body: exit 1, nothing posted.
 #
 # Config keys (from talos.pipeline.json via pipeline-config.sh):
 #   vcs.provider          github | github-api | gitlab | azure | file   (default: github)
@@ -10286,6 +10300,143 @@ print('none')
   exit $?
 fi
 
+# ── post-verdict: QA's FAIL verdict in one call (#814) ───────────────────────
+# github, github-api, azure and gitlab, as post-approval. The FAIL counterpart of
+# post-approval for role qa only: renders the qa-verdict template (comments.
+# templates_dir, else the install's own copy, so it never depends on the cwd),
+# appends `<!-- talos:qa-verdict sha=<PR head> -->` (a fixed template with only
+# the validated SHA interpolated), posts it via comment-pr, then blocks the PR
+# (pipeline:blocked added, pipeline:review removed) and with --issue the issue.
+# One verdict comment per head: a second call finds the marker, posts nothing
+# and still ensures the labels. The body is the DETAILS text; SUMMARY is
+# --summary or the body's first non-blank line (200 characters at most).
+_pv_labels() {  # block the PR (and the issue): label-pr/label-issue are idempotent
+  bash "$SCRIPT_DIR/pipeline-vcs.sh" label-pr "$_pv_n" --add pipeline:blocked --remove pipeline:review >/dev/null || {
+    echo "pipeline-vcs: post-verdict: label-pr failed for PR #$_pv_n" >&2
+    return 1
+  }
+  [ -z "$_pv_issue" ] || bash "$SCRIPT_DIR/pipeline-vcs.sh" label-issue "$_pv_issue" --add pipeline:blocked >/dev/null || {
+    echo "pipeline-vcs: post-verdict: label-issue failed for issue #$_pv_issue" >&2
+    return 1
+  }
+}
+if [ "$VERB" = "post-verdict" ]; then
+  if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ] && [ "$PROVIDER" != "azure" ] && [ "$PROVIDER" != "gitlab" ]; then
+    echo "pipeline-vcs: post-verdict: not implemented for provider '$PROVIDER'" >&2
+    exit 1
+  fi
+  _pv_usage="usage: post-verdict <pr> qa --fail [--issue <n>] [--summary <one line>] --body-file <path|->"
+  _pv_n="${ARGS[0]:-}"
+  _pv_role="${ARGS[1]:-}"
+  _pv_fail=0
+  _pv_issue=""
+  _pv_summary=""
+  _pv_body_file=""
+  _pv_i=2
+  while [ "$_pv_i" -lt "${#ARGS[@]}" ]; do
+    case "${ARGS[$_pv_i]}" in
+      --fail) _pv_fail=1; _pv_i=$((_pv_i + 1)) ;;
+      --issue | --summary | --body-file)
+        [ $((_pv_i + 1)) -lt "${#ARGS[@]}" ] || { echo "pipeline-vcs: post-verdict: ${ARGS[$_pv_i]} needs a value ($_pv_usage)" >&2; exit 1; }
+        case "${ARGS[$_pv_i]}" in
+          --issue) _pv_issue="${ARGS[$((_pv_i + 1))]}" ;;
+          --summary) _pv_summary="${ARGS[$((_pv_i + 1))]}" ;;
+          *) _pv_body_file="${ARGS[$((_pv_i + 1))]}" ;;
+        esac
+        _pv_i=$((_pv_i + 2))
+        ;;
+      *) echo "pipeline-vcs: post-verdict: unknown argument '${ARGS[$_pv_i]}' ($_pv_usage)" >&2; exit 1 ;;
+    esac
+  done
+  case "$_pv_n" in
+    '' | *[!0-9]*) echo "pipeline-vcs: post-verdict: PR number must be an integer, got '$_pv_n' ($_pv_usage)" >&2; exit 1 ;;
+  esac
+  [ "$_pv_role" = "qa" ] || { echo "pipeline-vcs: post-verdict: only role qa is supported, got '$_pv_role'" >&2; exit 1; }
+  [ "$_pv_fail" -eq 1 ] || { echo "pipeline-vcs: post-verdict: --fail is required ($_pv_usage)" >&2; exit 1; }
+  case "$_pv_issue" in
+    *[!0-9]*) echo "pipeline-vcs: post-verdict: --issue must be an issue number, got '$_pv_issue'" >&2; exit 1 ;;
+  esac
+  [ -n "$_pv_body_file" ] || { echo "pipeline-vcs: post-verdict: --body-file is required ($_pv_usage)" >&2; exit 1; }
+  _pv_src="$_pv_body_file"
+  [ "$_pv_src" != "-" ] || _pv_src=/dev/stdin
+  [ "$_pv_src" = /dev/stdin ] || [ -r "$_pv_src" ] || { echo "pipeline-vcs: post-verdict: --body-file: cannot read '$_pv_body_file'" >&2; exit 1; }
+  _pv_details="$(cat "$_pv_src" 2>/dev/null)" || _pv_details=""
+  if [ -z "$(printf '%s' "$_pv_details" | tr -d '[:space:]')" ]; then
+    echo "pipeline-vcs: post-verdict: the body is empty; the failing criteria are required" >&2
+    exit 1
+  fi
+  if [ "$DRY_RUN" = "true" ]; then
+    printf '[dry-run] post-verdict: would post the qa-verdict FAIL comment with a talos:qa-verdict marker on PR #%s, add pipeline:blocked, remove pipeline:review\n' "$_pv_n"
+    exit 0
+  fi
+
+  # The marker SHA is the PR head, as post-approval reads it.
+  _pv_sha="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head "$_pv_n" ${REPO:+--repo "$REPO"} 2>/dev/null)" || {
+    echo "pipeline-vcs: post-verdict: could not resolve head SHA for PR #$_pv_n" >&2
+    exit 1
+  }
+  case "$_pv_sha" in
+    *[!0-9a-f]* | "") echo "pipeline-vcs: post-verdict: invalid SHA from pr-head: '$_pv_sha'" >&2; exit 1 ;;
+  esac
+  [ "${#_pv_sha}" -eq 40 ] || { echo "pipeline-vcs: post-verdict: SHA must be 40 hex chars, got ${#_pv_sha}: '$_pv_sha'" >&2; exit 1; }
+  _pv_marker="<!-- talos:qa-verdict sha=${_pv_sha} -->"
+
+  # One verdict comment per head: the marker as the last line of any comment.
+  _pv_comments="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-comments "$_pv_n" ${REPO:+--repo "$REPO"} 2>/dev/null)" || _pv_comments=""
+  [ -n "$_pv_comments" ] || { echo "pipeline-vcs: post-verdict: could not fetch PR #$_pv_n comments for duplicate check" >&2; exit 1; }
+  _pv_dup="$(printf '%s' "$_pv_comments" | PA_MARKER="$_pv_marker" python3 -I -c "$(_vcs_shared_trust_py)
+import json, os, sys
+marker = os.environ.get('PA_MARKER', '')
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print('error')
+    sys.exit(0)
+for c in data.get('comments', []):
+    if body_last_line(c.get('body', '') or '') == marker:
+        print('found')
+        sys.exit(0)
+print('none')
+")"
+  case "$_pv_dup" in
+    found)
+      echo "pipeline-vcs: post-verdict: qa verdict already exists at $_pv_sha; not posting again" >&2
+      _pv_labels || exit 1
+      printf 'post-verdict: PR #%s qa FAIL verdict already present at %s; blocked labels ensured\n' "$_pv_n" "$_pv_sha"
+      exit 0
+      ;;
+    none) ;;
+    *) echo "pipeline-vcs: post-verdict: could not parse PR #$_pv_n comments for duplicate check" >&2; exit 1 ;;
+  esac
+
+  _pv_tpl="$(cfg comments.templates_dir 2>/dev/null)/qa-verdict.md"
+  [ -f "$_pv_tpl" ] || _pv_tpl="$SCRIPT_DIR/../templates/comments/qa-verdict.md"
+  [ -f "$_pv_tpl" ] || { echo "pipeline-vcs: post-verdict: no qa-verdict template (comments.templates_dir or $SCRIPT_DIR/../templates/comments)" >&2; exit 1; }
+  _pv_header="$(cfg comments.header 2>/dev/null)" || _pv_header=""
+  _pv_header="${_pv_header//\{role\}/qa}"
+  _pv_tmpfile="$(mktemp)" && [ -n "$_pv_tmpfile" ] || { echo "pipeline-vcs: post-verdict: cannot create a temp file" >&2; exit 1; }
+  _talos_on_exit 'rm -f "$_pv_tmpfile"'
+  printf '%s' "$_pv_details" | PV_HEADER="$_pv_header" PV_SUMMARY="$_pv_summary" PV_ISSUE="$_pv_issue" PV_PR="$_pv_n" python3 -I -c '
+import os, string, sys
+details = sys.stdin.read().strip()
+summary = os.environ["PV_SUMMARY"].strip() or next((l.strip() for l in details.splitlines() if l.strip()), "")
+summary = " ".join(summary.split())[:200]
+env = {"HEADER": os.environ["PV_HEADER"], "VERDICT": "FAIL", "SUMMARY": summary, "DETAILS": details,
+       "ISSUE": os.environ["PV_ISSUE"], "PR": os.environ["PV_PR"]}
+with open(sys.argv[1]) as f:
+    sys.stdout.write(string.Template(f.read()).substitute(env).strip() + "\n")
+' "$_pv_tpl" > "$_pv_tmpfile" || { echo "pipeline-vcs: post-verdict: cannot render $_pv_tpl" >&2; exit 1; }
+  printf '\n%s\n' "$_pv_marker" >> "$_pv_tmpfile"
+
+  _pv_out="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" comment-pr "$_pv_n" --body-file "$_pv_tmpfile" 2>&1)" || {
+    echo "pipeline-vcs: post-verdict: comment-pr failed for PR #$_pv_n: ${_pv_out:0:300}" >&2
+    exit 1
+  }
+  _pv_labels || exit 1
+  printf 'post-verdict: PR #%s qa FAIL verdict posted at %s; blocked labels applied\n' "$_pv_n" "$_pv_sha"
+  exit 0
+fi
+
 # ── conflict-files: mechanical-merge eligibility check (#256) ────────────────
 # github, gitlab and azure share one implementation -- see
 # _vcs_shared_conflict_files's header comment; only the ref the PR head is
@@ -10367,7 +10518,7 @@ _vcs_dispatch_provider() {
 _vcs_journal_write() {
   { [ -n "${TALOS_WRITE_LOG:-}" ] && [ "$DRY_RUN" != "true" ]; } || return 0
   case "$VERB" in
-    comment-issue|comment-pr|edit-pr-body|create-pr|create-issue|post-approval|approve-pr|merge-pr|close-issue|record-attempt)
+    comment-issue|comment-pr|edit-pr-body|create-pr|create-issue|post-approval|post-verdict|approve-pr|merge-pr|close-issue|record-attempt)
       printf '%s\n' "$VERB" >>"$TALOS_WRITE_LOG" 2>/dev/null || true ;;
   esac
 }

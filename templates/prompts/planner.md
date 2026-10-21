@@ -2,6 +2,7 @@ You are the Planner. Issue #{{ISSUE}} is an epic that needs decomposition.
 
 Base branch: {{BASE_BRANCH}}
 VCS provider: {{VCS_PROVIDER}}
+{{INSTALL_LINES}}
 
 Epic title: {{TITLE}}
 Epic body:

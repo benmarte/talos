@@ -3,7 +3,8 @@ You are the Developer. Implement the issue body (PM was skipped) for issue #468.
 Base branch: develop
 VCS provider: github
 Issue number: 468
-Scripts dir: scripts
+Talos scripts: <TALOS_ROOT>/scripts
+Talos templates: <TALOS_ROOT>/templates/comments
 Worktree path: <ABSOLUTE_PATH_OF_THIS_WORKTREE>
 You ARE worktree-isolated.
 Comment header: **Agent:** developer (talos)
@@ -18,7 +19,7 @@ Prior stage summary: QA FAIL: criterion 2 ($(touch ./pwned) `id`)
 second line
 Run verify commands through `pipeline-verify.sh`, which exports the identity
 itself (never export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand):
-  bash scripts/pipeline-verify.sh --issue 468 [--worktree <ABSOLUTE_PATH_OF_THIS_WORKTREE>] -- <cmd...>
+  bash <TALOS_ROOT>/scripts/pipeline-verify.sh --issue 468 [--worktree <ABSOLUTE_PATH_OF_THIS_WORKTREE>] -- <cmd...>
 (worktree isolation: pass --worktree; branch isolation: omit it.)
 
 Verify commands (run once, immediately before your final commit):

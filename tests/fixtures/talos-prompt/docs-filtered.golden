@@ -4,6 +4,8 @@ Worktree path: your working directory (git rev-parse --show-toplevel)
 Edit and run `commit-docs` there: it refuses a checkout that is not on the PR's head branch.
 Base branch: main
 VCS provider: github
+Talos scripts: <TALOS_ROOT>/scripts
+Talos templates: <TALOS_ROOT>/templates/comments
 Comment header: **Agent:** docs (talos)
 Comment templates dir: templates/comments
 Comments enabled: true

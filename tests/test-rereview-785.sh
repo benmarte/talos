@@ -327,7 +327,7 @@ comments "owner1:$SANDBOX/f.a"
 TALOS_PROMPT_CHANGE_MAX_BYTES=10 render_rr reviewer
 assert_eq "0" "$RC" "AC9: the prompt still renders (exit 0)"
 assert_eq "prompt_file=$PF" "$(cat "$OUT")" "AC9: stdout is the single prompt_file= line"
-assert_eq "1" "$(count_line "$PF" 'Change: not embedded (too-large). Read it once: `bash scripts/pipeline-vcs.sh diff-pr 77` and `bash scripts/pipeline-vcs.sh view-issue 468 --spec`.')" "AC9: today's too-large line"
+assert_eq "1" "$(count_line "$PF" "Change: not embedded (too-large). Read it once: \`bash $(cd "$GS" && pwd)/pipeline-vcs.sh diff-pr 77\` and \`bash $(cd "$GS" && pwd)/pipeline-vcs.sh view-issue 468 --spec\`.")" "AC9: today's too-large line"
 assert_eq "0" "$(has_sections "$PF")" "AC9: no section of the data"
 assert_not_contains "$(cat "$PF")" "fix-needle" "AC9: no part of the delta"
 assert_not_contains "$(journal)" "diff-pr" "AC9: a re-review over the cap never reads the whole diff"

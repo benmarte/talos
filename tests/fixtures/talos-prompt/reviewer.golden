@@ -1,6 +1,8 @@
 You are the Reviewer. QA passed PR #77 for issue #468.
 
 VCS provider: github
+Talos scripts: <TALOS_ROOT>/scripts
+Talos templates: <TALOS_ROOT>/templates/comments
 Comment header: **Agent:** reviewer (talos)
 Comment templates dir: templates/comments
 Comments enabled: true

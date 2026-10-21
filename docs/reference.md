@@ -1060,6 +1060,10 @@ For `reviewer` and `security`, `post-approval` refuses (exit 1, nothing posted) 
 
 After a successful post the reviewer or security body file is removed; the qa and docs bodies are kept. `--recover-only` posts nothing and needs no body.
 
+QA's FAIL is one call too: `pipeline-vcs.sh post-verdict <pr> qa --fail [--issue n] [--summary s] --body-file <path|->` (`github`, `github-api`, `azure`, `gitlab`). The body is the DETAILS text and the summary defaults to its first non-blank line (200 characters at most). It renders `qa-verdict` from `comments.templates_dir`, else the install's own `templates/comments/qa-verdict.md`, so it needs no `scripts/` or `templates/` in the cwd. The comment ends with `<!-- talos:qa-verdict sha=<40-hex head SHA> -->`. It then adds `pipeline:blocked` and removes `pipeline:review` on the PR, and with `--issue` adds `pipeline:blocked` on the issue. A second call at the same head posts nothing and still ensures the labels. Any other role, a missing `--fail`, a non-numeric `--issue` or an empty body exits 1 with nothing posted. The driver counts a `talos:qa-verdict` comment as QA's own verdict, so it posts its "stage ended without its verdict comment" fallback only when neither it nor a `**QA:** FAIL` comment is new since the last FAIL.
+
+Every stage prompt from `talos.sh prompt` carries `Talos scripts: <abs dir>` (the install's scripts directory) and `Talos templates: <abs dir>` (`comments.templates_dir` made absolute when it exists, else the install's `templates/comments`). No prompt tells a stage to run `bash scripts/...`; a profile's `scripts/` means the `Talos scripts:` directory.
+
 | Role | Label |
 |---|---|
 | `qa` | `qa:pass` |

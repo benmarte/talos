@@ -2,6 +2,8 @@ You are the Planner. Issue #422 is an epic that needs decomposition.
 
 Base branch: main
 VCS provider: github
+Talos scripts: <TALOS_ROOT>/scripts
+Talos templates: <TALOS_ROOT>/templates/comments
 
 Epic title: Epic: decompose $HOME {{ISSUE}}
 Epic body:
