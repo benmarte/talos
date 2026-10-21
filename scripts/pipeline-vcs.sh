@@ -430,14 +430,14 @@
 #                                             implemented for provider 'file'`). Each file is a
 #                                             regular, non-symlink file (else exit 1 before any
 #                                             call); its uploaded name keeps only
-#                                             [A-Za-z0-9_.-] and is made unique. azure: POST
-#                                             pullRequests/<pr>/attachments/<name>
-#                                             (application/octet-stream), linked by the URL the
-#                                             upload returns; gitlab: POST /projects/:id/uploads
-#                                             (multipart), using the markdown it returns;
-#                                             github: no attachment API, so each file is
-#                                             committed to the `talos-evidence` branch at
-#                                             pr-<n>/<sha8>/<name> and linked ?raw=true. The
+#                                             [A-Za-z0-9_.-] and is made unique. On all three
+#                                             providers the files are committed to the
+#                                             `talos-evidence` branch (created from the default
+#                                             branch's head when absent) at pr-<n>/<sha8>/<name>
+#                                             (#810): github, one contents-API commit per file,
+#                                             linked ?raw=true; gitlab, one repository commits
+#                                             API call, linked by its -/raw/ URL; azure, one Git
+#                                             pushes API call, linked by its items URL. The
 #                                             comment (a `QA evidence for <sha8>` heading,
 #                                             images inline, other files as links, the marker)
 #                                             goes through upsert-pr-comment's rules, so a later
@@ -2321,12 +2321,13 @@ print("%s: not attached (%s)" % (name, reason))
 ' "$2" "$3" "${4:-}" >> "$1"
 }
 
-# _vcs_shared_attach_miss_all <manifest-file> <message> -- every file of the run
-# is not attached, for the same reason (the head, the branch or the token is missing).
+# _vcs_shared_attach_miss_all <manifest-file> <message> [<http-status>] -- every file
+# of the run is not attached, for the same reason (the head, the branch, the token
+# is missing, or the one push was refused).
 _vcs_shared_attach_miss_all() {
   local _ma_name
   for _ma_name in "${_ATT_NAMES[@]}"; do
-    _vcs_shared_attach_miss "$1" "$_ma_name" "$2"
+    _vcs_shared_attach_miss "$1" "$_ma_name" "$2" "${3:-}"
   done
 }
 
@@ -6477,12 +6478,16 @@ print((d.get('sha') or (d.get('diff_refs') or {}).get('head_sha') or '').lower()
       _vcs_shared_upsert_pr_comment "${1:-}" "${2:-}" "${3:-}" _gl_upc_read _gl_upc_write _gl_current_user
       ;;
     attach-files)
-      # attach-files <iid> <file>... (#776): each file is a multipart upload to
-      # /projects/:id/uploads (glab api sends --input as the body, so the multipart
-      # body is built in a file); the note uses the markdown the upload returns.
-      local _af_pr="${1:-}" _af_sha _af_sha8 _af_i=0 _af_f _af_name _af_body _af_bound _af_resp _af_md _af_manifest _af_err _af_why
+      # attach-files <iid> <file>... (#776, #810): the files are ONE commit on the
+      # `talos-evidence` branch at pr-<n>/<sha8>/<name> through the repository commits
+      # API (glab api sends --input as the body, so the JSON is built in a file). A
+      # branch that does not exist is created by `start_branch`, which GitLab refuses
+      # for one that does; a path already on the branch is `update`, a new one
+      # `create`. The note links each file by its -/raw/ URL on the branch.
+      local _af_pr="${1:-}" _af_sha _af_sha8 _af_i=0 _af_f _af_name _af_body _af_resp _af_manifest _af_err _af_why
+      local _af_proj _af_def _af_web _af_start _af_ex _af_pairs=()
       _gl_require_iid attach-files "$_af_pr" || exit 1
-      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] glab mr view $_af_pr --output json (head sha); for each file glab api --method POST projects/$(_gl_api_project)/uploads --input <multipart file> (the returned markdown); then upsert-pr-comment's calls for <!-- talos:qa-evidence -->"; return 0; }
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] glab mr view $_af_pr --output json (head sha); glab api projects/$(_gl_api_project) (default branch, web_url); glab api projects/$(_gl_api_project)/repository/branches/$_TALOS_EVIDENCE_BRANCH; glab api projects/$(_gl_api_project)/repository/tree?path=pr-$_af_pr/<sha8>&ref=$_TALOS_EVIDENCE_BRANCH; one glab api --method POST projects/$(_gl_api_project)/repository/commits --input <json file> (every file at pr-$_af_pr/<sha8>/<name>, create or update, base64; start_branch when the branch is absent); then upsert-pr-comment's calls for <!-- talos:qa-evidence -->"; return 0; }
       _af_sha="$(glab mr view "$_af_pr" --output json $RARG 2>/dev/null | python3 -I -c "
 import json, sys
 try:
@@ -6504,44 +6509,69 @@ print((d.get('sha') or (d.get('diff_refs') or {}).get('head_sha') or '').lower()
       _af_body="$(mktemp)" && [ -n "$_af_body" ] || { echo "pipeline-vcs: attach-files: could not create a temp file; nothing posted" >&2; exit 1; }
       _af_err="$(mktemp)" && [ -n "$_af_err" ] || { rm -f "${_af_body:?}"; echo "pipeline-vcs: attach-files: could not create a temp file; nothing posted" >&2; exit 1; }
       shift
-      for _af_f in "$@"; do
-        _af_name="${_ATT_NAMES[$_af_i]}"
-        _af_i=$((_af_i + 1))
-        _af_bound="$(python3 -I -c '
-import mimetypes, secrets, sys
-path, name, out = sys.argv[1:4]
-boundary = "talos" + secrets.token_hex(16)
-ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
-with open(out, "wb") as f:
-    f.write(("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\nContent-Type: %s\r\n\r\n" % (boundary, name, ctype)).encode("ascii"))
-    f.write(open(path, "rb").read())
-    f.write(("\r\n--%s--\r\n" % boundary).encode("ascii"))
-print(boundary)
-' "$_af_f" "$_af_name" "$_af_body")" || _af_bound=""
-        _af_resp=""
-        : > "$_af_err"
-        [ -z "$_af_bound" ] || _af_resp="$(glab api --method POST "projects/$(_gl_api_project)/uploads" --input "$_af_body" \
-          --header "Content-Type: multipart/form-data; boundary=$_af_bound" 2>"$_af_err")"
-        _af_md="$(printf '%s' "$_af_resp" | python3 -I -c '
+      _af_proj="$(_gl_api_project)"
+      _af_why=""
+      _af_resp="$(glab api "projects/$_af_proj" 2>"$_af_err")" || { _af_why="$(cat "$_af_err")"; [ -n "$_af_why" ] || _af_why="could not read the project"; }
+      if [ -z "$_af_why" ]; then
+        _af_def="$(printf '%s' "$_af_resp" | _gh_field default_branch 2>/dev/null)"
+        _af_web="$(printf '%s' "$_af_resp" | _gh_field web_url 2>/dev/null)"
+        [ -n "$_af_def" ] && [ -n "$_af_web" ] || _af_why="could not read the project's default branch and URL"
+      fi
+      if [ -z "$_af_why" ]; then
+        # An absent branch starts from the default branch; the tree of an existing
+        # one says which of the paths are already there.
+        _af_start=""
+        _af_ex=""
+        if ! glab api "projects/$_af_proj/repository/branches/$(_gh_urlenc "$_TALOS_EVIDENCE_BRANCH" /)" >/dev/null 2>&1; then
+          _af_start="$_af_def"
+        else
+          _af_ex="$(glab api "projects/$_af_proj/repository/tree?path=pr-$_af_pr/$_af_sha8&ref=$_TALOS_EVIDENCE_BRANCH&per_page=100" 2>/dev/null | python3 -I -c '
 import json, sys
 try:
-    d = json.load(sys.stdin)
-    print(" ".join(str(d.get("markdown") or "").split()))
+    print("\n".join(i.get("path") or "" for i in json.load(sys.stdin)))
 except Exception:
-    print("")
-' 2>/dev/null)"
-        if [ -z "$_af_md" ]; then
-          # glab's own error is the reason; with none, what the API answered.
+    print("")' 2>/dev/null)" || _af_ex=""
+        fi
+        for _af_f in "$@"; do
+          _af_pairs+=("pr-$_af_pr/$_af_sha8/${_ATT_NAMES[$_af_i]}" "$_af_f")
+          _af_i=$((_af_i + 1))
+        done
+        python3 -I -c '
+import base64, json, sys
+out, branch, start, msg, existing = sys.argv[1:6]
+have = set(existing.split("\n"))
+rest = sys.argv[6:]
+body = {"branch": branch, "commit_message": msg,
+        "actions": [{"action": "update" if path in have else "create", "file_path": path, "encoding": "base64",
+                     "content": base64.b64encode(open(f, "rb").read()).decode("ascii")}
+                    for path, f in zip(rest[::2], rest[1::2])]}
+if start:
+    body["start_branch"] = start
+open(out, "w").write(json.dumps(body))
+' "$_af_body" "$_TALOS_EVIDENCE_BRANCH" "$_af_start" "QA evidence for PR #$_af_pr at $_af_sha8" "$_af_ex" "${_af_pairs[@]}" \
+          || _af_why="could not read the files"
+      fi
+      if [ -z "$_af_why" ]; then
+        : > "$_af_err"
+        if ! glab api --method POST "projects/$_af_proj/repository/commits" --input "$_af_body" \
+          --header 'Content-Type: application/json' >/dev/null 2>"$_af_err"; then
+          # glab's own error is the reason; with none, a plain statement.
           cat "$_af_err" >&2
           _af_why="$(cat "$_af_err")"
-          [ -n "$_af_bound" ] || _af_why="could not stage the file"
-          [ -n "$_af_why" ] || _af_why="$_af_resp"
-          echo "pipeline-vcs: attach-files: could not upload '$_af_name'; listed as not attached" >&2
-          _vcs_shared_attach_miss "$_af_manifest" "$_af_name" "$_af_why"
-        else
-          printf '%s\n' "$_af_md" >> "$_af_manifest"
+          [ -n "$_af_why" ] || _af_why="the commit was refused"
         fi
-      done
+      fi
+      if [ -z "$_af_why" ]; then
+        _af_i=0
+        for _af_f in "$@"; do
+          _af_name="${_ATT_NAMES[$_af_i]}"
+          _af_i=$((_af_i + 1))
+          _vcs_shared_attach_md "$_af_name" "$_af_web/-/raw/$_TALOS_EVIDENCE_BRANCH/pr-$_af_pr/$_af_sha8/$_af_name" >> "$_af_manifest"
+        done
+      else
+        echo "pipeline-vcs: attach-files: could not store the files on $_TALOS_EVIDENCE_BRANCH; listed as not attached" >&2
+        _vcs_shared_attach_miss_all "$_af_manifest" "$_af_why"
+      fi
       rm -f "${_af_body:?}" "${_af_err:?}"
       _vcs_shared_attach_post "$_af_pr" "$_af_sha8" "$_af_manifest" _gl_upc_read _gl_upc_write _gl_current_user
       ;;
@@ -6894,6 +6924,113 @@ _azure_git_base() {
   echo "$base_org/$proj/_apis/git/repositories/$repo"
 }
 ADO_RESOURCE="499b84ac-1321-427f-aa17-267ca6975798"  # Azure DevOps AAD app id (az rest --resource)
+
+# attach-files on azure (#776, #810): the evidence is one commit on the
+# `talos-evidence` branch through the Git REST API. `az rest` reads a --body file as
+# text and would damage a video, so curl sends the calls with an Azure DevOps access
+# token; the token travels in a curl config on stdin, never on argv, and a body is
+# staged in a file (a video is far over the argv limit).
+_AZ_TOK="" _AZ_GB="" _AZ_STAGE="" _AZ_ST="" _AZ_RESP="" _AZ_WHY="" _AZ_OID=""
+
+# _az_ev_req <method> <url> [<body-file>] -- one call. Sets _AZ_ST (the HTTP status,
+# empty when curl got no response) and _AZ_RESP (the body); returns 0 on a 2xx.
+_az_ev_req() {
+  local _r _cfg
+  _cfg="url = \"${2//\\/\\\\}\"
+header = \"Authorization: Bearer $_AZ_TOK\""
+  if [ -n "${3:-}" ]; then
+    _r="$(printf '%s\n' "$_cfg" | curl -sS -w '\n%{http_code}' -X "$1" -K - \
+      -H 'Content-Type: application/json' --data-binary "@$3")" || _r=""
+  else
+    _r="$(printf '%s\n' "$_cfg" | curl -sS -w '\n%{http_code}' -X "$1" -K -)" || _r=""
+  fi
+  _AZ_ST="${_r##*$'\n'}"
+  _AZ_RESP="${_r%$'\n'*}"
+  case "$_AZ_ST" in [0-9][0-9][0-9]) ;; *) _AZ_ST=""; _AZ_RESP="" ;; esac
+  case "$_AZ_ST" in 2??) return 0 ;; *) return 1 ;; esac
+}
+
+# _az_ev_refused -- after a refused _az_ev_req: _AZ_WHY is the provider's message.
+_az_ev_refused() {
+  _AZ_WHY=""
+  [ -z "$_AZ_RESP" ] || _AZ_WHY="$(printf '%s' "$_AZ_RESP" | _gh_field message 2>/dev/null)" || _AZ_WHY=""
+}
+
+# _az_ev_head <branch> -- sets _AZ_OID to the head of that branch, empty when it does
+# not exist. The refs filter is a prefix match, so the name is compared exactly.
+# Returns 1 with _AZ_ST and _AZ_WHY set when the read is refused.
+_az_ev_head() {
+  _AZ_OID=""
+  _az_ev_req GET "$_AZ_GB/refs?filter=heads/$(_gh_urlenc "$1" /)&api-version=7.1" || { _az_ev_refused; return 1; }
+  _AZ_OID="$(printf '%s' "$_AZ_RESP" | python3 -I -c '
+import json, sys
+for r in json.load(sys.stdin).get("value") or []:
+    if r.get("name") == "refs/heads/" + sys.argv[1]:
+        print(r.get("objectId") or "")
+        break' "$1" 2>/dev/null)" || _AZ_OID=""
+}
+
+# _az_ev_store <git-base> <pr> <sha8> <file>... -- commits the files (_ATT_NAMES, in
+# order) to the evidence branch at pr-<pr>/<sha8>/<name> in ONE push, creating the
+# branch from the default branch's head when it is absent. A path already on the
+# branch (a retried round at the same head) goes in as `edit`, a new one as `add`.
+# _AZ_STAGE is a scratch file. Returns 1 with _AZ_ST (empty for a failure that is
+# not an HTTP answer) and _AZ_WHY set when a step is refused.
+_az_ev_store() {
+  local _es_pr="$2" _es_sha8="$3" _es_def _es_bad _es_ex _es_i=0 _es_pairs=() _es_f
+  _AZ_GB="$1"
+  shift 3
+  _AZ_ST=""
+  _az_ev_head "$_TALOS_EVIDENCE_BRANCH" || return 1
+  if [ -z "$_AZ_OID" ]; then
+    _az_ev_req GET "$_AZ_GB?api-version=7.1" || { _az_ev_refused; return 1; }
+    _es_def="$(printf '%s' "$_AZ_RESP" | _gh_field defaultBranch 2>/dev/null)"
+    _es_def="${_es_def#refs/heads/}"
+    [ -n "$_es_def" ] || { _AZ_WHY="could not read the repository's default branch"; return 1; }
+    _az_ev_head "$_es_def" || return 1
+    [ -n "$_AZ_OID" ] || { _AZ_WHY="could not read the head of the default branch '$_es_def' to create $_TALOS_EVIDENCE_BRANCH"; return 1; }
+    python3 -I -c '
+import json, sys
+out, branch, oid = sys.argv[1:4]
+open(out, "w").write(json.dumps([{"name": "refs/heads/" + branch, "oldObjectId": "0" * 40, "newObjectId": oid}]))
+' "$_AZ_STAGE" "$_TALOS_EVIDENCE_BRANCH" "$_AZ_OID" || { _AZ_WHY="could not stage the branch creation"; return 1; }
+    _az_ev_req POST "$_AZ_GB/refs?api-version=7.1" "$_AZ_STAGE" || { _az_ev_refused; return 1; }
+    # A 200 can still carry a refused update.
+    _es_bad="$(printf '%s' "$_AZ_RESP" | python3 -I -c '
+import json, sys
+v = (json.load(sys.stdin).get("value") or [{}])[0]
+if v.get("success") is False:
+    print("x" + str(v.get("customMessage") or ""))' 2>/dev/null)"
+    if [ -n "$_es_bad" ]; then
+      _AZ_ST=""
+      _AZ_WHY="${_es_bad#x}"
+      [ -n "$_AZ_WHY" ] || _AZ_WHY="could not create the $_TALOS_EVIDENCE_BRANCH branch"
+      return 1
+    fi
+  fi
+  _es_ex=""
+  _az_ev_req GET "$_AZ_GB/items?scopePath=/pr-$_es_pr/$_es_sha8&recursionLevel=OneLevel&versionDescriptor.version=$_TALOS_EVIDENCE_BRANCH&versionDescriptor.versionType=branch&api-version=7.1" \
+    && _es_ex="$(printf '%s' "$_AZ_RESP" | python3 -I -c '
+import json, sys
+print("\n".join(i.get("path") or "" for i in json.load(sys.stdin).get("value") or []))' 2>/dev/null)" || _es_ex=""
+  for _es_f in "$@"; do
+    _es_pairs+=("/pr-$_es_pr/$_es_sha8/${_ATT_NAMES[$_es_i]}" "$_es_f")
+    _es_i=$((_es_i + 1))
+  done
+  python3 -I -c '
+import base64, json, sys
+out, branch, old, msg, existing = sys.argv[1:6]
+have = set(existing.split("\n"))
+rest = sys.argv[6:]
+changes = [{"changeType": "edit" if path in have else "add", "item": {"path": path},
+            "newContent": {"content": base64.b64encode(open(f, "rb").read()).decode("ascii"), "contentType": "base64encoded"}}
+           for path, f in zip(rest[::2], rest[1::2])]
+open(out, "w").write(json.dumps({"refUpdates": [{"name": "refs/heads/" + branch, "oldObjectId": old}],
+                                 "commits": [{"comment": msg, "changes": changes}]}))
+' "$_AZ_STAGE" "$_TALOS_EVIDENCE_BRANCH" "$_AZ_OID" "QA evidence for PR #$_es_pr at $_es_sha8" "$_es_ex" "${_es_pairs[@]}" \
+    || { _AZ_WHY="could not read the files"; return 1; }
+  _az_ev_req POST "$_AZ_GB/pushes?api-version=7.1" "$_AZ_STAGE" || { _az_ev_refused; return 1; }
+}
 
 # Convert a markdown string to HTML for Azure DevOps HTML-rendered fields.
 # ADO work-item Description and work-item comments render HTML, NOT markdown, so
@@ -8420,16 +8557,14 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
       _vcs_shared_upsert_pr_comment "${1:-}" "${2:-}" "${3:-}" _az_upc_read _az_upc_write _az_user_login
       ;;
     attach-files)
-      # attach-files <id> <file>... (#776): POST each file to the PR's attachments
-      # endpoint as application/octet-stream and link the full URL the response
-      # returns (a bare filename does not render). `az rest` reads a --body file
-      # as text and would damage an image or a video, so curl sends the bytes with
-      # an Azure DevOps access token; the token travels in a curl config on stdin,
-      # never on argv. The upload name carries the head's 8 characters, so a later
-      # round's file of the same name cannot collide with this one.
-      local _af_pr="${1:-}" _af_sha _af_sha8 _af_i=0 _af_f _af_name _af_gb _af_tok _af_url _af_cfg _af_resp _af_status _af_link _af_manifest _af_why
+      # attach-files <id> <file>... (#776, #810): the files are ONE commit on the
+      # `talos-evidence` branch at pr-<n>/<sha8>/<name> (_az_ev_store: the Git
+      # pushes API through curl and an Azure DevOps access token, since `az rest`
+      # reads a --body file as text and would damage a video). The comment links
+      # each file by its items URL on the branch, so any file type works.
+      local _af_pr="${1:-}" _af_sha _af_sha8 _af_i=0 _af_f _af_name _af_gb _af_tok _af_manifest _af_why
       _az_require_id attach-files "$_af_pr" || exit 1
-      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] az repos pr show --id $_af_pr (head sha); az account get-access-token --resource $ADO_RESOURCE; for each file curl POST .../pullRequests/$_af_pr/attachments/<sha8>-<name>?api-version=7.1-preview.1 (application/octet-stream, body from the file); then upsert-pr-comment's calls for <!-- talos:qa-evidence -->"; return 0; }
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] az repos pr show --id $_af_pr (head sha); az account get-access-token --resource $ADO_RESOURCE; curl GET .../refs?filter=heads/$_TALOS_EVIDENCE_BRANCH, else GET the default branch's ref and POST .../refs; GET .../items?scopePath=/pr-$_af_pr/<sha8>; one curl POST .../pushes with every file at /pr-$_af_pr/<sha8>/<name> (add, or edit for a path already there; body from a file); then upsert-pr-comment's calls for <!-- talos:qa-evidence -->"; return 0; }
       _af_sha="$(az repos pr show --id "$_af_pr" $ORG_ARG --output json 2>/dev/null | python3 -I -c "
 import json, sys
 try:
@@ -8453,6 +8588,9 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
         _af_tok="$(az account get-access-token --resource "$ADO_RESOURCE" --query accessToken --output tsv 2>/dev/null)"
         [ -n "$_af_tok" ] || _af_why="could not get an Azure DevOps access token (az login?)"
       fi
+      if [ -z "$_af_why" ]; then
+        _AZ_STAGE="$(mktemp)" && [ -n "$_AZ_STAGE" ] || _af_why="could not create a temp file"
+      fi
       if [ -n "$_af_why" ]; then
         echo "pipeline-vcs: attach-files: $_af_why; no file attached" >&2
         _vcs_shared_attach_miss_all "$_af_manifest" "$_af_why"
@@ -8460,30 +8598,18 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
         return
       fi
       shift
-      for _af_f in "$@"; do
-        _af_name="${_ATT_NAMES[$_af_i]}"
-        _af_i=$((_af_i + 1))
-        _af_url="$_af_gb/pullRequests/$_af_pr/attachments/$_af_sha8-$_af_name?api-version=7.1-preview.1"
-        _af_cfg="url = \"${_af_url//\\/\\\\}\"
-header = \"Authorization: Bearer $_af_tok\""
-        _af_resp="$(printf '%s\n' "$_af_cfg" | curl -sS -w '\n%{http_code}' -X POST -K - \
-          -H 'Content-Type: application/octet-stream' --data-binary "@$_af_f")" || _af_resp=""
-        _af_status="${_af_resp##*$'\n'}"
-        _af_link=""
-        case "$_af_status" in
-          2[0-9][0-9]) _af_link="$(printf '%s' "${_af_resp%$'\n'*}" | _gh_field url)" ;;
-        esac
-        case "$_af_link" in
-          https://*) _vcs_shared_attach_md "$_af_name" "$_af_link" >> "$_af_manifest" ;;
-          *)
-            echo "pipeline-vcs: attach-files: could not upload '$_af_name' (HTTP ${_af_status:-none}); listed as not attached" >&2
-            case "$_af_status" in
-              [0-9][0-9][0-9]) _af_why="$(printf '%s' "${_af_resp%$'\n'*}" | _gh_field message 2>/dev/null)" ;;
-              *) _af_status=""; _af_why="" ;;
-            esac
-            _vcs_shared_attach_miss "$_af_manifest" "$_af_name" "$_af_why" "$_af_status" ;;
-        esac
-      done
+      _AZ_TOK="$_af_tok"
+      if _az_ev_store "$_af_gb" "$_af_pr" "$_af_sha8" "$@"; then
+        for _af_f in "$@"; do
+          _af_name="${_ATT_NAMES[$_af_i]}"
+          _af_i=$((_af_i + 1))
+          _vcs_shared_attach_md "$_af_name" "$_af_gb/items?path=/pr-$_af_pr/$_af_sha8/$_af_name&versionDescriptor.version=$_TALOS_EVIDENCE_BRANCH&versionDescriptor.versionType=branch"'&$format=octetStream&api-version=7.1' >> "$_af_manifest"
+        done
+      else
+        echo "pipeline-vcs: attach-files: could not store the files on $_TALOS_EVIDENCE_BRANCH (HTTP ${_AZ_ST:-none}); listed as not attached" >&2
+        _vcs_shared_attach_miss_all "$_af_manifest" "$_AZ_WHY" "$_AZ_ST"
+      fi
+      rm -f "${_AZ_STAGE:?}"
       _vcs_shared_attach_post "$_af_pr" "$_af_sha8" "$_af_manifest" _az_upc_read _az_upc_write _az_user_login
       ;;
     mark-needs-owner)

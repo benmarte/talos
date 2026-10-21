@@ -131,11 +131,13 @@ EOF
 export STUB_CURRENT_USER="bot@acme.com" STUB_AZURE_POST_AUTHOR="bot@acme.com"
 export STUB_AZURE_PR_9="{\"pullRequestId\":9,\"lastMergeSourceCommit\":{\"commitId\":\"$SHA\"}}"
 export CURL_ARGV_LOG="$SANDBOX/curl.argv.log"
-AZ="https://dev.azure.com/acme/proj/_apis/git/repositories/widget/pullRequests/9/attachments"
+AZ='https://dev.azure.com/acme/proj/_apis/git/repositories/widget/items?path=/pr-9/01234567'
+AZQ='&versionDescriptor.version=talos-evidence&versionDescriptor.versionType=branch&$format=octetStream&api-version=7.1'
 az_case() {  # <file>...
   STUB_AZURE_STATE_DIR="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-az-811.XXXXXX")" || exit 1
-  export STUB_AZURE_STATE_DIR
-  rm -rf "${UP:?}"/*; : > "$GH_LOG"; : > "$CURL_LOG"; : > "$CURL_ARGV_LOG"
+  STUB_AZURE_GIT_DIR="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-azg-811.XXXXXX")" || exit 1
+  export STUB_AZURE_STATE_DIR STUB_AZURE_GIT_DIR
+  : > "$GH_LOG"; : > "$CURL_LOG"; : > "$CURL_ARGV_LOG"
   OUT="$(bash "$VCS" attach-files 9 "$@" 2>"$SANDBOX/err")"; RC=$?
   COMMENT="$(sed -n 's/^AZ BODY: //p' "$GH_LOG" | sed -n 1p | python3 -I -c '
 import json, sys
@@ -146,16 +148,21 @@ if line.strip():
 }
 az_posts() { count_log "$GH_LOG" '^AZ ARGS: \[rest\] \[--method\] \[post\].*pullRequests/9/threads'; }
 
-STUB_AZURE_UPLOAD_FAIL=b.webm STUB_AZURE_UPLOAD_STATUS=400 STUB_AZURE_UPLOAD_MESSAGE="File too large" az_case "$EV/a.png" "$EV/b.webm" "$EV/c.png"
-assert_eq "0" "$RC" "AC5 azure: a 400 on one of three uploads exits 0"
+az_case "$EV/a.png" "$EV/b.webm" "$EV/c.png"
+assert_eq "0" "$RC" "AC5 azure: the three files, one push, exit 0"
 assert_eq "1" "$(az_posts)" "AC5 azure: one evidence thread is posted"
-assert_contains "$COMMENT" "![a.png]($AZ/01234567-a.png)" "AC5 azure: the first file is attached"
-assert_contains "$COMMENT" "![c.png]($AZ/01234567-c.png)" "AC5 azure: the third file is attached"
-assert_contains "$COMMENT" "- b.webm: not attached (400: File too large)" "AC5 azure: the refused file carries the code and the message"
-assert_not_contains "$COMMENT" "[b.webm](" "AC5 azure: the refused file has no link"
+assert_contains "$COMMENT" "![a.png]($AZ/a.png$AZQ)" "AC5 azure: the first file is attached"
+assert_contains "$COMMENT" "![c.png]($AZ/c.png$AZQ)" "AC5 azure: the third file is attached"
+assert_contains "$COMMENT" "[b.webm]($AZ/b.webm$AZQ)" "AC5 azure: the video is attached"
 
-STUB_AZURE_UPLOAD_FAIL=. STUB_AZURE_UPLOAD_STATUS=401 STUB_AZURE_UPLOAD_MESSAGE="Unauthorized" az_case "$EV/a.png" "$EV/b.webm"
-assert_eq "0" "$RC" "AC6 azure: every upload failing exits 0"
+STUB_AZURE_PUSH_FAIL="400:File too large" az_case "$EV/a.png" "$EV/b.webm" "$EV/c.png"
+assert_eq "0" "$RC" "AC5 azure: a 400 on the push exits 0"
+assert_eq "1" "$(az_posts)" "AC5 azure: a refused push still posts one evidence thread"
+assert_eq "yes" "$(listed_missing "$COMMENT" "400: File too large" a.png b.webm c.png)" "AC5 azure: every file carries the code and the message"
+assert_not_contains "$COMMENT" "[b.webm](" "AC5 azure: a refused file has no link"
+
+STUB_AZURE_PUSH_FAIL="401:Unauthorized" az_case "$EV/a.png" "$EV/b.webm"
+assert_eq "0" "$RC" "AC6 azure: a refused push exits 0"
 assert_eq "1" "$(az_posts)" "AC6 azure: the comment is still posted"
 assert_eq "yes" "$(listed_missing "$COMMENT" "401: Unauthorized" a.png b.webm)" "AC6 azure: each file is listed with its reason"
 
@@ -163,7 +170,7 @@ STUB_AZURE_TOKEN_FAIL=1 az_case "$EV/a.png" "$EV/b.webm"
 assert_eq "0" "$RC" "AC7 azure: no access token exits 0"
 assert_eq "1" "$(az_posts)" "AC7 azure: no access token still posts the comment"
 assert_eq "yes" "$(listed_missing "$COMMENT" "access token" a.png b.webm)" "AC7 azure: no access token lists every file with the reason"
-assert_eq "0" "$(count_log "$CURL_LOG" '/attachments/')" "AC7 azure: no access token uploads nothing"
+assert_eq "0" "$(count_log "$CURL_LOG" '/(pushes|refs)')" "AC7 azure: no access token pushes nothing"
 
 STUB_AZURE_PR_9='{"pullRequestId":9}' az_case "$EV/a.png" "$EV/b.webm"
 assert_eq "0" "$RC" "AC7 azure: an unresolved head exits 0"
@@ -172,7 +179,7 @@ assert_contains "$COMMENT" "### QA evidence for PR #9" "AC7 azure: the heading n
 assert_eq "yes" "$(listed_missing "$COMMENT" "head SHA" a.png b.webm)" "AC7 azure: an unresolved head lists every file with the reason"
 
 LONG="$(printf 'y%.0s' $(seq 1 300))"
-STUB_AZURE_UPLOAD_FAIL=b.webm STUB_AZURE_UPLOAD_STATUS=400 STUB_AZURE_UPLOAD_MESSAGE="$LONG" az_case "$EV/b.webm"
+STUB_AZURE_PUSH_FAIL="400:$LONG" az_case "$EV/b.webm"
 line="$(printf '%s\n' "$COMMENT" | grep -F 'b.webm: not attached (')"
 assert_contains "$line" "400: $(printf 'y%.0s' $(seq 1 120)))" "AC10 azure: a 300-character message is cut to 120"
 
@@ -187,7 +194,7 @@ GL_NOTES="projects/acme%2Fwidget/merge_requests/9/notes"
 gl_case() {  # <file>...
   STUB_GITLAB_STATE_DIR="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-gl-811.XXXXXX")" || exit 1
   export STUB_GITLAB_STATE_DIR
-  rm -rf "${UP:?}"/*; : > "$GH_LOG"
+  : > "$GH_LOG"
   OUT="$(bash "$VCS" attach-files 9 "$@" 2>"$SANDBOX/err")"; RC=$?
   COMMENT="$(grep '^GLAB BODY: ' "$GH_LOG" | sed 's/^GLAB BODY: //' | sed -n 1p | python3 -I -c '
 import json, sys
@@ -197,16 +204,21 @@ if line.strip():
 }
 gl_posts() { count_log "$GH_LOG" "^GLAB api --method POST $GL_NOTES"; }
 
-STUB_GITLAB_UPLOAD_FAIL=b.webm STUB_GITLAB_UPLOAD_MESSAGE="glab: 400 Bad Request: file too large" gl_case "$EV/a.png" "$EV/b.webm" "$EV/c.png"
-assert_eq "0" "$RC" "AC8 gitlab: a failed upload among three exits 0"
+GLRAW='https://gitlab.com/acme/widget/-/raw/talos-evidence/pr-9/01234567'
+gl_case "$EV/a.png" "$EV/b.webm" "$EV/c.png"
+assert_eq "0" "$RC" "AC8 gitlab: the three files, one commit, exit 0"
 assert_eq "1" "$(gl_posts)" "AC8 gitlab: one MR note is posted"
-assert_contains "$COMMENT" '![a.png](/uploads/0123abcd/a.png)' "AC8 gitlab: the first upload is in the note"
-assert_contains "$COMMENT" '![c.png](/uploads/0123abcd/c.png)' "AC8 gitlab: the third upload is in the note"
-assert_contains "$COMMENT" "- b.webm: not attached (glab: 400 Bad Request: file too large)" "AC8 gitlab: the failed file carries the glab error"
-assert_not_contains "$COMMENT" "[b.webm](" "AC8 gitlab: the failed file has no link"
+assert_contains "$COMMENT" "![a.png]($GLRAW/a.png)" "AC8 gitlab: the first file is in the note"
+assert_contains "$COMMENT" "![c.png]($GLRAW/c.png)" "AC8 gitlab: the third file is in the note"
 
-STUB_GITLAB_UPLOAD_FAIL=. STUB_GITLAB_UPLOAD_MESSAGE="glab: 500 Server Error" gl_case "$EV/a.png" "$EV/b.webm"
-assert_eq "0" "$RC" "AC9 gitlab: every upload failing exits 0"
+STUB_GITLAB_COMMIT_FAIL="glab: 400 Bad Request: file too large" gl_case "$EV/a.png" "$EV/b.webm" "$EV/c.png"
+assert_eq "0" "$RC" "AC8 gitlab: a refused commit exits 0"
+assert_eq "1" "$(gl_posts)" "AC8 gitlab: a refused commit still posts one MR note"
+assert_eq "yes" "$(listed_missing "$COMMENT" "glab: 400 Bad Request: file too large" a.png b.webm c.png)" "AC8 gitlab: every file carries the glab error"
+assert_not_contains "$COMMENT" "[b.webm](" "AC8 gitlab: a refused file has no link"
+
+STUB_GITLAB_COMMIT_FAIL="glab: 500 Server Error" gl_case "$EV/a.png" "$EV/b.webm"
+assert_eq "0" "$RC" "AC9 gitlab: a refused commit exits 0"
 assert_eq "1" "$(gl_posts)" "AC9 gitlab: the note is still posted"
 assert_eq "yes" "$(listed_missing "$COMMENT" "glab: 500 Server Error" a.png b.webm)" "AC9 gitlab: each file is listed with its reason"
 
@@ -217,7 +229,7 @@ assert_contains "$COMMENT" "### QA evidence for PR #9" "AC9 gitlab: the heading 
 assert_eq "yes" "$(listed_missing "$COMMENT" "head SHA" a.png b.webm)" "AC9 gitlab: an unresolved head lists every file with the reason"
 
 LONG="$(printf 'z%.0s' $(seq 1 300))"
-STUB_GITLAB_UPLOAD_FAIL=b.webm STUB_GITLAB_UPLOAD_MESSAGE="$LONG" gl_case "$EV/b.webm"
+STUB_GITLAB_COMMIT_FAIL="$LONG" gl_case "$EV/b.webm"
 line="$(printf '%s\n' "$COMMENT" | grep -F 'b.webm: not attached (')"
 assert_contains "$line" "($(printf 'z%.0s' $(seq 1 120)))" "AC10 gitlab: a 300-character glab error is cut to 120"
 

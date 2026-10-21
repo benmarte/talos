@@ -2,10 +2,10 @@
 # test-attach-files-776.sh -- `pipeline-vcs.sh attach-files <pr> <file>...` (#776):
 # upload files and post (or edit) ONE `talos:qa-evidence` comment per PR on
 # azure, gitlab and github. Offline: the az, glab, gh and curl stubs only.
-#   AC7  azure: each file POSTed to the attachments endpoint as
-#        application/octet-stream; the comment uses the full URLs it returned
-#   AC8  gitlab: each file uploaded to /projects/:id/uploads; the MR note is
-#        built from the returned markdown
+#   AC7  azure: every file is one push to the talos-evidence branch (#810); the
+#        comment links the items URL of each file on the branch
+#   AC8  gitlab: every file is one commit on the talos-evidence branch (#810); the
+#        MR note links the -/raw/ URL of each file on the branch
 #   AC9  github: each file committed to talos-evidence at pr-<n>/<sha8>/<name>;
 #        the comment holds the ?raw=true blob links, images inline
 #   AC10 a second attach-files edits the evidence comment; a failed upload is
@@ -33,8 +33,6 @@ ln -s a.png "$EV/link.png"
 export STUB_UPLOAD_DIR="$UP"
 export STUB_GH_FIXTURES=1   # the curl stub answers GitHub from the fixtures too, as it does behind the gh stub
 
-# same_bytes <uploaded-copy> <original> -- the stub received the file byte for byte.
-same_bytes() { [ -f "$1" ] && [ "$(cksum < "$1")" = "$(cksum < "$2")" ]; }
 # count_log <file> <ERE> -- matching lines (0 when none).
 count_log() { local _n; _n="$(grep -cE -- "$2" "$1" || true)"; printf '%s' "${_n:-0}"; }
 
@@ -115,10 +113,26 @@ EOF
 export STUB_CURRENT_USER="bot@acme.com" STUB_AZURE_POST_AUTHOR="bot@acme.com"
 export STUB_AZURE_PR_9="{\"pullRequestId\":9,\"lastMergeSourceCommit\":{\"commitId\":\"$SHA\"}}"
 export CURL_ARGV_LOG="$SANDBOX/curl.argv.log"
+export STUB_AZURE_GIT_LOG="$SANDBOX/az-git.log"
 az_fresh() {
   STUB_AZURE_STATE_DIR="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-az-776.XXXXXX")" || exit 1
-  export STUB_AZURE_STATE_DIR
-  rm -rf "${UP:?}"/*; : > "$GH_LOG"; : > "$CURL_LOG"; : > "$CURL_ARGV_LOG"
+  STUB_AZURE_GIT_DIR="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-azg-776.XXXXXX")" || exit 1
+  export STUB_AZURE_STATE_DIR STUB_AZURE_GIT_DIR
+  : > "$GH_LOG"; : > "$CURL_LOG"; : > "$CURL_ARGV_LOG"; : > "$STUB_AZURE_GIT_LOG"
+}
+# pushed_bytes <log> <file>... -- the push carries each file at /pr-9/01234567/<name>, byte for byte.
+pushed_bytes() {
+  python3 -I - "$@" <<'TALOS_PY_pb776Hq3nVd'
+import base64, json, sys
+log, files = sys.argv[1], sys.argv[2:]
+got = {}
+for line in open(log):
+    if line.startswith("PUSH\t"):
+        for c in json.loads(line.split("\t", 1)[1])["commits"][0]["changes"]:
+            got[c["item"]["path"]] = base64.b64decode(c["newContent"]["content"])
+ok = all(got.get("/pr-9/01234567/" + f.rsplit("/", 1)[1]) == open(f, "rb").read() for f in files)
+print("yes" if ok else "no")
+TALOS_PY_pb776Hq3nVd
 }
 az_content() {  # <n> the n-th thread body's comment text
   sed -n 's/^AZ BODY: //p' "$GH_LOG" | sed -n "${1}p" | python3 -I -c '
@@ -134,20 +148,17 @@ az_patches() { count_log "$GH_LOG" '^AZ ARGS: \[rest\] \[--method\] \[patch\].*p
 az_fresh
 out="$(bash "$VCS" attach-files 9 "$EV/a.png" "$EV/b.webm" 2>"$SANDBOX/err")"; rc=$?
 assert_eq "0" "$rc" "AC7 azure attach-files exits 0"
-assert_eq "1" "$(count_log "$CURL_LOG" '/pullRequests/9/attachments/01234567-a\.png\?api-version=7\.1-preview\.1')" "AC7 a.png is POSTed to the attachments endpoint (named by the head's 8 characters)"
-assert_eq "1" "$(count_log "$CURL_LOG" '/pullRequests/9/attachments/01234567-b\.webm\?api-version=7\.1-preview\.1')" "AC7 b.webm is POSTed to the attachments endpoint (named by the head's 8 characters)"
-assert_eq "2" "$(count_log "$CURL_ARGV_LOG" 'Content-Type: application/octet-stream')" "AC7 each upload is application/octet-stream"
+AZITEMS='https://dev.azure.com/acme/proj/_apis/git/repositories/widget/items?path=/pr-9/01234567'
+AZQ='&versionDescriptor.version=talos-evidence&versionDescriptor.versionType=branch&$format=octetStream&api-version=7.1'
+assert_eq "1" "$(count_log "$STUB_AZURE_GIT_LOG" '^PUSH')" "AC7 both files are one push to the evidence branch"
+assert_eq "0" "$(count_log "$CURL_LOG" '/attachments/')" "AC7 the PR attachments endpoint is not used"
 assert_eq "0" "$(count_log "$CURL_ARGV_LOG" 'stub-ado-token')" "AC7 the token is not on the curl command line"
-if same_bytes "$UP/01234567-a.png" "$EV/a.png" && same_bytes "$UP/01234567-b.webm" "$EV/b.webm"; then
-  pass "AC7 the uploaded bytes are the files' bytes"
-else
-  fail "AC7 the uploaded bytes are the files' bytes"
-fi
+assert_eq "yes" "$(pushed_bytes "$STUB_AZURE_GIT_LOG" "$EV/a.png" "$EV/b.webm")" "AC7 the pushed bytes are the files' bytes"
 assert_eq "1" "$(az_posts)" "AC7 exactly one comment thread is posted"
 C="$(az_content 1)"
 assert_contains "$C" 'QA evidence for 01234567' "AC7 the heading names the head sha"
-assert_contains "$C" '![a.png](https://dev.azure.com/acme/proj/_apis/git/repositories/widget/pullRequests/9/attachments/01234567-a.png)' "AC7 the image is inline with the full returned URL"
-assert_contains "$C" '[b.webm](https://dev.azure.com/acme/proj/_apis/git/repositories/widget/pullRequests/9/attachments/01234567-b.webm)' "AC7 the video is a link with the full returned URL"
+assert_contains "$C" "![a.png]($AZITEMS/a.png$AZQ)" "AC7 the image is inline with the items URL on the branch"
+assert_contains "$C" "[b.webm]($AZITEMS/b.webm$AZQ)" "AC7 the video is a link with the items URL on the branch"
 assert_not_contains "$C" '](a.png)' "AC7 no bare filename is used as a link target"
 assert_eq "$MARK" "$(printf '%s' "$C" | tail -n1)" "AC7 the comment ends with the talos:qa-evidence marker"
 
@@ -157,10 +168,10 @@ assert_eq "1" "$(az_posts)" "AC10 azure: a second attach-files posts no second t
 assert_eq "1" "$(az_patches)" "AC10 azure: a second attach-files edits the evidence comment"
 
 az_fresh
-out="$(STUB_AZURE_UPLOAD_FAIL=b.webm bash "$VCS" attach-files 9 "$EV/a.png" "$EV/b.webm" 2>"$SANDBOX/err")"; rc=$?
-assert_eq "0" "$rc" "AC10 azure: a failed upload still exits 0"
-assert_eq "1" "$(az_posts)" "AC10 azure: a failed upload still posts the comment"
-assert_contains "$(az_content 1)" 'b.webm: not attached (500: Server Error)' "AC10 azure: the failed file is listed as not attached with its reason"
+out="$(STUB_AZURE_PUSH_FAIL='500:Server Error' bash "$VCS" attach-files 9 "$EV/a.png" "$EV/b.webm" 2>"$SANDBOX/err")"; rc=$?
+assert_eq "0" "$rc" "AC10 azure: a refused push still exits 0"
+assert_eq "1" "$(az_posts)" "AC10 azure: a refused push still posts the comment"
+assert_contains "$(az_content 1)" 'b.webm: not attached (500: Server Error)' "AC10 azure: the refused file is listed as not attached with its reason"
 
 # ── AC8 + AC10 (gitlab) ──────────────────────────────────────────────────────
 git remote set-url origin git@gitlab.com:acme/widget.git
@@ -173,7 +184,21 @@ GL_NOTES="projects/acme%2Fwidget/merge_requests/9/notes"
 gl_fresh() {
   STUB_GITLAB_STATE_DIR="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-gl-776.XXXXXX")" || exit 1
   export STUB_GITLAB_STATE_DIR
-  rm -rf "${UP:?}"/*; : > "$GH_LOG"
+  : > "$GH_LOG"
+}
+# committed_bytes <log> <file>... -- the commit carries each file at pr-9/01234567/<name>, byte for byte.
+committed_bytes() {
+  python3 -I - "$@" <<'TALOS_PY_cb776Wp5jTe'
+import base64, json, sys
+log, files = sys.argv[1], sys.argv[2:]
+got = {}
+for line in open(log):
+    if line.startswith("GLAB COMMIT: "):
+        for a in json.loads(line[len("GLAB COMMIT: "):])["actions"]:
+            got[a["file_path"]] = base64.b64decode(a["content"])
+ok = all(got.get("pr-9/01234567/" + f.rsplit("/", 1)[1]) == open(f, "rb").read() for f in files)
+print("yes" if ok else "no")
+TALOS_PY_cb776Wp5jTe
 }
 gl_bodies() {  # the "body" of each logged note write, one per line (newlines as \n)
   grep '^GLAB BODY: ' "$GH_LOG" | sed 's/^GLAB BODY: //' | python3 -I -c '
@@ -185,18 +210,14 @@ for l in sys.stdin:
 gl_fresh
 out="$(bash "$VCS" attach-files 9 "$EV/a.png" "$EV/b.webm" 2>"$SANDBOX/err")"; rc=$?
 assert_eq "0" "$rc" "AC8 gitlab attach-files exits 0"
-assert_eq "1" "$(count_log "$GH_LOG" '^GLAB UPLOAD: a\.png [0-9]+ multipart/form-data; boundary=')" "AC8 a.png is uploaded as multipart/form-data"
-assert_eq "1" "$(count_log "$GH_LOG" '^GLAB UPLOAD: b\.webm [0-9]+ multipart/form-data; boundary=')" "AC8 b.webm is uploaded as multipart/form-data"
-assert_eq "2" "$(count_log "$GH_LOG" '^GLAB api --method POST projects/acme%2Fwidget/uploads')" "AC8 two uploads go to /projects/:id/uploads"
-if same_bytes "$UP/a.png" "$EV/a.png" && same_bytes "$UP/b.webm" "$EV/b.webm"; then
-  pass "AC8 the uploaded bytes are the files' bytes"
-else
-  fail "AC8 the uploaded bytes are the files' bytes"
-fi
+assert_eq "1" "$(count_log "$GH_LOG" '^GLAB api --method POST projects/acme%2Fwidget/repository/commits')" "AC8 both files are one commit on the evidence branch"
+assert_eq "0" "$(count_log "$GH_LOG" '^GLAB api --method POST projects/acme%2Fwidget/uploads')" "AC8 the project uploads endpoint is not used"
+assert_eq "yes" "$(committed_bytes "$GH_LOG" "$EV/a.png" "$EV/b.webm")" "AC8 the committed bytes are the files' bytes"
 assert_eq "1" "$(count_log "$GH_LOG" "^GLAB api --method POST $GL_NOTES")" "AC8 exactly one MR note is posted"
 B="$(gl_bodies)"
-assert_contains "$B" '![a.png](/uploads/0123abcd/a.png)' "AC8 the note uses the markdown the upload returned (image)"
-assert_contains "$B" '[b.webm](/uploads/0123abcd/b.webm)' "AC8 the note uses the markdown the upload returned (video)"
+GLRAW='https://gitlab.com/acme/widget/-/raw/talos-evidence/pr-9/01234567'
+assert_contains "$B" "![a.png]($GLRAW/a.png)" "AC8 the note links the -/raw/ URL on the branch (image)"
+assert_contains "$B" "[b.webm]($GLRAW/b.webm)" "AC8 the note links the -/raw/ URL on the branch (video)"
 assert_not_contains "$B" '![b.webm]' "AC8 the video is not an inline image"
 assert_contains "$B" "QA evidence for 01234567" "AC8 the heading names the head sha"
 assert_contains "$B" "\\n\\n$MARK" "AC8 the note ends with the talos:qa-evidence marker"
@@ -207,10 +228,10 @@ assert_eq "1" "$(count_log "$GH_LOG" "^GLAB api --method POST $GL_NOTES")" "AC10
 assert_eq "1" "$(count_log "$GH_LOG" "^GLAB api --method PUT $GL_NOTES/")" "AC10 gitlab: a second attach-files edits the evidence note"
 
 gl_fresh
-out="$(STUB_GITLAB_UPLOAD_FAIL=b.webm bash "$VCS" attach-files 9 "$EV/a.png" "$EV/b.webm" 2>"$SANDBOX/err")"; rc=$?
-assert_eq "0" "$rc" "AC10 gitlab: a failed upload still exits 0"
-assert_eq "1" "$(count_log "$GH_LOG" "^GLAB api --method POST $GL_NOTES")" "AC10 gitlab: a failed upload still posts the note"
-assert_contains "$(gl_bodies)" 'b.webm: not attached (ERROR: 500 Internal Server Error)' "AC10 gitlab: the failed file is listed as not attached with the glab error"
+out="$(STUB_GITLAB_COMMIT_FAIL='ERROR: 500 Internal Server Error' bash "$VCS" attach-files 9 "$EV/a.png" "$EV/b.webm" 2>"$SANDBOX/err")"; rc=$?
+assert_eq "0" "$rc" "AC10 gitlab: a refused commit still exits 0"
+assert_eq "1" "$(count_log "$GH_LOG" "^GLAB api --method POST $GL_NOTES")" "AC10 gitlab: a refused commit still posts the note"
+assert_contains "$(gl_bodies)" 'b.webm: not attached (ERROR: 500 Internal Server Error)' "AC10 gitlab: the refused file is listed as not attached with the glab error"
 
 # ── AC11: refused before any network call ────────────────────────────────────
 no_calls() {  # <label> <args...>: exit 1, and not one request or CLI call

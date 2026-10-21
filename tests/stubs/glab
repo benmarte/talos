@@ -287,6 +287,70 @@ print(json.dumps(d))
       printf '[{"iid":7,"title":"fix: guard","state":"opened","source_branch":"fix/issue-42-guard"}]\n'
     fi
     exit 0 ;;
+  "api projects/"*"/repository/branches/"*)
+    # attach-files on gitlab (#810): the evidence branch exists when
+    # $STUB_GITLAB_STATE_DIR/ev_branch does; `ev_files` lists its paths, one per line.
+    if [ -n "${STUB_GITLAB_STATE_DIR:-}" ] && [ -f "$STUB_GITLAB_STATE_DIR/ev_branch" ]; then
+      printf '{"name":"talos-evidence","commit":{"id":"%s"}}\n' "$(cat "$STUB_GITLAB_STATE_DIR/ev_branch")"
+      exit 0
+    fi
+    echo "ERROR: 404 Branch Not Found" >&2
+    exit 1 ;;
+  "api projects/"*"/repository/tree?"*)
+    # The files under ?path= on the evidence branch, as the tree API lists them.
+    [ -n "${STUB_GITLAB_STATE_DIR:-}" ] && [ -f "$STUB_GITLAB_STATE_DIR/ev_files" ] || { printf '[]\n'; exit 0; }
+    _tp="${args#*path=}"; _tp="${_tp%%&*}"
+    DIR_PATH="$_tp" FILES="$STUB_GITLAB_STATE_DIR/ev_files" python3 -I -c '
+import json, os
+d = os.environ["DIR_PATH"].rstrip("/") + "/"
+print(json.dumps([{"name": f[len(d):], "type": "blob", "path": f} for f in open(os.environ["FILES"]).read().split() if f.startswith(d)]))
+'
+    exit 0 ;;
+  "api --method POST projects/"*"/repository/commits"*)
+    # attach-files on gitlab (#810): the --input file is the commit's JSON. It is
+    # logged to GH_LOG as `GLAB COMMIT: <json>`; with STUB_GITLAB_STATE_DIR set it is
+    # applied to the evidence branch: `start_branch` is refused for a branch that
+    # exists and required for one that does not, `create` of an existing path and
+    # `update` of a missing one are refused, as GitLab does.
+    # STUB_GITLAB_COMMIT_FAIL=<text> refuses every commit with that error.
+    _in=""; _p=""
+    for _a in "$@"; do
+      [ "$_p" = "--input" ] && _in="$_a"
+      _p="$_a"
+    done
+    [ -f "$_in" ] || { echo "ERROR: no --input" >&2; exit 1; }
+    [ -n "${GH_LOG:-}" ] && { printf 'GLAB COMMIT: '; cat "$_in"; printf '\n'; } >> "$GH_LOG"
+    if [ -n "${STUB_GITLAB_COMMIT_FAIL:-}" ] || [ "${STUB_GITLAB_API_FAIL:-}" = "1" ]; then
+      echo "${STUB_GITLAB_COMMIT_FAIL:-ERROR: 500 Internal Server Error}" >&2
+      exit 1
+    fi
+    [ -n "${STUB_GITLAB_STATE_DIR:-}" ] || { printf '{"id":"cccc"}\n'; exit 0; }
+    IN="$_in" DIR="$STUB_GITLAB_STATE_DIR" python3 -I -c '
+import json, os, sys
+d = json.load(open(os.environ["IN"]))
+bf, ff = os.path.join(os.environ["DIR"], "ev_branch"), os.path.join(os.environ["DIR"], "ev_files")
+exists = os.path.exists(bf)
+files = open(ff).read().split() if os.path.exists(ff) else []
+def refuse(msg):
+    sys.stderr.write("ERROR: 400 Bad Request: " + msg + "\n")
+    sys.exit(1)
+if exists and d.get("start_branch"):
+    refuse("A branch called talos-evidence already exists")
+if not exists and not d.get("start_branch"):
+    refuse("You can only create or edit files when you are on a branch")
+for a in d["actions"]:
+    if a["encoding"] != "base64":
+        refuse("encoding must be base64")
+    if a["action"] == "create" and a["file_path"] in files:
+        refuse("A file with this name already exists")
+    if a["action"] == "update" and a["file_path"] not in files:
+        refuse("A file with this name doesnt exist")
+files += [a["file_path"] for a in d["actions"] if a["action"] == "create"]
+open(ff, "w").write("\n".join(files) + "\n")
+open(bf, "w").write("cccc")
+print(json.dumps({"id": "cccc"}))
+'
+    exit $? ;;
   "api --method POST projects/"*"/uploads"*)
     # attach-files on gitlab (#776): --input is the multipart body of one file
     # (--header carries its Content-Type). The call is logged to GH_LOG as
@@ -411,6 +475,24 @@ open(os.environ["F"], "w").write("".join(json.dumps(r) + "\n" for r in rows))
       *"/diffs"*) [ -n "${STUB_GITLAB_MR_DIFFS:-}" ] && printf '%s\n' "$STUB_GITLAB_MR_DIFFS" ;;
       *"/retry"*) ;;
       *)          [ -n "${STUB_GITLAB_MR_API:-}" ] && printf '%s\n' "$STUB_GITLAB_MR_API" ;;
+    esac
+    exit 0 ;;
+  "api projects/"*)
+    # The project itself (#810, attach-files): `api projects/<id>` names the default
+    # branch and the web URL. STUB_GITLAB_PROJECT is the raw answer,
+    # STUB_GITLAB_PROJECT_FAIL=1 fails it. Any deeper path stays a silent no-op.
+    case "${args#api projects/}" in
+      */*) ;;
+      *)
+        if [ "${STUB_GITLAB_PROJECT_FAIL:-}" = "1" ]; then
+          echo "ERROR: 404 Project Not Found" >&2
+          exit 1
+        fi
+        if [ -n "${STUB_GITLAB_PROJECT:-}" ]; then
+          printf '%s\n' "$STUB_GITLAB_PROJECT"
+        else
+          printf '{"default_branch":"main","web_url":"https://gitlab.com/acme/widget"}\n'
+        fi ;;
     esac
     exit 0 ;;
   "api user"*)
