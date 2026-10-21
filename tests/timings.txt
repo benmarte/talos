@@ -14,6 +14,7 @@
 4 test-assignee-trim.sh
 27 test-assignee-verbs.sh
 20 test-attach-files-776.sh
+25 test-attach-nonfatal-811.sh
 56 test-attempt-counting.sh
 16 test-azure-approval-verbs.sh
 17 test-azure-attempt-verbs.sh
