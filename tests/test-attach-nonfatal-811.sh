@@ -15,8 +15,9 @@
 #   AC8  gitlab: success / failed upload / success
 #   AC9  gitlab: every upload fails, or the head SHA is unresolved
 #   AC10 a reason is one line, cut at 120 characters and cannot start an image
+#   AC11 bad input is refused before any call; only a failed comment write exits non-zero
 #   AC12 qa-run with attach-files failing: the verdict line and its exit code stand
-# (AC11 and AC13 are covered by tests/test-attach-files-776.sh.)
+# (AC13 is prose.)
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
@@ -219,6 +220,39 @@ LONG="$(printf 'z%.0s' $(seq 1 300))"
 STUB_GITLAB_UPLOAD_FAIL=b.webm STUB_GITLAB_UPLOAD_MESSAGE="$LONG" gl_case "$EV/b.webm"
 line="$(printf '%s\n' "$COMMENT" | grep -F 'b.webm: not attached (')"
 assert_contains "$line" "($(printf 'z%.0s' $(seq 1 120)))" "AC10 gitlab: a 300-character glab error is cut to 120"
+
+# ── AC11: only a failed comment write is non-zero; bad input is refused before any call ──
+ln -s a.png "$EV/link.png"
+no_calls() {  # <label> <args...>: exit 1, and not one request or CLI call
+  local _l="$1"; shift
+  : > "$GH_LOG"; : > "$CURL_LOG"
+  OUT="$(bash "$VCS" attach-files "$@" 2>&1)"; RC=$?
+  assert_eq "1" "$RC" "AC11 $_l: exit 1"
+  assert_eq "0" "$(wc -c < "$GH_LOG" | tr -d ' ')" "AC11 $_l: no gh/glab/az call"
+  assert_eq "0" "$(wc -c < "$CURL_LOG" | tr -d ' ')" "AC11 $_l: no curl call"
+}
+for P in azure gitlab github; do
+  case "$P" in
+    azure) printf '%s\n' '{"vcs": {"provider": "azure", "repo": "widget", "azure": {"org_url": "https://dev.azure.com/acme", "project": "proj"}}}' > talos.pipeline.json ;;
+    gitlab) printf '%s\n' '{"vcs": {"provider": "gitlab", "repo": "acme/widget"}}' > talos.pipeline.json ;;
+    github) github_leg gh ;;
+  esac
+  no_calls "$P a symlink" 9 "$EV/link.png"
+  no_calls "$P a missing file" 9 "$EV/nope.png"
+  no_calls "$P a non-numeric PR" x9 "$EV/a.png"
+done
+printf '%s\n' '{"vcs": {"provider": "file"}}' > talos.pipeline.json
+OUT="$(bash "$VCS" attach-files 9 "$EV/a.png" 2>&1)"; RC=$?
+assert_eq "2" "$RC" "AC11 the file provider exits 2"
+assert_contains "$OUT" "not implemented for provider 'file'" "AC11 the file provider says not implemented"
+
+# the comment write itself failing is the one non-zero exit
+printf '%s\n' '{"vcs": {"provider": "gitlab", "repo": "acme/widget"}}' > talos.pipeline.json
+STUB_GITLAB_NOTE_WRITE_FAIL=1 gl_case "$EV/a.png"
+assert_eq "1" "$RC" "AC11 gitlab: a failed note write exits 1"
+printf '%s\n' '{"vcs": {"provider": "azure", "repo": "widget", "azure": {"org_url": "https://dev.azure.com/acme", "project": "proj"}}}' > talos.pipeline.json
+STUB_AZURE_POST_FAIL=1 az_case "$EV/a.png"
+assert_eq "1" "$RC" "AC11 azure: a failed thread write exits 1"
 
 # ── AC12: qa-run keeps its verdict and exit code whatever attach-files does ──
 BASE_DIR="$SANDBOX/repo"
