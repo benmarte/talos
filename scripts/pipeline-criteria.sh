@@ -744,7 +744,8 @@ _spec_usable() {
   n="$(printf '%s\n' "$table" | awk '$2 == "test" || $2 == "same"' | wc -l | tr -d ' ')"
   [ "$found" -eq 1 ] || [ "$n" -eq 0 ] || { spec_why="$n test criteria and no Tests: line"; return 1; }
   # #813: after the four faults above, so their text and precedence hold.
-  suite_ids="$(printf '%s\n' "$table" | python3 -I -c "$_SUITE_PY" "$spec")" || suite_ids=""
+  suite_ids="$(printf '%s\n' "$table" | python3 -I -c "$_SUITE_PY" "$spec")" \
+    || { suite_ids=""; spec_why="suite check failed"; return 1; }
   if [ -n "$suite_ids" ]; then
     n="$(printf '%s\n' "$suite_ids" | wc -l | tr -d ' ')"
     spec_why="$n criteria describe the test suite or the diff, not behaviour"; return 1
