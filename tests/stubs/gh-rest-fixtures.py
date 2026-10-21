@@ -182,6 +182,8 @@ repo, rest = m.group(1), m.group(2) or ""
 
 # ── reads ────────────────────────────────────────────────────────────────────
 if method == "GET":
+    if rest == "" and E("STUB_EVIDENCE_FAIL") == "repo":   # attach-files (#811): the repository read fails
+        reply(500, {"message": "Server Error"})
     if rest == "":
         reply(200, {"full_name": repo, "default_branch": "main", "owner": {"login": repo.split("/")[0]},
                     "html_url": "https://github.com/" + repo})
@@ -190,6 +192,8 @@ if method == "GET":
     # payload is <dir>/files/<path with / as __>).
     EVID = E("STUB_EVIDENCE_DIR")
     mm = re.fullmatch(r"/git/ref/heads/(.+)", rest)
+    if mm and EVID and E("STUB_EVIDENCE_FAIL") == "head" and mm.group(1) == "main":   # (#811) the default branch's head read fails
+        reply(500, {"message": "Server Error"})
     if mm and EVID:
         if mm.group(1) == "main" or (mm.group(1) == "talos-evidence" and os.path.exists(os.path.join(EVID, "branch"))):
             reply(200, {"ref": "refs/heads/" + mm.group(1), "object": {"sha": "m" * 40, "type": "commit"}})
@@ -286,13 +290,16 @@ if method == "POST" and mm:
     reply(201, {"id": int(cid), "body": body.get("body", ""),
                 "html_url": "https://github.com/%s/issues/%s#issuecomment-%s" % (repo, mm.group(1), cid)})
 EVID = E("STUB_EVIDENCE_DIR")
+if method == "POST" and rest == "/git/refs" and EVID and E("STUB_EVIDENCE_FAIL") == "branch":   # (#811) the branch cannot be created
+    reply(422, {"message": "Reference update failed"})
 if method == "POST" and rest == "/git/refs" and EVID:
     open(os.path.join(EVID, "branch"), "w").write(json.dumps(body))
     reply(201, {"ref": body.get("ref", ""), "object": {"sha": body.get("sha", "")}})
 mm = re.fullmatch(r"/contents/(.+)", rest)
 if method == "PUT" and mm and EVID:
     if E("STUB_EVIDENCE_PUT_FAIL") and E("STUB_EVIDENCE_PUT_FAIL") in mm.group(1):
-        reply(500, {"message": "Server Error"})
+        # STUB_EVIDENCE_PUT_STATUS / _MESSAGE choose the refusal (#811); 500 "Server Error" by default.
+        reply(int(E("STUB_EVIDENCE_PUT_STATUS", "500")), {"message": E("STUB_EVIDENCE_PUT_MESSAGE", "Server Error")})
     os.makedirs(os.path.join(EVID, "files"), exist_ok=True)
     open(os.path.join(EVID, "files", mm.group(1).replace("/", "__")), "w").write(json.dumps(body))
     reply(201, {"content": {"path": mm.group(1), "sha": "f" * 40}})
