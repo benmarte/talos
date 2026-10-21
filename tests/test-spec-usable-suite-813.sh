@@ -4,6 +4,7 @@
 #   AC1  suite wording in a (same) criterion is refused     AC5  the four suite/diff wordings
 #   AC2  the same text marked (prose: ...) is ok            AC6  qa-run ends BLOCKED spec, runs no test
 #   AC3  behavioural wording still passes                   AC7  the existing faults keep text and precedence
+#   AC9  a crashing suite helper is refused, not passed
 #   AC4  a criterion about the diff is refused              AC8  agents/pm.md carries the rule and example
 set -u
 . "$(dirname "$0")/helpers.sh"
@@ -107,6 +108,20 @@ assert_eq "spec-usable: BLOCKED spec: 1 test criteria and no Tests: line" "$OUT"
 spec 'no checklist here'
 usable
 assert_eq "spec-usable: BLOCKED spec: no criteria checklist" "$OUT" "AC7 no criteria checklist keeps its text"
+
+# ── AC9 a crashing suite helper fails closed ─────────────────────────────────
+REAL_PY="$(command -v python3)"
+mkdir -p "$BASE_DIR/.git/shim"
+cat > "$BASE_DIR/.git/shim/python3" <<TALOS_Ek4Qw8ZmP2vN
+#!/usr/bin/env bash
+case "\$3" in *own_words*) echo "helper crashed" >&2; exit 1 ;; esac
+exec "$REAL_PY" "\$@"
+TALOS_Ek4Qw8ZmP2vN
+chmod +x "$BASE_DIR/.git/shim/python3"
+spec '- [ ] AC1 greet prints hello (test)' '' "$TESTS"
+OUT="$(PATH="$BASE_DIR/.git/shim:$PATH" bash scripts/pipeline-criteria.sh spec-usable 7 2>&1)"; RC=$?
+assert_eq "4" "$RC" "AC9 a crashing suite helper exits 4"
+assert_contains "$OUT" "spec-usable: BLOCKED spec: suite check failed" "AC9 the BLOCKED spec line names the failed suite check"
 
 # ── AC8 the PM prompt ────────────────────────────────────────────────────────
 PM="$(cat "$TALOS_ROOT/agents/pm.md")"
