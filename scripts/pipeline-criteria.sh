@@ -815,12 +815,22 @@ _QA_MOVED=0
 # Where the invoking checkout stood before the detached fallback of step 3 (a
 # branch name, or a SHA when it started detached); _qa_restore_home puts it back.
 _QA_HOME=""
+# "; tracked files left modified: <paths>" when the red run left any, else nothing.
+_qa_left_modified() {
+  local files
+  files="$(git status --porcelain --untracked-files=no 2>/dev/null | cut -c4- | tr '\n' ' ' | tr -cd '[:print:]')"
+  [ -z "${files// /}" ] || printf '; tracked files left modified: %s' "${files% }"
+}
+# HEAD is detached at the red commit here, and the head run was already checked
+# clean, so a tracked change is a run artefact (a test run that chmod'd a stub,
+# #821): drop it, or git refuses to leave a commit whose version of it differs.
 _qa_restore() {
   [ "$_QA_MOVED" -eq 1 ] || return 0
+  git reset -q --hard HEAD >/dev/null 2>&1
   if git checkout -q "$_QA_ORIG" >/dev/null 2>&1; then
     _QA_MOVED=0
   else
-    printf 'qa-run: WARNING: could not return to %s; run: git checkout %s\n' "$_QA_ORIG" "$_QA_ORIG" >&2
+    printf 'qa-run: WARNING: could not return to %s; run: git checkout %s%s\n' "$_QA_ORIG" "$_QA_ORIG" "$(_qa_left_modified)" >&2
     return 1
   fi
 }
@@ -832,7 +842,7 @@ _qa_restore_home() {
   if git checkout -q "$_QA_HOME" -- >/dev/null 2>&1; then
     _QA_HOME=""
   else
-    printf 'qa-run: WARNING: could not return to %s; run: git checkout %s\n' "$_QA_HOME" "$_QA_HOME" >&2
+    printf 'qa-run: WARNING: could not return to %s; run: git checkout %s%s\n' "$_QA_HOME" "$_QA_HOME" "$(_qa_left_modified)" >&2
     return 1
   fi
 }
@@ -1053,7 +1063,7 @@ _qa_ready() {
 _qa_env_blocked() {
   local etail
   _qa_restore_frozen
-  _qa_restore || { _qa_fail "could not return to $_QA_ORIG after the environment failure"; return $?; }
+  _qa_restore || { _qa_fail "could not return to $_QA_ORIG after the environment failure$(_qa_left_modified)"; return $?; }
   etail="$(tail -n 30 "$tmp/ready.out" 2>/dev/null | tr -d '\000-\010\013-\037\177' | cut -c1-200 | sed 's/^/  /')"
   _qa_keep_raw
   printf 'qa-run: verdict BLOCKED environment: %s\n' "$_QA_ENV_FAIL"
@@ -1483,7 +1493,7 @@ EOF
         _QA_MOVED=1
         _qa_exec "$tmp/red.out" "${at_red[@]}"
         [ -z "$_QA_ENV_FAIL" ] || { _qa_env_blocked; return $?; }
-        _qa_restore || { _qa_fail "could not return to $_QA_ORIG after the red run"; return $?; }
+        _qa_restore || { _qa_fail "could not return to $_QA_ORIG after the red run$(_qa_left_modified)"; return $?; }
         # The frozen run (#714): the red commit's version of each Tests file the
         # PR changed since, against the head code. The head versions go back on
         # every path out (_qa_exit covers an interrupt).
