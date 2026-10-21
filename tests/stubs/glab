@@ -294,7 +294,8 @@ print(json.dumps(d))
     # bytes are copied to <dir>/<name>. The answer carries the markdown GitLab
     # builds: an image link for an image, a plain link otherwise.
     # STUB_GITLAB_UPLOAD_FAIL=<text> fails an upload whose name contains <text>;
-    # STUB_GITLAB_API_FAIL=1 fails every one.
+    # STUB_GITLAB_API_FAIL=1 fails every one. STUB_GITLAB_UPLOAD_MESSAGE is the
+    # error text a failed upload prints on stderr (#811).
     _in=""; _ct=""; _p=""
     for _a in "$@"; do
       [ "$_p" = "--input" ] && _in="$_a"
@@ -315,7 +316,7 @@ print(name, len(body))
 ')"
     _un="${_up% *}"
     if [ "${STUB_GITLAB_API_FAIL:-}" = "1" ] || { [ -n "${STUB_GITLAB_UPLOAD_FAIL:-}" ] && [[ "$_un" == *"$STUB_GITLAB_UPLOAD_FAIL"* ]]; }; then
-      echo "ERROR: 500 Internal Server Error" >&2
+      echo "${STUB_GITLAB_UPLOAD_MESSAGE:-ERROR: 500 Internal Server Error}" >&2
       exit 1
     fi
     [ -n "${GH_LOG:-}" ] && printf 'GLAB UPLOAD: %s %s\n' "$_up" "$_ct" >> "$GH_LOG"

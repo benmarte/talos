@@ -66,7 +66,8 @@
 #     payload field and, with STUB_UPLOAD_DIR set, copied to <dir>/<name>. A POST
 #     to .../pullRequests/<id>/attachments/<name> answers 201 with
 #     {"id","displayName","url"}; STUB_AZURE_UPLOAD_FAIL=<text> fails (500) an
-#     upload whose name contains <text>.
+#     upload whose name contains <text> (STUB_AZURE_UPLOAD_STATUS and
+#     STUB_AZURE_UPLOAD_MESSAGE pick the status and the "message" of that refusal, #811).
 
 # One argv element over the Linux limit: refuse before doing anything else.
 _argv_max="${STUB_CURL_ARGV_MAX:-131072}"
@@ -161,8 +162,9 @@ elif [[ "$url" =~ /pullRequests/([0-9]+)/attachments/([^/?]+) ]]; then
   # attach-files on azure (#776): the body of the upload is the file itself.
   _at_name="${BASH_REMATCH[2]}"
   if [ -n "${STUB_AZURE_UPLOAD_FAIL:-}" ] && [[ "$_at_name" == *"$STUB_AZURE_UPLOAD_FAIL"* ]]; then
-    http_status=500
-    resp='{"message":"Server Error"}'
+    # STUB_AZURE_UPLOAD_STATUS / _MESSAGE choose the refusal (#811); 500 "Server Error" by default.
+    http_status="${STUB_AZURE_UPLOAD_STATUS:-500}"
+    resp="$(python3 -I -c 'import json, sys; print(json.dumps({"message": sys.argv[1]}))' "${STUB_AZURE_UPLOAD_MESSAGE:-Server Error}")"
   else
     if [ -n "${STUB_UPLOAD_DIR:-}" ] && [ -n "$upload_file" ]; then cp "$upload_file" "$STUB_UPLOAD_DIR/$_at_name"; fi
     http_status=201
