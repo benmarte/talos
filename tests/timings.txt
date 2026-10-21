@@ -104,6 +104,7 @@
 2 test-epic-acceptance.sh
 3 test-eval-set-792.sh
 14 test-events-log.sh
+60 test-evidence-branch-810.sh
 30 test-events-reverts-fixforwards-800.sh
 5 test-events-scoreboard.sh
 15 test-events-spend-line.sh
