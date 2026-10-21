@@ -656,6 +656,20 @@ verbs:
                                      pipeline-lock.sh; one `pruned issue=<N>`
                                      line per removed line, nothing when there
                                      is nothing to remove (a silent no-op)
+  evidence prune [--merged] [--older-than <days>] [--dry-run]
+                                     removes the pr-<n>/ folders of finished PRs
+                                     from the talos-evidence branch in one commit
+                                     on github, gitlab and azure: --merged picks
+                                     the folders of merged or closed PRs,
+                                     --older-than <days> those whose newest commit is
+                                     older (both: either); an open PR is never
+                                     pruned. --dry-run prints one `would-prune
+                                     pr=<n> reason=...` line per folder and writes
+                                     nothing. Prints `pruned pr=<n> reason=...`
+                                     per folder, then `pruned folders=<k>
+                                     files=<m>`; no branch or nothing to remove
+                                     exits 0 with a message; a refused read or
+                                     write exits 1 with the provider's status
   help                              this text
 HELP
 }
@@ -3082,6 +3096,29 @@ _talos_lease_verb() {
   return 0
 }
 
+# _talos_evidence_verb "$@" -- the `evidence` dispatch arm (#817). Its only sub-verb is
+# `prune [--merged] [--older-than <days>] [--dry-run]`; a missing or unknown one is
+# `stop reason=usage` with exit 2, as for `lease`. The work is the provider verb
+# `pipeline-vcs.sh evidence-prune`, whose own flag check answers a bad flag (exit 2,
+# before any call) and whose output and exit status pass through. Here --dry-run is
+# the verb's read-only --list (the vcs script's own --dry-run prints calls instead).
+_talos_evidence_verb() {
+  local _sub="${1:-}" _a _args=()
+  [ "$#" -eq 0 ] || shift
+  case "$_sub" in
+    prune) : ;;
+    *) _talos_stop usage 2 ;;
+  esac
+  for _a in "$@"; do
+    case "$_a" in
+      --dry-run) _args+=(--list) ;;
+      *) _args+=("$_a") ;;
+    esac
+  done
+  _vcs evidence-prune ${_args[@]+"${_args[@]}"}
+  exit $?
+}
+
 # The latest `**PM spec:**` comment of a `view-issue --spec` answer on stdin,
 # nothing when there is none; with the one argument `body` (#596), the issue
 # body of that answer instead of nothing. Exit 1 when the answer is not that JSON.
@@ -5228,6 +5265,7 @@ case "$verb" in
   claim) _talos_claim "$@" ;;
   run) _talos_run_loop "$@" ;;
   lease) _talos_lease_verb "$@" ;;
+  evidence) _talos_evidence_verb "$@" ;;
   help | -h | --help) _talos_help ;;
   "") _talos_help >&2; exit 2 ;;
   *) printf 'stop reason=unknown-verb\n'; exit 2 ;;
