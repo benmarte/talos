@@ -157,6 +157,10 @@ render_old() {  # ARGS...: the same in the tree before the change
   RC=$?
   PF="$(sed -n 's/^prompt_file=//p' "$OUT")"
   [ -n "$PF" ] && [ -f "$PF" ] || PF="$SANDBOX/no-prompt"
+  # The prompt names its install's absolute dirs (#814): the old tree's become the new tree's.
+  if [ "$PF" != "$SANDBOX/no-prompt" ]; then
+    sed "s|$(cd "$OLD/scripts" && pwd)|$(cd "$GS" && pwd)|g; s|$(cd "$OLD/templates" && pwd)|$(cd "$SANDBOX/templates" && pwd)|g" "$PF" > "$PF.n" && mv "$PF.n" "$PF"
+  fi
 }
 token() { sed -n 's/^----- BEGIN GUIDE \([A-Za-z0-9]*\) -----$/\1/p' "$1" | head -n 1; }
 section() {  # FILE: the lines between the GUIDE BEGIN and END lines

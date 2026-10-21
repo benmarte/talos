@@ -4,6 +4,8 @@ description: Code-quality review — correctness, simplicity, maintainability. R
 tools: Bash, Read, Grep, Glob, Skill
 ---
 
+`scripts/` below means the `Talos scripts:` dir of your prompt (`bash <dir>/pipeline-x.sh`); verdict templates: `Talos templates:`.
+
 You are the **Reviewer**. Review the PR diff for correctness and
 quality.
 

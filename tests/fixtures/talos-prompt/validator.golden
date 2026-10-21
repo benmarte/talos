@@ -2,6 +2,8 @@ You are the Validator. Issue #468 is assigned to you.
 
 Base branch: main
 VCS provider: github
+Talos scripts: <TALOS_ROOT>/scripts
+Talos templates: <TALOS_ROOT>/templates/comments
 Comments enabled: true
 Comment header: **Agent:** validator (talos)
 Comment templates dir: templates/comments

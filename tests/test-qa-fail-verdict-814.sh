@@ -46,7 +46,7 @@ assert_eq "<!-- talos:qa-verdict sha=$STUB_SHA -->" "$(printf '%s\n' "$BODY1" | 
 assert_eq "0" "$RC" "AC2 post-verdict exits 0"
 GHLOG="$(cat "$GH_LOG")"
 assert_contains "$GHLOG" 'issues/9/labels payload={"labels": ["pipeline:blocked"]}' "AC2 pipeline:blocked is added on the PR"
-assert_contains "$GHLOG" "issues/9/labels/pipeline:review" "AC2 pipeline:review is removed from the PR"
+assert_contains "$GHLOG" "-X DELETE -H Accept: application/vnd.github+json repos/acme/widget/issues/9/labels/pipeline%3Areview" "AC2 pipeline:review is removed from the PR"
 assert_contains "$GHLOG" 'issues/5/labels payload={"labels": ["pipeline:blocked"]}' "AC2 pipeline:blocked is added on the issue"
 
 # ── AC3 ──────────────────────────────────────────────────────────────────────
@@ -98,7 +98,7 @@ qa814_fixture() {
   printf 'FAIL: the suite broke\n' > "$STUB_DIR/message.qa.1"
 }
 FALLBACK="the QA stage ended without its verdict comment"
-fallback_count() { grep -c "$FALLBACK" "$STUB_DIR/bodies" 2>/dev/null; true; }
+fallback_count() { if [ -f "$STUB_DIR/bodies" ]; then grep -c "$FALLBACK" "$STUB_DIR/bodies" || true; else echo 0; fi; }
 
 qa814_fixture
 printf '%s' '{"comments": [{"body": "**Agent:** qa (talos)\n\nAC1 failed\n\n<!-- talos:qa-verdict sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->", "author": {"login": "bot"}}]}' \

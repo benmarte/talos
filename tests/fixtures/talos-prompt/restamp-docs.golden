@@ -1,6 +1,8 @@
 You are Documentation, re-stamping PR #77 for issue #468. A developer fix round moved the head after your approval.
 
 VCS provider: github
+Talos scripts: <TALOS_ROOT>/scripts
+Talos templates: <TALOS_ROOT>/templates/comments
 Comment header: **Agent:** docs (talos) — re-stamp
 Comment templates dir: templates/comments
 Comments enabled: true
@@ -16,7 +18,7 @@ diff --git a/docs/guide.md b/docs/guide.md
 ----- END DIFF tok590 -----
 
 Review only that delta: does every changed doc line match the code at the head? This pass is read-only: edit nothing and commit nothing. Do not fetch the diff again; read a source file only to check a claim the delta makes.
-- The delta is accurate: `bash scripts/pipeline-vcs.sh post-approval 77 docs`, then start your final message with `RESTAMP_PASS: `.
+- The delta is accurate: `bash <TALOS_ROOT>/scripts/pipeline-vcs.sh post-approval 77 docs`, then start your final message with `RESTAMP_PASS: `.
 - Anything else: post no stamp and start your final message with `RESTAMP_FAIL: `, followed by what is wrong or missing. The full docs stage then runs and makes the edits.
 
 post-approval verifies its own stamp: do not re-read your comment or re-check labels.

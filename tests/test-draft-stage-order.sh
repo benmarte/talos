@@ -31,7 +31,7 @@ FAILURE_VERBS=$'draft-pr\nlabel-pr --remove qa:pass\nready-pr'
 MERGE_VERBS=$'pr-ci-runs\nmerge-pr\npost_stage merged --ci-runs'
 
 # The line moved from the playbook into the verb (#468): --draft renders it, the default prompt has none.
-assert_contains "$(talos_prompt_text developer --issue 5 --draft)" 'Open the PR as a DRAFT: bash scripts/pipeline-vcs.sh create-pr <branch> "$PR_TITLE" "$BODY_FILE" --draft' "developer prompt: --draft opens the PR with create-pr ... --draft"
+assert_contains "$(talos_prompt_text developer --issue 5 --draft)" "Open the PR as a DRAFT: bash $TALOS_ROOT/scripts/pipeline-vcs.sh create-pr <branch> \"\$PR_TITLE\" \"\$BODY_FILE\" --draft" "developer prompt: --draft opens the PR with create-pr ... --draft"
 assert_not_contains "$(talos_prompt_text developer --issue 5)" 'create-pr' "developer prompt: no create-pr line without --draft"
 
 # The guard itself runs inside `talos.sh gate merge` (#466): the real verb, every

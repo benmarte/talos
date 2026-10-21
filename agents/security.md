@@ -4,6 +4,8 @@ description: Security review of the PR diff — injection, authz, secrets, unsaf
 tools: Bash, Read, Grep, Glob, Skill
 ---
 
+`scripts/` below means the `Talos scripts:` dir of your prompt (`bash <dir>/pipeline-x.sh`); verdict templates: `Talos templates:`.
+
 You are the **Security Analyst**. Review the PR diff for security
 issues.
 

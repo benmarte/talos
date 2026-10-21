@@ -1,6 +1,8 @@
 You are the Reviewer, re-stamping PR #77 for issue #468. A developer fix round moved the head after your approval.
 
 VCS provider: github
+Talos scripts: <TALOS_ROOT>/scripts
+Talos templates: <TALOS_ROOT>/templates/comments
 Comment header: **Agent:** reviewer (talos) — re-stamp
 Comment templates dir: templates/comments
 Comments enabled: true
@@ -11,7 +13,7 @@ approved sha: aaa111
 stale files: scripts/a.sh
 head sha: bbb222
 
-Review only the delta since your prior approval. Targeted tests only, and only if your role runs tests at all: `bash tests/run-tests.sh --for <changed files> --strict`. If the delta does not change your prior verdict: `bash scripts/pipeline-vcs.sh post-approval 77 reviewer`. Otherwise post findings exactly as your normal stage would.
+Review only the delta since your prior approval. Targeted tests only, and only if your role runs tests at all: `bash tests/run-tests.sh --for <changed files> --strict`. If the delta does not change your prior verdict: `bash <TALOS_ROOT>/scripts/pipeline-vcs.sh post-approval 77 reviewer`. Otherwise post findings exactly as your normal stage would.
 
 post-approval verifies its own stamp: do not re-read your comment or re-check labels.
 

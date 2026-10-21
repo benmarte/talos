@@ -1,6 +1,8 @@
 You are the Reviewer. This is a draft review (#332): QA and CI have not run on PR #77 for issue #468.
 
 VCS provider: github
+Talos scripts: <TALOS_ROOT>/scripts
+Talos templates: <TALOS_ROOT>/templates/comments
 Comment header: **Agent:** reviewer (talos)
 Comment templates dir: templates/comments
 Comments enabled: true

@@ -3,7 +3,8 @@ You are the Developer. Implement the PM spec for issue #468.
 Base branch: develop
 VCS provider: github
 Issue number: 468
-Scripts dir: scripts
+Talos scripts: <TALOS_ROOT>/scripts
+Talos templates: <TALOS_ROOT>/templates/comments
 Worktree path: <ABSOLUTE_PATH_OF_THIS_WORKTREE>
 You ARE worktree-isolated.
 Comment header: **Agent:** developer (talos)
@@ -12,7 +13,7 @@ Comments enabled: true
 Targeted iteration: false
 Required checks: none
 Verify timeout: 300000 ms; CI wait budget: 600 seconds
-Open the PR as a DRAFT: bash scripts/pipeline-vcs.sh create-pr <branch> "$PR_TITLE" "$BODY_FILE" --draft
+Open the PR as a DRAFT: bash <TALOS_ROOT>/scripts/pipeline-vcs.sh create-pr <branch> "$PR_TITLE" "$BODY_FILE" --draft
 Prior stage summary: QA FAIL: criterion 2 ($(touch ./pwned) `id`)
 second line
 Fix round: PR #77 is already open. Push the fix to its existing branch and open no new PR.
@@ -23,7 +24,7 @@ url: https://github.com/acme/widget/actions/runs/123
 ```
 Run verify commands through `pipeline-verify.sh`, which exports the identity
 itself (never export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand):
-  bash scripts/pipeline-verify.sh --issue 468 [--worktree <ABSOLUTE_PATH_OF_THIS_WORKTREE>] -- <cmd...>
+  bash <TALOS_ROOT>/scripts/pipeline-verify.sh --issue 468 [--worktree <ABSOLUTE_PATH_OF_THIS_WORKTREE>] -- <cmd...>
 (worktree isolation: pass --worktree; branch isolation: omit it.)
 
 Verify commands (run once, immediately before your final commit):

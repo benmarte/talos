@@ -4,6 +4,7 @@ Worktree path: {{WORKTREE_PATH}}
 Edit and run `commit-docs` there: it refuses a checkout that is not on the PR's head branch.
 Base branch: {{BASE_BRANCH}}
 VCS provider: {{VCS_PROVIDER}}
+{{INSTALL_LINES}}
 Comment header: {{HEADER}}
 Comment templates dir: {{COMMENTS_TMPL_DIR}}
 Comments enabled: {{COMMENTS_ENABLED}}
