@@ -5,6 +5,8 @@
 #        bash tests/run-tests.sh --changed [<base-ref>] [--quiet] ...
 #   (count check) a test file that exists on the base ref but not here fails the run
 #               unless tests/retired-tests.txt names it (#550)
+#   (stub-mode check) every run, --count-only included, first fails when a file
+#               under tests/stubs/ is not committed 100755 (#821); it never chmods
 #   --base-ref  override the auto-detected base ref for count comparison
 #               (default: auto-detects origin/HEAD, falls back to origin/main)
 #   -j N        run up to N test files concurrently (also: TALOS_TEST_JOBS)
@@ -137,7 +139,33 @@ fi
 
 TALOS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export TALOS_ROOT
-chmod +x "$TALOS_ROOT"/tests/stubs/* 2>/dev/null
+
+# Stub-mode check (#821): the stubs run from PATH, so each must be committed
+# 100755. A run never chmods a tracked file (that left the checkout modified and
+# stranded qa-run); a stub in the wrong mode is reported and fails the run.
+# Outside git, or where tests/stubs is not tracked, the check is `[ -x ]`.
+check_stub_modes() {
+  local bad="" _mode _sha _stage _path _tracked
+  _tracked="$(git -C "$TALOS_ROOT" ls-files -s tests/stubs 2>/dev/null)"
+  if [ -n "$_tracked" ]; then
+    while read -r _mode _sha _stage _path; do
+      [ "$_mode" = "100755" ] || bad="${bad}stub not committed executable: ${_path}
+"
+    done <<EOF
+$_tracked
+EOF
+  else
+    for _path in "$TALOS_ROOT"/tests/stubs/*; do
+      [ -f "$_path" ] && [ ! -x "$_path" ] && bad="${bad}stub not committed executable: tests/stubs/${_path##*/}
+"
+    done
+  fi
+  [ -z "$bad" ] && return 0
+  printf '%s' "$bad" >&2
+  echo "run-tests.sh: commit each tests/stubs file as 100755 (git update-index --chmod=+x <path>)" >&2
+  return 1
+}
+check_stub_modes || exit 1
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 BASE_REF_OVERRIDE=""
