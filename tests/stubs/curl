@@ -169,6 +169,11 @@ if [[ "$url" == *"/user" && "$url" != *"/users/"* ]]; then
     http_status="$STUB_CURRENT_USER_STATUS"
     resp='{"message":"Resource not accessible by integration"}'
   fi
+elif [ -n "${STUB_EVPRUNE_WORLD:-}" ] && [[ "$url" == */_apis/git/repositories/* ]]; then
+  # evidence-prune on azure (#817): evprune.py holds the evidence branch and the PRs.
+  _ep_out="$(python3 -I "$(dirname "$0")/evprune.py" azure "${method:-GET}" "$url" "$upload_file")"
+  http_status="$(printf '%s\n' "$_ep_out" | sed -n 1p)"
+  resp="$(printf '%s\n' "$_ep_out" | sed 1d)"
 elif [ -n "${STUB_AZURE_GIT_DIR:-}" ] && [[ "$url" == */_apis/git/repositories/* ]] && [[ "$url" != */pullRequests/* ]]; then
   # The evidence branch's Git REST calls (#810), against the files in STUB_AZURE_GIT_DIR.
   _ag_out="$(python3 -I -c '

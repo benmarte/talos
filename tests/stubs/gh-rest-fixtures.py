@@ -180,6 +180,17 @@ if not m:
     reply(404, {"message": "Not Found"})
 repo, rest = m.group(1), m.group(2) or ""
 
+# The evidence branch of `evidence-prune` (#817): evprune.py answers its routes.
+if E("STUB_EVPRUNE_WORLD") and re.fullmatch(
+        r"/(git/ref/heads/talos-evidence|git/trees(/.*)?|git/commits|git/refs/heads/talos-evidence|pulls/\d+|commits)", rest):
+    import subprocess
+    _ep = subprocess.run([sys.executable, "-I", os.path.join(os.path.dirname(os.path.abspath(__file__)), "evprune.py"),
+                          "github", method, url, payload_file], capture_output=True, text=True).stdout.split("\n", 1)
+    print(_ep[0])
+    print("")
+    print(_ep[1].rstrip("\n"))
+    sys.exit(0)
+
 # ── reads ────────────────────────────────────────────────────────────────────
 if method == "GET":
     if rest == "" and E("STUB_EVIDENCE_FAIL") == "repo":   # attach-files (#811): the repository read fails
