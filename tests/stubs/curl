@@ -69,6 +69,17 @@
 #     upload whose name contains <text> (STUB_AZURE_UPLOAD_STATUS and
 #     STUB_AZURE_UPLOAD_MESSAGE pick the status and the "message" of that refusal, #811).
 
+#   - attach-files on azure (#810): with STUB_AZURE_GIT_DIR set, the Git REST calls of
+#     the evidence branch answer from the files in that dir: `branch` (the head of
+#     talos-evidence; absent = no branch) and `files` (the paths on it, one per line,
+#     `/pr-9/01234567/a.png`). GET .../repositories/<repo> names the default branch
+#     (main, head aaaa...); GET .../refs?filter=heads/<x> lists the refs whose name
+#     starts with it; POST .../refs creates the branch; GET .../items?scopePath=<dir>
+#     lists the files under it (404 when none); POST .../pushes applies a push, refusing
+#     a stale oldObjectId, an `add` of an existing path and an `edit` of a missing one.
+#     STUB_AZURE_GIT_LOG, when set, receives `REFS<tab><body>` and `PUSH<tab><body>`;
+#     STUB_AZURE_REF_FAIL / STUB_AZURE_PUSH_FAIL=<status>:<message> refuse that write.
+
 # One argv element over the Linux limit: refuse before doing anything else.
 _argv_max="${STUB_CURL_ARGV_MAX:-131072}"
 for arg in "$@"; do
@@ -158,6 +169,77 @@ if [[ "$url" == *"/user" && "$url" != *"/users/"* ]]; then
     http_status="$STUB_CURRENT_USER_STATUS"
     resp='{"message":"Resource not accessible by integration"}'
   fi
+elif [ -n "${STUB_AZURE_GIT_DIR:-}" ] && [[ "$url" == */_apis/git/repositories/* ]] && [[ "$url" != */pullRequests/* ]]; then
+  # The evidence branch's Git REST calls (#810), against the files in STUB_AZURE_GIT_DIR.
+  _ag_out="$(python3 -I -c '
+import hashlib, json, os, sys, urllib.parse
+method, url, body_file = sys.argv[1:4]
+d = os.environ["STUB_AZURE_GIT_DIR"]
+log = os.environ.get("STUB_AZURE_GIT_LOG", "")
+BR, MAIN = "refs/heads/talos-evidence", "a" * 40
+def rd(n):
+    p = os.path.join(d, n)
+    return open(p).read() if os.path.exists(p) else ""
+def wr(n, v):
+    open(os.path.join(d, n), "w").write(v)
+def out(status, body):
+    print(status)
+    print(json.dumps(body))
+    sys.exit(0)
+def fail(var):
+    v = os.environ.get(var, "")
+    if v:
+        s, _, m = v.partition(":")
+        out(int(s), {"message": m})
+def logit(kind, text):
+    if log:
+        open(log, "a").write(kind + "\t" + text + "\n")
+body = open(body_file).read() if body_file and os.path.isfile(body_file) else ""
+u = urllib.parse.urlsplit(url)
+q = urllib.parse.parse_qs(u.query)
+rest = u.path.split("/repositories/", 1)[1].partition("/")[2]
+branch, files = rd("branch").strip(), rd("files").split()
+if rest == "" and method == "GET":
+    out(200, {"defaultBranch": "refs/heads/main"})
+if rest == "refs" and method == "GET":
+    refs = [{"name": "refs/heads/main", "objectId": MAIN}]
+    if branch:
+        refs.append({"name": BR, "objectId": branch})
+    flt = "refs/" + q.get("filter", [""])[0]
+    out(200, {"value": [r for r in refs if r["name"].startswith(flt)]})
+if rest == "refs" and method == "POST":
+    logit("REFS", body)
+    fail("STUB_AZURE_REF_FAIL")
+    upd = json.loads(body)[0]
+    wr("branch", upd["newObjectId"])
+    out(200, {"count": 1, "value": [{"name": upd["name"], "success": True, "newObjectId": upd["newObjectId"]}]})
+if rest == "items" and method == "GET":
+    scope = q.get("scopePath", [""])[0].rstrip("/") + "/"
+    found = [f for f in files if f.startswith(scope)] if branch else []
+    if not found:
+        out(404, {"message": "TF401174: The item could not be found"})
+    out(200, {"count": len(found), "value": [{"path": f} for f in found]})
+if rest == "pushes" and method == "POST":
+    logit("PUSH", body)
+    fail("STUB_AZURE_PUSH_FAIL")
+    p = json.loads(body)
+    if not branch or p["refUpdates"][0]["oldObjectId"] != branch:
+        out(409, {"message": "TF401028: the push is based on an old head of the branch"})
+    changes = p["commits"][0]["changes"]
+    for c in changes:
+        path = c["item"]["path"]
+        if c["changeType"] == "add" and path in files:
+            out(400, {"message": "The path %s already exists" % path})
+        if c["changeType"] == "edit" and path not in files:
+            out(400, {"message": "The path %s does not exist" % path})
+    files += [c["item"]["path"] for c in changes if c["changeType"] == "add"]
+    wr("files", "\n".join(files) + "\n")
+    wr("branch", hashlib.sha1(body.encode()).hexdigest())
+    out(201, {"pushId": 1})
+out(200, {})
+' "${method:-GET}" "$url" "$upload_file")"
+  http_status="$(printf '%s\n' "$_ag_out" | sed -n 1p)"
+  resp="$(printf '%s\n' "$_ag_out" | sed 1d)"
 elif [[ "$url" =~ /pullRequests/([0-9]+)/attachments/([^/?]+) ]]; then
   # attach-files on azure (#776): the body of the upload is the file itself.
   _at_name="${BASH_REMATCH[2]}"
