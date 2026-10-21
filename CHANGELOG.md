@@ -4,6 +4,7 @@ One line per change, newest first. Releases before 0.17.0 are listed in the last
 
 ## [Unreleased]
 
+- feat: QA evidence is stored on the `talos-evidence` branch on every provider: `attach-files` commits the files to `pr-<n>/<sha8>/<name>` through the GitLab commits API and the Azure DevOps Git pushes API (any file type, a Playwright `.webm` included, a re-run at the same head overwrites) instead of project uploads and PR attachments; `docs/reference.md` gains an "Evidence storage" section on how the branch grows and how to clean it up.
 - fix: QA's FAIL works when Talos is installed outside the repo: `pipeline-vcs.sh post-verdict <pr> qa --fail [--issue n] --body-file -` renders `qa-verdict`, appends a `talos:qa-verdict` marker, posts it once per head and applies the blocked labels in one call; the run no longer adds a second fallback comment when that marker is new; every stage prompt names the absolute `Talos scripts:` and `Talos templates:` dirs and none runs `bash scripts/...`.
 - fix: `pipeline-vcs.sh attach-files` never prevents the evidence comment: a file that cannot be uploaded is listed as `<name>: not attached (<code>: <reason>)` (one line, 120 characters at most), a missing head SHA, evidence branch or token lists every file with that reason, and the verb exits 0 whenever the comment is posted (GitHub, GitLab, Azure DevOps).
 
