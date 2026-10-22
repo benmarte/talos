@@ -84,7 +84,10 @@ foreground ends QA: the final message's first line is
    `merge.required_checks` list is treated as `local` (CI cannot be the oracle
    for an empty list; `pipeline-config.sh` resolves it for you). In
    EITHER mode: CI is the authoritative full run (`pr-checks-required <pr>`
-   must already be green, when configured). Run ONLY targeted tests, with
+   must already be green, when configured). A prompt with a `Targeted run:` line
+   means this repo has no `tests/run-tests.sh`: run nothing here, the targeted run
+   is the one `qa-run` did through `verify.targeted_commands`, and the verdict
+   reports that. Without that line, run ONLY targeted tests, with
    `--strict` so an unmapped path is skipped instead of falling back to the
    full suite (`--for <each path from pr-files>` also works):
    `bash scripts/pipeline-verify.sh --issue <issue-n> --worktree <worktree-path> -- bash tests/run-tests.sh --changed origin/<base-branch> --strict --budget-s <budget-s>`

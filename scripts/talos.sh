@@ -2061,7 +2061,7 @@ _TALOS_PROMPT_NAMES="ISSUE PR ROLE ROLE_TITLE BASE_BRANCH VCS_PROVIDER COMMENTS_
   VERIFY_TARGETED VERIFY_TIMEOUT_MS VERIFY_CI_WAIT_S VERIFY_QA_MODE VERIFY_COMMANDS REQUIRED_CHECKS_LINE
   VERIFY_TIMEOUT_LINE SPEC_SOURCE ISOLATION_NOTE PRIOR_STAGE_SUMMARY HANDOFF_LINE DRAFT_PR_LINE FIX_ROUND_LINES
   PASSED_LEAD DOCS_DIFF_INSTRUCTION TITLE BODY RESTAMP_INPUTS STOP_RULE QA_CI_WAIT_LINE QA_RULE QA_GATE_STEP
-  WORKTREE_PATH CHANGE_BLOCK GUIDE_BLOCK SCRIPTS_DIR TEMPLATES_DIR INSTALL_LINES"
+  QA_TARGETED_LINE WORKTREE_PATH CHANGE_BLOCK GUIDE_BLOCK SCRIPTS_DIR TEMPLATES_DIR INSTALL_LINES"
 
 # The renderer: argv = template, values file, output file, allowed names. The
 # values file is NUL-delimited NAME, VALUE pairs; a NAME written `<NAME` carries
@@ -2556,6 +2556,14 @@ _talos_prompt() {
       _talos_pv WORKTREE_PATH "${_wt:-your working directory (git rev-parse --show-toplevel)}"
       _talos_pv VERIFY_QA_MODE "$(cfg verify.qa_mode)"
       _talos_pv VERIFY_TIMEOUT_MS "$(_talos_verify_timeout_ms qa)"
+      # #824: step 2's `run-tests.sh --changed` is Talos's own runner. A QA
+      # checkout without it is told the targeted run is the one qa-run did.
+      _r="${_wt:-$(git rev-parse --show-toplevel 2>/dev/null)}"
+      if [ -f "$_r/tests/run-tests.sh" ]; then
+        _talos_pv QA_TARGETED_LINE ""
+      else
+        _talos_pv QA_TARGETED_LINE "Targeted run: this repo has no \`tests/run-tests.sh\`, so the step 2 command that runs it does not apply. The targeted run is the one \`qa-run\` already did through \`verify.targeted_commands\`; the verdict reports that, never a missing file."
+      fi
       # The QA pre-CI gate (#535): with it on, the PR itself says which text QA
       # gets -- a draft is pre-CI, a ready PR is today's -- and anything else
       # stops (an unreadable state is never guessed). No LLM call is spent on it.
