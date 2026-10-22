@@ -181,6 +181,7 @@
 20 test-qa-fail-verdict-814.sh
 26 test-qa-flaky-e2e-717.sh
 15 test-qa-guard-693.sh
+5 test-qa-no-runner-824.sh
 5 test-qa-restore-stub-mode-821.sh
 5 test-qa-run-merged-base-658.sh
 33 test-qa-run.sh

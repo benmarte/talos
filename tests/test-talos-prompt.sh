@@ -37,6 +37,10 @@ export CLAUDE_CONFIG_DIR="$SANDBOX/cc"
 export TALOS_RETRY_SLEEP_SCALE=0
 ROLES="validator pm developer qa reviewer security adversarial docs planner"
 
+# The sandbox repo has Talos's runner, so the qa prompt is the one the goldens pin (#824).
+mkdir -p "$SANDBOX/tests"
+: > "$SANDBOX/tests/run-tests.sh"
+
 reset_cfg() { rm -rf "${SANDBOX:?}"/talos.pipeline.*; unset PIPELINE_CONFIG; }
 proj_json() { printf '%s' "$1" > "$SANDBOX/talos.pipeline.json"; }
 
