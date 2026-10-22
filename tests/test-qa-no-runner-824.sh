@@ -70,4 +70,11 @@ for shape in pre-ci ci; do
     "AC3 runner present ($shape): equals the prompt without the marker line"
 done
 
+# AC5: the qa-stage usage error of pipeline-verify.sh keeps its text and exit code.
+rc=0
+bash "$TALOS_ROOT/scripts/pipeline-verify.sh" --issue 824 --role qa > "$OUT" 2> "$ERR" || rc=$?
+assert_eq "2" "$rc" "AC5 qa usage error keeps exit code 2"
+assert_contains "$(cat "$ERR")" "pipeline-verify: the qa stage needs a command: pipeline-verify.sh ... -- bash tests/run-tests.sh --changed origin/<base> --strict (--all runs the full verify: list)" \
+  "AC5 qa usage error keeps its text"
+
 finish
