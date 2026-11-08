@@ -123,6 +123,10 @@ verify.e2e_artifacts.dir	str		-	-	repo
 verify.e2e_artifacts.include	list		-	-	repo
 verify.e2e_artifacts.max_files	int	12	-	-	repo
 verify.e2e_artifacts.max_mb	int	25	-	-	repo
+verify.walk.specs	list		-	-	repo
+verify.walk.max_mb	int	50	-	-	repo
+verify.walk.require_video	bool	false	-	-	repo
+verify.walk.ui_paths	list		-	-	repo
 verify.ready	list		-	-	repo
 verify.ci_wait_s	int	900	-	-	any
 verify.ci_requeue_stuck	bool	true	-	-	any
