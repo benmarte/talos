@@ -275,6 +275,18 @@
 #                                             API), azure (#304, last iteration's
 #                                             changes); a failed fetch exits 1.
 #                                             file mode fails open (empty stdout).
+#   check-pr-body <n>                         Exit 0 when the PR body has a `Positive
+#                                             controls:` section and an `AC to test
+#                                             map:` section, each with text; exit 1
+#                                             with one stderr line per missing one
+#                                             (`check-pr-body: missing positive-control
+#                                             list` / `missing AC to test map`); exit 2
+#                                             on a non-numeric <n>. Reads only the PR
+#                                             body (the view-pr fetch), never the config
+#                                             or the checklist file: the merge gate asks
+#                                             only when developer.checklist is set. A
+#                                             failed fetch exits 1 (fails closed). file
+#                                             mode: not applicable (exit 0).
 #   check-closing-keyword <n|branch> <issue>  Exit 1 if the PR body has a closing
 #                                             keyword for <issue> while other PRs
 #                                             for that issue are still open.
@@ -3611,6 +3623,55 @@ credentials.json
   fi
 }
 
+# _vcs_shared_check_pr_body (#831): the PR body on stdin, checked for the two
+# sections a developer PR carries. A section is present when some line, once its
+# leading `#`, `*`, `-`, `>` and spaces are stripped, starts with `Positive
+# controls` or `AC to test map` (`AC-to-test map` too), any case, followed by a
+# colon or the end of the line, and has text on that line after the colon or on
+# the next non-blank line (a line that is itself a section label is not text).
+# One stderr line per missing section; exit 1 when any is missing, 0 otherwise.
+# It reads no config and no checklist file: the caller decides whether to ask.
+_vcs_shared_check_pr_body() {
+  python3 -I -c '
+import re, sys
+lines = sys.stdin.read().splitlines()
+marks = " \t#*->"
+SECTIONS = (("positive-control list", r"positive controls"),
+            ("AC to test map", r"ac[ -]to[ -]test map"))
+def label(line):
+    t = line.lstrip(marks)
+    for name, pat in SECTIONS:
+        m = re.match(r"(?:%s)[*_ \t]*(?::(.*))?$" % pat, t, re.I)
+        if m:
+            return name, (m.group(1) or "")
+    return None
+def has_text(t):
+    return bool(t.strip(" \t*>#-"))
+missing = []
+for name, _pat in SECTIONS:
+    ok = False
+    for i, line in enumerate(lines):
+        hit = label(line)
+        if not hit or hit[0] != name:
+            continue
+        if has_text(hit[1]):
+            ok = True
+            break
+        for nxt in lines[i + 1:]:
+            if not nxt.strip():
+                continue
+            ok = label(nxt) is None and has_text(nxt)
+            break
+        if ok:
+            break
+    if not ok:
+        missing.append(name)
+for name in missing:
+    sys.stderr.write("check-pr-body: missing %s\n" % name)
+sys.exit(1 if missing else 0)
+'
+}
+
 _vcs_shared_check_pr_files() {
   local _patterns _defaults_active
   _patterns="$(_vcs_shared_forbidden_patterns)"
@@ -5648,6 +5709,17 @@ for pr in prs:
 json.dump(out, sys.stdout)
 " | _vcs_shared_find_pr "$n" "$state" "$REPO"
       ;;
+    check-pr-body)
+      # (#831) The body view-pr returns, checked by the shared checker. A failed
+      # fetch exits 1 with no verdict: the gate fails closed.
+      local n="${1:-}" _cb_body
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$n | .body | check for the positive-control list and the AC to test map"; return 0; }
+      _cb_body="$(_gh_pull "$n" | python3 -I -c "
+import json, sys
+sys.stdout.write(json.load(sys.stdin).get('body') or '')
+" 2>/dev/null)" || { echo "pipeline-vcs: check-pr-body: could not fetch the body of PR #$n -- failing closed" >&2; exit 1; }
+      printf '%s' "$_cb_body" | _vcs_shared_check_pr_body
+      ;;
     check-pr-files|pr-files)
       # Every page (#171, #211): a >100-file PR is never silently truncated, and
       # a failed page exits non-zero with no partial output -- the fail-closed
@@ -6957,6 +7029,19 @@ print(d.get('merge_status') or d.get('detailed_merge_status') or '')
         return 0
       fi
       _gl_pr_files "$n" || { echo "pipeline-vcs: pr-files: could not fetch the changed files of MR !$n" >&2; exit 1; }
+      ;;
+    check-pr-body)
+      # (#831) The MR description, checked by the shared checker; a failed fetch fails closed.
+      local n="${1:-}" _glcb_body
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab mr view $n --output json $RARG | .description | check for the positive-control list and the AC to test map"
+        return 0
+      fi
+      _glcb_body="$(glab mr view "$n" --output json $RARG 2>/dev/null | python3 -I -c "
+import json, sys
+sys.stdout.write(json.load(sys.stdin).get('description') or '')
+" 2>/dev/null)" || { echo "pipeline-vcs: check-pr-body: could not fetch the description of MR !$n -- failing closed" >&2; exit 1; }
+      printf '%s' "$_glcb_body" | _vcs_shared_check_pr_body
       ;;
     check-pr-files)
       # Forbidden-files merge gate (#303): pr-files output through the same
@@ -9091,6 +9176,19 @@ json.dump([norm(p) for p in prs], sys.stdout)
       fi
       _az_pr_files "$n" || { echo "pipeline-vcs: pr-files: could not fetch the changed files of PR #$n" >&2; exit 1; }
       ;;
+    check-pr-body)
+      # (#831) The PR description, checked by the shared checker; a failed fetch fails closed.
+      local n="${1:-}" _azcb_body
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az repos pr show --id $n $ORG_ARG --output json | .description | check for the positive-control list and the AC to test map"
+        return 0
+      fi
+      _azcb_body="$(az repos pr show --id "$n" $ORG_ARG --output json 2>/dev/null | python3 -I -c "
+import json, sys
+sys.stdout.write(json.load(sys.stdin).get('description') or '')
+" 2>/dev/null)" || { echo "pipeline-vcs: check-pr-body: could not fetch the description of PR #$n -- failing closed" >&2; exit 1; }
+      printf '%s' "$_azcb_body" | _vcs_shared_check_pr_body
+      ;;
     check-pr-files)
       # Forbidden-files merge gate (#304): pr-files output through the same
       # shared matcher github uses. Fails closed on any fetch failure.
@@ -9433,7 +9531,7 @@ _file() {
       echo "pipeline-vcs: $verb: not available for provider file (no commits or PR bodies to read)" >&2
       exit 1
       ;;
-    diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
+    diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|check-pr-body|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       echo "file mode: $verb not applicable in file mode" >&2
       return 0
       ;;
@@ -10001,6 +10099,19 @@ case "$VERB" in
       fi
       _check_body_caps "${ARGS[1]}"
     fi
+    ;;
+esac
+
+# check-pr-body <pr> (#831): the PR number is checked once for every provider; a
+# non-numeric one is a usage error (exit 2), before any call.
+case "$VERB" in
+  check-pr-body)
+    case "${ARGS[0]-}" in
+      ''|*[!0-9]*)
+        echo "pipeline-vcs: check-pr-body: <pr> must be a number (got '${ARGS[0]-}')" >&2
+        exit 2
+        ;;
+    esac
     ;;
 esac
 

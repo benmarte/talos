@@ -104,7 +104,7 @@ A stage that cannot proceed sets `pipeline:blocked` and comments `Blocked by: <f
 Only a person does these:
 
 - Queue an issue (`pipeline:ready`). Talos never re-queues a blocked issue. To stop work, remove `pipeline:ready` before pickup, or close the issue. `pipeline:blocked` added after pickup stops that issue but also holds every new ready issue (`action=wait reason=owner`) until you clear it.
-- Clear a block, including `forbidden-files`, `closing-keyword` and `siblings-capped`, and a `ci-failed` that needs a new commit.
+- Clear a block, including `forbidden-files`, `closing-keyword`, `pr-body-checklist` and `siblings-capped`, and a `ci-failed` that needs a new commit.
 - Merge, when `merge.auto: false`: the PR gets `pipeline:approved` and a hand-off comment; the next `sweep` closes the issue.
 - Add `skip-qa`, which waives the approval labels only, never CI or the forbidden-files check.
 - Answer a `pipeline:needs-owner` question (`next` answers `ask-owner`).
@@ -251,7 +251,7 @@ A higher layer overrides a lower one key by key: mappings merge, scalars replace
 
 The user-level file accepts every key except the repo-only ones (scope `repo` in the table).
 
-Repo-only keys: `base_branch`, `repo`, `vcs.provider`, `vcs.repo`, `vcs.azure.*`, `vcs.file.source.path`, `board.*`, `verify` (and `verify.commands`), `verify.qa_mode`, `verify.targeted_commands`, `verify.e2e`, `verify.e2e_artifacts.*`, `verify.guide`, `review.guide`, `verify.ready`, `merge.required_checks`, `merge.forbidden_files`, `merge.forbidden_files_replace`, `merge.forbidden_files_allow`, `merge.approval_waiver_paths`, `merge.union_paths`, `issues.label_filter`, `issues.skip_labels`, `markers.trusted_authors`, `markers.verify_authors`. In the user-level file each is dropped with one stderr note naming the key, not the value. Their environment variables still apply.
+Repo-only keys: `base_branch`, `repo`, `vcs.provider`, `vcs.repo`, `vcs.azure.*`, `vcs.file.source.path`, `board.*`, `verify` (and `verify.commands`), `verify.qa_mode`, `verify.targeted_commands`, `verify.e2e`, `verify.e2e_artifacts.*`, `verify.guide`, `review.guide`, `developer.checklist`, `verify.ready`, `merge.required_checks`, `merge.forbidden_files`, `merge.forbidden_files_replace`, `merge.forbidden_files_allow`, `merge.approval_waiver_paths`, `merge.union_paths`, `issues.label_filter`, `issues.skip_labels`, `markers.trusted_authors`, `markers.verify_authors`. In the user-level file each is dropped with one stderr note naming the key, not the value. Their environment variables still apply.
 
 The user-level file drives `hooks.*` and `notifications.cmd`, so it is read only if it is a regular file (or your symlink to one) owned by you and not group- or world-writable. Otherwise one stderr line names the fix and the layer reads as absent, as does malformed or non-mapping content.
 
@@ -370,6 +370,12 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | Key | Type | Default | Env override | Scope |
 |---|---|---|---|---|
 | `review.guide` | str | `REVIEW.md` | - | repo |
+
+#### developer.*
+
+| Key | Type | Default | Env override | Scope |
+|---|---|---|---|---|
+| `developer.checklist` | str | - | - | repo |
 
 #### merge.*
 
@@ -820,6 +826,7 @@ Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azu
 | Verb | `github` / `github-api` | `gitlab` | `azure` | `file` |
 |---|---|---|---|---|
 | `edit-pr-body` | yes | yes | yes (refuses a body over 4000 characters) | exception: no PRs |
+| `check-pr-body` | yes | yes (the MR description) | yes (the PR description) | exception: no PRs |
 | `conflict-files` | yes | yes (fetches `refs/merge-requests/<iid>/head`) | yes (fetches the source branch) | exception: no PRs |
 | `upsert-pr-comment` | yes | yes (merge requests) | yes | exception: no PRs |
 | `attach-files` | yes (commits to the `talos-evidence` branch) | yes (commits to the `talos-evidence` branch) | yes (pushes to the `talos-evidence` branch) | exception: no PRs |
@@ -891,6 +898,7 @@ A missing option never stops the run: the issue is still added in the default co
 From `~/.talos/scripts` (or `scripts/` in a checkout); `--dry-run` prints the call instead.
 
 - `pipeline-vcs.sh list-issues | list-prs | view-issue <n> | view-pr <n>`: read as JSON.
+- `pipeline-vcs.sh check-pr-body <pr>`: exit 0 when the PR body has a `Positive controls:` and an `AC to test map:` section with text under them; exit 1 with `check-pr-body: missing positive-control list` / `missing AC to test map` on stderr; exit 2 for a non-numeric PR; a failed fetch exits 1.
 - `pipeline-vcs.sh label-issue <n> --add pipeline:ready`: queue an issue (`--remove` drops a label).
 - `pipeline-vcs.sh current-user | assert-sync`: your login; checkout clean and level.
 - `pipeline-vcs.sh comment-issue <n> | comment-pr <n>`: post a comment. A stage writes its body to `.talos/<role>-*.body` or passes `--body-file -` with a heredoc on stdin; a `--body-file` or stdin body is never read as a path. A positional or `--body` body that is one whitespace-free token naming a readable file (bare, relative or absolute) is refused with "use `--body-file`", so a path is never posted as the comment; any other text is posted as written.
@@ -978,12 +986,13 @@ Identity, resolved once per run: `issues.assignee` when it names a login, else `
 | 2 | `check-approval-sha`: approvals match the head SHA | `redispatch` |
 | 3 | `check-pr-files`: forbidden files (`skip-qa` never waives) | `block` |
 | 4 | `check-closing-keyword`: closing keyword while sibling PRs are open (`block`); a check that could not look (`talos:closing-keyword-unverified`, `reason=closing-keyword-unverified`: a failed sibling or PR fetch, an unresolved repo, a failed keyword scan) waits and is re-checked next run, with no label and no comment; `siblings-capped` blocks | `block` / `wait` |
+| 4b | `check-pr-body`, only when `developer.checklist` is set: the PR body has a `Positive controls:` section and an `AC to test map:` section, each with text; the missing sections are the block comment (reason `pr-body-checklist`) and a failed fetch stops the gate | `block` |
 | 5 | Not a draft (only when `pr.draft` resolves true) | `redispatch` |
 | 6 | `pr-checks-required`; a red check is re-run at most twice per head SHA (`talos:ci-rerun` markers) | `wait` / `redispatch` |
 | 7 | Stale base: `pipeline-mergebase.sh`, then `update-branch` (`merge.auto_sync`), then a developer merge-base task | `wait` / `redispatch` |
 | 8 | `merge.auto` | `merge` / `handoff` |
 
-An unreadable gate answers `stop reason=<r>` (fail closed). Gates 3 and 4 set `pipeline:blocked`; only a human clears it.
+An unreadable gate answers `stop reason=<r>` (fail closed). Gates 3, 4 and 4b set `pipeline:blocked`; only a human clears it (for 4b, fix the body with `edit-pr-body` first).
 
 ### Verify once, QA trusts CI
 
@@ -1190,6 +1199,7 @@ Two optional files in the target repo steer the review and QA stages. `REVIEW.md
 - **Keys.** `review.guide` (default `REVIEW.md`) and `verify.guide` (default `VERIFY.md`) are repo-only. Set one to another repo-relative path to rename the file, or to `""` to switch that guide off. A path with a leading `/`, a `..` component or a character outside `A-Za-z0-9_./-` is not read; one stderr line names the key.
 - **Verdict.** With a guide, the reviewer ends its verdict comment's DETAILS with `Guide rules applied: <short rule names or quotes, or none>`, so you can see whether the guide is followed.
 - **Approvals.** A changed guide stales an approval: `REVIEW.md` and `VERIFY.md` (any depth) and the configured guide paths are never waived by `merge.approval_waiver_paths`.
+- **Developer checklist.** `developer.checklist` (repo-only, empty by default, no default file) names a third file, read and fenced the same way (base branch, 8192 bytes, data below Talos's rules, the same unsafe-path rule with one stderr line naming `developer.checklist`) into the developer's first prompt. The fix-round prompt carries none, and there is no `Guide rules applied:` ask. With the key set, the merge gate also runs `check-pr-body` and blocks (`pr-body-checklist`) a PR body without a `Positive controls:` section or an `AC to test map:` section; unset, nothing changes.
 
 ### Comment templates
 

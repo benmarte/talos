@@ -74,8 +74,8 @@
 #                                 | ci-pending | ci-rerun attempt=<k> | rerun-unsupported
 #                                 | ci-failed | base-synced | conflict-check-unverified
 #                                 | awaiting-human-merge | closing-keyword-unverified
-#            verdict=block      reason=forbidden-files | closing-keyword | siblings-capped
-# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge closing-keyword-unverified forbidden-files closing-keyword siblings-capped
+#            verdict=block      reason=forbidden-files | closing-keyword | pr-body-checklist | siblings-capped
+# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge closing-keyword-unverified forbidden-files closing-keyword pr-body-checklist siblings-capped
 #   stop: usage unknown-verb scripts-missing python-missing scratch-unavailable config-unreadable
 #         draft-resolve-failed view-failed labels-unreadable approval-sha-failed
 #         unsupported-verb:<verb> draft-unverified ci-unverified head-unresolved
@@ -1384,6 +1384,18 @@ _talos_gate_merge() {
     *) _talos_stop "unsupported-verb:check-closing-keyword" ;;
   esac
 
+  # 4b. PR body checklist (#831), only when the repo names a developer checklist:
+  # the body must carry the positive-control list and the AC to test map. The
+  # developer or owner fixes the body with edit-pr-body and clears the block.
+  if [ -n "$(cfg developer.checklist)" ]; then
+    _talos_cap _vcs check-pr-body "$_pr"
+    case "$_RC" in
+      0) : ;;
+      1) _talos_gate_block pr-body-checklist "$_pr" "$_n" "$_ERR" "PR #$_pr body lacks a required section" ;;
+      *) _talos_stop "unsupported-verb:check-pr-body" ;;
+    esac
+  fi
+
   # 5. Draft state, only with PR_DRAFT = true: a draft was never CI-verified.
   _draft="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" resolve)" || _talos_stop draft-resolve-failed
   case "$_draft" in true | false) : ;; *) _talos_stop draft-resolve-failed ;; esac
@@ -2295,8 +2307,9 @@ with open(out, "wb") as f:
 '
 
 # _talos_prompt_guide <role> <base> (#789): sets GUIDE_BLOCK from the repo's own
-# REVIEW.md (reviewer, security, adversarial; key review.guide) or VERIFY.md (qa;
-# key verify.guide), read from origin/<base> with plain git, never from the
+# REVIEW.md (reviewer, security, adversarial; key review.guide), VERIFY.md (qa;
+# key verify.guide) or developer checklist (developer; key developer.checklist,
+# no default file, #831), read from origin/<base> with plain git, never from the
 # working tree or the PR head, so it is the same on every provider and a PR
 # cannot rewrite its own review rules. Best effort: a missing ref, path or file
 # is no guide and no message; an explicit empty key turns the guide off (told
@@ -2305,7 +2318,7 @@ with open(out, "wb") as f:
 _talos_prompt_guide() {
   local _role="$1" _b="$2" _k _p _d="$_CFG_CACHE_DIR" _ask=0
   _talos_pv GUIDE_BLOCK ""
-  case "$_role" in qa) _k=verify.guide ;; *) _k=review.guide ;; esac
+  case "$_role" in qa) _k=verify.guide ;; developer) _k=developer.checklist ;; *) _k=review.guide ;; esac
   [ "$_role" != reviewer ] || _ask=1
   _p="$(cfg "$_k" "")"
   if [ -z "$_p" ]; then
@@ -2660,7 +2673,10 @@ post-approval stamps the head SHA you verified (the PR head, not a stale checkou
 
   # #789: the repo's REVIEW.md / VERIFY.md; the other shapes' templates have no marker.
   if [ "$_shape" = first ]; then
-    case "$_role" in reviewer | security | adversarial | qa) _talos_prompt_guide "$_role" "$_base" ;; esac
+    case "$_role" in reviewer | security | adversarial | qa | developer) _talos_prompt_guide "$_role" "$_base" ;; esac
+  else
+    # The developer fix-round prompt shares developer.md and carries no checklist (#831).
+    [ "$_role" != developer ] || _talos_pv GUIDE_BLOCK ""
   fi
 
   case "$_role" in
