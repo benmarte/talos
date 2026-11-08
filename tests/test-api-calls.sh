@@ -20,7 +20,7 @@
 #
 #                         GraphQL        REST
 #   before (611de56)         49           86
-#   after                     6           71
+#   after                     6           72       (#834: gate merge reads batch-members, one list-issues page)
 #   by area (before -> after):
 #     1st next, evidence       0 -> 0      0 -> 3   (#521: a PR that misses an approval label; the PR, its comments, the login)
 #     board, 3 moves          16 -> 6      0 -> 0
@@ -39,9 +39,9 @@ use_stubs
 [ -z "${TALOS_API_CALLS_NO_GRAPHQL:-}" ] || export STUB_GH_NO_GRAPHQL=1
 
 BEFORE_GRAPHQL=49 BEFORE_REST=86
-# CEIL_REST 71 -> 75 (#836): with ci.parallel_with_qa on (the default with required_checks) post-approval qa
+# CEIL_REST 71 -> 76 (#836 +4, #834 +1: gate and spec-usable read batch-members): with ci.parallel_with_qa on (the default with required_checks) post-approval qa
 # reads the required checks at the head once before posting and its stamp check reads them again.
-CEIL_GRAPHQL=6 CEIL_REST=75
+CEIL_GRAPHQL=6 CEIL_REST=76
 
 export CLAUDE_CONFIG_DIR="$SANDBOX/cc" TALOS_RETRY_SLEEP_SCALE=0
 TALOS="$TALOS_ROOT/scripts/talos.sh"

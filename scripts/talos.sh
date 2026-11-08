@@ -230,7 +230,7 @@
 #                       open PR that names a pipeline.risk_areas entry in its title,
 #                       body or latest PM spec while the spec has no `## Threat model`)
 #           action=ask-owner issue=<N> question=<sanitised>
-#           action=wait reason=<draft|ci|human-merge|blocked|owner|lease|dependency|cap|none>
+#           action=wait reason=<draft|ci|human-merge|blocked|owner|lease|dependency|batched|cap|none>
 #                       [retry_after_s=<s>]
 #           The draft wait is key-carrying: action=wait reason=draft pr=<M> issue=<N>
 #         A planner or adversarial dispatch and the draft wait end in ` ref=<topic>`.
@@ -258,7 +258,7 @@
 #         max-total-dispatches budget-exceeded record-failed context-budget
 #         (exit 2 for usage; exit 0 for context-budget; else 1)
 #   warn: context-unknown
-#   wait: draft ci human-merge blocked owner lease none dependency cap
+#   wait: draft ci human-merge blocked owner lease none dependency batched cap
 #
 # map     The project map (#614): one self-contained HTML page for this repository
 #         and an index of every repository rendered under TALOS_HOME, from local
@@ -1309,13 +1309,55 @@ _talos_gate_recover_stamps() {
   done <<< "$_OUT"
 }
 
+# _talos_batch_members <lead> (#834): _MEMBERS is the lead's batch members, space-
+# separated (empty for none). Fails (and leaves it empty) when the verb cannot
+# answer: the issue then behaves as unbatched.
+_talos_batch_members() {
+  _MEMBERS=""
+  _talos_cap _vcs batch-members "$1"
+  [ "$_RC" -eq 0 ] || return 1
+  _MEMBERS="$(grep -E '^[0-9]+$' <<< "$_OUT" | tr '\n' ' ')"
+}
+
+# _talos_closing_check <pr> <lead> <issue>: the gate's closing-keyword step for
+# one issue of the PR (the lead, or a member of its batch, #834). A member the PR
+# body does not close blocks, as a lead with sibling PRs open does.
+_talos_closing_check() {
+  local _pr="$1" _n="$2" _m="$3"
+  if [ "$_m" != "$_n" ]; then
+    _talos_cap _vcs pr-closes-issue "$_pr" "$_m"
+    case "$_RC:$_OUT" in
+      0:closes) : ;;
+      0:part-of)
+        _talos_gate_block closing-keyword "$_pr" "$_n" "PR #$_pr has no closing keyword for #$_m, a member of the batch led by #$_n" \
+          "no closing keyword for batch member #$_m in PR #$_pr" ;;
+      *) _talos_emit reason closing-keyword-unverified; _talos_verdict wait ;;
+    esac
+  fi
+  _talos_cap _vcs check-closing-keyword "$_pr" "$_m"
+  case "$_RC" in
+    0)
+      case "$_OUT" in
+        *"talos:closing-keyword-unverified"*"reason=siblings-capped"*)
+          _talos_gate_block siblings-capped "$_pr" "$_n" "$_OUT" "closing keyword unverified for PR #$_pr: siblings capped" ;;
+        *"talos:closing-keyword-unverified"*)
+          # Unverified: an issue must not close while a sibling PR may be open.
+          # Transient, so wait (no label, no comment); the next run checks again.
+          _talos_emit reason closing-keyword-unverified
+          _talos_verdict wait ;;
+      esac ;;
+    1) _talos_gate_block closing-keyword "$_pr" "$_n" "$_ERR" "closing keyword in PR #$_pr with sibling PRs open" ;;
+    *) _talos_stop "unsupported-verb:check-closing-keyword" ;;
+  esac
+}
+
 # gate merge <pr> <issue>: Step 4 in its order, one verdict. It writes only what
 # the prose wrote (labels, comments, the notice, the update push) and never
 # merges: on `merge` the orchestrator runs `merge-pr`.
 _talos_gate_merge() {
   [ "$#" -eq 2 ] || _talos_stop usage 2
   local _pr="$1" _n="$2" _prl _isl _all _missing="" _line _r _stale="" _stalelist=""
-  local _draft _cierr _sha _cnt _synced=0
+  local _draft _cierr _sha _cnt _synced=0 _m _MEMBERS
   _talos_isnum "$_pr" && _talos_isnum "$_n" || _talos_stop usage 2
   _talos_prepare gate-merge pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
                             pipeline-draft-check.sh pipeline-notify.sh pipeline-mergebase.sh
@@ -1384,22 +1426,10 @@ _talos_gate_merge() {
     *) _talos_stop "unsupported-verb:check-pr-files" ;;
   esac
 
-  # 4. Closing keyword.
-  _talos_cap _vcs check-closing-keyword "$_pr" "$_n"
-  case "$_RC" in
-    0)
-      case "$_OUT" in
-        *"talos:closing-keyword-unverified"*"reason=siblings-capped"*)
-          _talos_gate_block siblings-capped "$_pr" "$_n" "$_OUT" "closing keyword unverified for PR #$_pr: siblings capped" ;;
-        *"talos:closing-keyword-unverified"*)
-          # Unverified: an issue must not close while a sibling PR may be open.
-          # Transient, so wait (no label, no comment); the next run checks again.
-          _talos_emit reason closing-keyword-unverified
-          _talos_verdict wait ;;
-      esac ;;
-    1) _talos_gate_block closing-keyword "$_pr" "$_n" "$_ERR" "closing keyword in PR #$_pr with sibling PRs open" ;;
-    *) _talos_stop "unsupported-verb:check-closing-keyword" ;;
-  esac
+  # 4. Closing keyword: the lead, then every member of its batch (#834).
+  _talos_closing_check "$_pr" "$_n" "$_n"
+  _talos_batch_members "$_n" || _MEMBERS=""
+  for _m in $_MEMBERS; do _talos_closing_check "$_pr" "$_n" "$_m"; done
 
   # 4b. PR body checklist (#831), only when the repo names a developer checklist:
   # the body must carry the positive-control list and the AC to test map. The
@@ -1598,8 +1628,13 @@ for i in json.load(sys.stdin):
     items.append((n, names, i.get("body") or ""))
 items.sort(key=lambda t: t[0])
 if mode == "heal":
-    for n, names, _ in items:
-        if any(isinstance(x, str) and x.startswith("pipeline:") for x in names):
+    opened = set(n for n, _, _ in items)
+    for n, names, b in items:
+        # A batch member (#834) whose lead is closed rides the merged PR of that lead.
+        m = re.search(r"^[ \t]*Batched into:[ \t]*#([0-9]+)(?![0-9])", b, re.M)
+        if m and int(m.group(1)) not in opened:
+            print("member", n, m.group(1))
+        elif any(isinstance(x, str) and x.startswith("pipeline:") for x in names):
             print("heal", n)
     sys.exit(0)
 opened = set(n for n, _, _ in items)
@@ -1771,9 +1806,21 @@ _talos_issue_open() {
   local _o
   case "$(cfg vcs.provider)" in github | github-api) ;; *) return 0 ;; esac
   _talos_cap _vcs list-issues
+  # Kept for _talos_post_merge_members (#834): the batch members are in this list.
+  if [ "$_RC" -eq 0 ]; then _TALOS_ISSUE_LIST="$_OUT"; else _TALOS_ISSUE_LIST=""; fi
   [ "$_RC" -eq 0 ] && _o="$(python3 -I -c "$_TALOS_OPEN_PY" <<< "$_OUT")" || return 2
   _talos_has "$_o" "$1"
 }
+
+# The members of lead argv[1] in a list-issues array on stdin, one per line (#834).
+_TALOS_MEMBERS_PY='
+import json, re, sys
+line = re.compile(r"^[ \t]*Batched into:[ \t]*#" + sys.argv[1] + r"(?![0-9])", re.M)
+for n in sorted(i.get("number") for i in json.load(sys.stdin)
+                if isinstance(i.get("number"), int) and line.search(i.get("body") or "")):
+    print(n)
+'
+_TALOS_ISSUE_LIST=""
 
 # _talos_post_merge_run <pr> <issue> <heal 0|1> <ci-runs or empty> [known-open]:
 # the items, in order. Siblings (a merge, not a heal), the issue's state and,
@@ -1891,6 +1938,26 @@ _talos_post_merge_run() {
   _talos_spend "$_n" "$_pr"
 }
 
+# _talos_post_merge_members <pr> <lead> <ci-runs or empty> (#834): the post-merge
+# items for each member of the lead's batch, with the same PR. The lead's own run
+# already synced the siblings (heal=1 skips that); a member whose items fail
+# warns and the others still run. A member left open comes back in the sweep.
+_talos_post_merge_members() {
+  local _pr="$1" _lead="$2" _ci="$3" _m _MEMBERS
+  # The list this run already read (github: the issue-state read) answers it, so
+  # an unbatched merge makes no extra call; otherwise the one shared verb does.
+  if [ -n "$_TALOS_ISSUE_LIST" ]; then
+    _MEMBERS="$(python3 -I -c "$_TALOS_MEMBERS_PY" "$_lead" <<< "$_TALOS_ISSUE_LIST" | tr '\n' ' ')" || _MEMBERS=""
+  elif ! _talos_batch_members "$_lead"; then
+    _talos_warn batch-members-unreadable "issue=$_lead"
+    return 0
+  fi
+  for _m in $_MEMBERS; do
+    _talos_post_merge_run "$_pr" "$_m" 1 "$_ci"
+  done
+  _PM_ISSUE="$_lead"
+}
+
 # _talos_handoff <pr> <issue> <details-file>: human-merge mode (merge.auto off).
 # approved.md on the PR, then the relay. The issue stays open and no post-merge
 # item runs: the human's merge closes it.
@@ -1934,6 +2001,7 @@ _talos_post_merge() {
   else
     _talos_emit post_merge done
     _talos_post_merge_run "$_pr" "$_n" "$_heal" "$_ci"
+    _talos_post_merge_members "$_pr" "$_n" "$_ci"
     # The merge path is the run that held the issue's lease (`next` answered
     # action=merge): its work complete, free it (#470, AC4). A heal is another
     # run's bookkeeping and releases nothing.
@@ -1954,7 +2022,7 @@ _talos_ids() {
 
 # sweep [<issue-id>...]: Step 1 items 2 and 4-8, the ids being this run's queue.
 _talos_sweep() {
-  local _issues="" _k _n _pr _prs="" _list="" _healed="" _bi="" _bp="" _ki=0 _kp=0 _plan _s _i _b _e _carried
+  local _issues="" _k _n _lead _pr _prs="" _list="" _healed="" _bi="" _bp="" _ki=0 _kp=0 _plan _s _i _b _e _carried
   _talos_ids "$@"
   _talos_prepare sweep pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
                        pipeline-status.sh \
@@ -1967,15 +2035,17 @@ _talos_sweep() {
   _talos_cap _vcs list-issues
   if [ "$_RC" -eq 0 ] && _list="$(python3 -I -c "$_TALOS_SWEEP_PY" heal "" <<< "$_OUT")"; then
     _issues="$_OUT"
+    _TALOS_ISSUE_LIST="$_OUT"
   else
     _talos_warn issues-unlisted
     _list=""
   fi
 
   # 2. Heal merged-but-open issues. find-pr exit 2 is "not verified", never "no PR".
-  while read -r _k _n <&3; do
+  while read -r _k _n _lead <&3; do
     [ -n "$_n" ] || continue
-    _talos_cap _vcs find-pr "$_n" merged
+    # A batch member (#834) is healed with the merged PR of its lead.
+    _talos_cap _vcs find-pr "${_lead:-$_n}" merged
     case "$_RC" in
       0) : ;;
       2) _talos_warn find-pr-unverified "issue=$_n"; continue ;;
@@ -1990,6 +2060,7 @@ _talos_sweep() {
     _healed="${_healed:+$_healed,}$_n"
     _talos_emit heal "$_n pr=$_pr"
     _talos_post_merge_run "$_pr" "$_n" 1 "" 1
+    [ "$_k" = member ] || _talos_post_merge_members "$_pr" "$_n" ""
   done 3<<< "$_list"
 
   _PM_ISSUE=""

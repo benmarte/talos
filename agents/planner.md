@@ -39,9 +39,16 @@ PLAN:
 
 3. <Title of sub-task 3>
    Context: <1–3 sentences>
+
+4. <Title of a small sub-task in the same area as 2>
+   Context: <1–3 sentences>
+   Batch into: 2
 ```
 
 Rules:
+- `Batch into: <j>` (optional): a small same-area sub-task rides the branch and
+  PR of lower-numbered sub-task `j`, the lead; at most 4 members per lead. A
+  member has no `Depends on:` and is not itself a lead.
 - `Depends on: N` is optional; only include it when this sub-task MUST follow
   sub-task N (serial dependency). Omit it for independent tasks.
 - Sub-task titles are short (≤ 80 chars) and start with a verb (Add, Fix, Update…).

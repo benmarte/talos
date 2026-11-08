@@ -279,7 +279,18 @@ pm 9 42
 assert_eq "0" "$(pjournal | grep -c '^vcs comment-issue 43 ')" "AC5 a member with the issue-closed marker gets no second comment"
 assert_contains "$OUT" "recorded=yes" "AC5 the member's run sees its marker"
 
-# An unbatched issue: members are asked once, nothing else changes.
+# A provider whose post-merge reads no issue list (gitlab) asks the verb.
+post_reset
+printf '%s' '{"vcs": {"provider": "gitlab"}}' > "$SANDBOX/talos.pipeline.json"
+pset batch-members 0 "43
+"
+pset pr-closes-issue.9.42 0 "closes"
+pset pr-closes-issue.9.43 0 "closes"
+pm 9 42
+assert_contains "$(pjournal)" "vcs batch-members 42" "AC5 a provider with no issue list reads the members with batch-members"
+assert_contains "$(pjournal)" "vcs close-issue 43 closed by PR #9" "AC5 and closes the member it names"
+
+# An unbatched issue: no extra read, nothing else changes.
 post_reset
 pset list-issues 0 "$(list_of "$(issue_json 42 "")")"
 pm 9 42
@@ -368,7 +379,8 @@ spec '- [ ] AC1 greet prints hello (test)' '' "$TESTS"
 usable
 assert_eq "spec-usable: ok" "$OUT" "AC7 an issue with no member is unchanged"
 unset QA_MEMBERS
-sed -i.bak 's/^  batch-members) .*$//' scripts/pipeline-vcs.sh && rm -f scripts/pipeline-vcs.sh.bak
+grep -v '^  batch-members) ' scripts/pipeline-vcs.sh > scripts/pipeline-vcs.sh.new
+mv scripts/pipeline-vcs.sh.new scripts/pipeline-vcs.sh
 usable
 assert_eq "spec-usable: ok" "$OUT" "AC7 a provider that cannot answer batch-members behaves as unbatched"
 
