@@ -1310,12 +1310,16 @@ _talos_gate_recover_stamps() {
 }
 
 # _talos_batch_members <lead> (#834): _MEMBERS is the lead's batch members, space-
-# separated (empty for none). Fails (and leaves it empty) when the verb cannot
-# answer: the issue then behaves as unbatched.
+# separated (empty for none). A provider that lacks the verb ("unknown verb")
+# behaves as unbatched: no member, success. A read that failed returns 1, empty:
+# the caller must not treat that as "no members".
 _talos_batch_members() {
   _MEMBERS=""
   _talos_cap _vcs batch-members "$1"
-  [ "$_RC" -eq 0 ] || return 1
+  if [ "$_RC" -ne 0 ]; then
+    case "$_ERR" in *"unknown verb"*) return 0 ;; esac
+    return 1
+  fi
   _MEMBERS="$(grep -E '^[0-9]+$' <<< "$_OUT" | tr '\n' ' ')"
 }
 
@@ -1428,7 +1432,8 @@ _talos_gate_merge() {
 
   # 4. Closing keyword: the lead, then every member of its batch (#834).
   _talos_closing_check "$_pr" "$_n" "$_n"
-  _talos_batch_members "$_n" || _MEMBERS=""
+  # A members read that failed is not "no members": wait, retried next run.
+  _talos_batch_members "$_n" || { _talos_emit reason closing-keyword-unverified; _talos_verdict wait; }
   for _m in $_MEMBERS; do _talos_closing_check "$_pr" "$_n" "$_m"; done
 
   # 4b. PR body checklist (#831), only when the repo names a developer checklist:
