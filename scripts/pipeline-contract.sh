@@ -15,7 +15,7 @@
 # form) -- those identifiers are this list prefixed with "talos:", not a
 # separately maintained set.
 TALOS_ROLES=(
-  developer qa reviewer security adversarial docs validator pm orchestrator planner
+  developer qa reviewer security adversarial docs validator pm orchestrator planner threat
 )
 
 # ── Runners ────────────────────────────────────────────────────────────────
