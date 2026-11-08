@@ -1269,6 +1269,17 @@ _wt_handoff_body() {
   exit 0
 }
 
+# _wt_base_held_elsewhere <base> -- success when a worktree other than this
+# checkout has refs/heads/<base> checked out (#842).
+_wt_base_held_elsewhere() {
+  local top
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+  git worktree list --porcelain 2>/dev/null | awk -v top="$top" -v ref="refs/heads/$1" '
+    /^worktree / { path = substr($0, 10) }
+    $0 == "branch " ref && path != top { found = 1 }
+    END { exit found ? 0 : 1 }'
+}
+
 # _wt_to_base_body <issue-number> -- the work of `to-base` (#601). stdout is the
 # one state line (git's own stdout goes to stderr); every path exits 0, the
 # state line is the answer.
@@ -1298,15 +1309,30 @@ _wt_to_base_body() {
     echo "talos:checkout state=failed reason=dirty"
     exit 0
   fi
-  if [ -z "$base" ] || ! git checkout -q "$base" -- >&2; then
-    echo "pipeline-worktree: to-base: could not switch from $from to ${base:-the base branch (none resolved)}" >&2
-    echo "talos:checkout state=failed reason=switch-failed"
-    exit 0
-  fi
-  if ! git pull --ff-only -q >&2; then
-    echo "pipeline-worktree: to-base: on $base, but git pull --ff-only failed; $from kept" >&2
-    echo "talos:checkout state=failed reason=pull-failed"
-    exit 0
+  # The base is checked out by another worktree (a lane home, #842): git
+  # refuses a second checkout of it, so fetch and detach at origin/<base>.
+  if [ -n "$base" ] && _wt_base_held_elsewhere "$base"; then
+    if ! git fetch -q origin "$base" >&2; then
+      echo "pipeline-worktree: to-base: git fetch origin $base failed; $from kept" >&2
+      echo "talos:checkout state=failed reason=pull-failed"
+      exit 0
+    fi
+    if ! git checkout -q --detach "origin/$base" -- >&2; then
+      echo "pipeline-worktree: to-base: could not detach $from at origin/$base" >&2
+      echo "talos:checkout state=failed reason=switch-failed"
+      exit 0
+    fi
+  else
+    if [ -z "$base" ] || ! git checkout -q "$base" -- >&2; then
+      echo "pipeline-worktree: to-base: could not switch from $from to ${base:-the base branch (none resolved)}" >&2
+      echo "talos:checkout state=failed reason=switch-failed"
+      exit 0
+    fi
+    if ! git pull --ff-only -q >&2; then
+      echo "pipeline-worktree: to-base: on $base, but git pull --ff-only failed; $from kept" >&2
+      echo "talos:checkout state=failed reason=pull-failed"
+      exit 0
+    fi
   fi
   # The PR is merged; a squash merge is not an ancestor, so `-d` would refuse.
   [ -z "$branch" ] || git branch -D "$branch" >&2 \

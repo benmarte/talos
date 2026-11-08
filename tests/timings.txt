@@ -280,4 +280,5 @@
 25 test-work-video-827.sh
 41 test-worktree-checkpoint.sh
 24 test-worktree-commit-docs.sh
+2 test-worktree-to-base-842.sh
 77 test-worktree.sh
