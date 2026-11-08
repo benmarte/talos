@@ -22,6 +22,7 @@ itself (never export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand):
 
 Verify commands (run once, immediately before your final commit):
 {{VERIFY_COMMANDS}}
+{{GUIDE_BLOCK}}
 
 {{STOP_RULE}}
 
