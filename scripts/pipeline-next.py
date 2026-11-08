@@ -257,13 +257,14 @@ def answered_action(pr):
     return action('dispatch', stage='developer', pr=pr['n'], issue=pr['issue'])
 
 
-def pick_order(data, inflight, ready):
+def pick_order(data, inflight, ready, overlapping=()):
     """The one order of the issue side (#601): priority, then in-flight before
     ready, then the issue number. The priority is the collect's `priority`
     object (0, 1 or 2); an issue it does not list, or lists with anything else,
     is unlabelled and comes last. Ready issues of one priority keep the order
     of `ready` (the collect's `queued`, already sorted by priority and number),
-    so a state without the object still walks the queue as collected."""
+    so a state without the object still walks the queue as collected. The ready
+    issues in `overlapping` (#830) follow the others of their priority."""
     prio = data.get('priority')
     prio = prio if isinstance(prio, dict) else {}
     flight = set(inflight)
@@ -273,7 +274,8 @@ def pick_order(data, inflight, ready):
         p = prio.get(str(n))
         return p if isinstance(p, int) and not isinstance(p, bool) and 0 <= p <= 2 else 3
 
-    return sorted(flight | set(ready), key=lambda n: (rank(n), 0, n) if n in flight else (rank(n), 1, pos[n]))
+    return sorted(flight | set(ready),
+                  key=lambda n: (rank(n), 0, 0, n) if n in flight else (rank(n), 1, n in overlapping, pos[n]))
 
 
 # ── collect ──────────────────────────────────────────────────────────────────
@@ -462,6 +464,80 @@ def pr_side(data):
     return 'issue-side'
 
 
+# ── expected files and overlap (#830) ────────────────────────────────────────
+# Which issues touch the same files decides only the ORDER of the ready walk:
+# an overlapping issue is demoted behind the others of its priority, never
+# blocked.
+
+FILES_HEADING_RE = re.compile(
+    r'^\s*(?:#{1,6}|[*_]{2})\s*files\s+(?:touched|likely\s+to\s+change)[\s:*_]*$', re.I)
+MAX_LINE = 2000  # a longer line is no heading or bullet of a files list
+GENERATED_NAMES = frozenset(('querier.go', 'openapi.yaml', 'schema.ts'))
+MIGRATION_DIRS = frozenset(('migrations', 'migrate'))
+
+
+def _drop_note(t):
+    """t without a trailing parenthesised note."""
+    i = t.rfind('(')
+    if t.endswith(')') and i >= 0 and ')' not in t[i + 1:-1]:
+        return t[:i].rstrip()
+    return t
+
+
+def files_list(text):
+    """The paths of the `Files touched` / `Files likely to change` list of a
+    body or spec: the bullets under that heading or bold label, up to the first
+    blank line (after the first bullet) or the next heading. A bullet is its
+    first backticked span, else its text without a trailing parenthesised note."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if len(line) > MAX_LINE or not FILES_HEADING_RE.match(line):
+            continue
+        out = []
+        for item in lines[i + 1:]:
+            if not item.strip():
+                if out:
+                    break
+                continue
+            m = re.match(r'[-*+]\s+(.+)$', item.strip()) if len(item) <= MAX_LINE else None
+            if not m:
+                break
+            t = _drop_note(m.group(1))
+            b = re.search(r'`([^`]+)`', t)
+            t = (b.group(1) if b else t).strip()
+            if t.startswith('./'):
+                t = t[2:]
+            if t and ' ' not in t:
+                out.append(t)
+        if out:
+            return out
+    return []
+
+
+def _is_generated(path):
+    base = path.rsplit('/', 1)[-1]
+    return base in GENERATED_NAMES or (base.startswith('generated') and base.endswith('.go'))
+
+
+def _is_migration(path):
+    return any(part in MIGRATION_DIRS for part in path.split('/')[:-1])
+
+
+def comparable_files(paths):
+    """The paths that can conflict: generated files dropped (they are
+    regenerated on merge), every migration standing for one shared slot (two
+    issues that each add one allocate the same number)."""
+    return set('<migration>' if _is_migration(p) else p for p in paths if not _is_generated(p))
+
+
+def issues_overlap(a, b):
+    """a and b are (files list, area labels). Two lists overlap when they share a
+    comparable path; when either has no list, when they share an `area:` label."""
+    if a[0] and b[0]:
+        return bool(comparable_files(a[0]) & comparable_files(b[0]))
+    return bool(a[1] & b[1])
+
+
 # ── issue-side: the issue-side half of `next` (#471) ─────────────────────────
 # Prints exactly one line:
 #   action=dispatch stage=<role> issue=<N>          the issue's one stage
@@ -523,20 +599,40 @@ def issue_side(data, o):
             raise Stop('state-unavailable')
         return p.returncode, p.stdout.decode('utf-8', 'replace'), p.stderr.decode('utf-8', 'replace')
 
+    docs = {}  # n -> the view-issue document, read once per walk
+
     def view_issue(n):
-        rc, out, err = run_vcs('view-issue', str(n))
-        if rc != 0:
-            if UNSUPPORTED_RE.search(err):
-                raise Stop('unsupported-verb:view-issue')
-            raise Stop('state-unavailable')
+        if n not in docs:
+            rc, out, err = run_vcs('view-issue', str(n))
+            if rc != 0:
+                if UNSUPPORTED_RE.search(err):
+                    raise Stop('unsupported-verb:view-issue')
+                raise Stop('state-unavailable')
+            try:
+                d = json.loads(out)
+            except ValueError:
+                raise Stop('state-unavailable')
+            if not isinstance(d, dict):
+                raise Stop('state-unavailable')
+            docs[n] = d
+        body = docs[n].get('body')
+        return _label_set(docs[n]), body if isinstance(body, str) else ''
+
+    def expected_files(n):
+        """(files list, area labels) of issue n (#830): the list of the body,
+        else of the PM spec; None when the issue cannot be read (an ordering
+        preference never fails the walk)."""
         try:
-            d = json.loads(out)
-        except ValueError:
-            raise Stop('state-unavailable')
-        if not isinstance(d, dict):
-            raise Stop('state-unavailable')
-        body = d.get('body')
-        return _label_set(d), body if isinstance(body, str) else ''
+            labels, body = view_issue(n)
+            files = files_list(body)
+            if not files:
+                rc, out, _ = run_vcs('view-issue', str(n), '--spec')
+                if rc == 0:
+                    for c in (json.loads(out).get('comments') or [])[-1:]:
+                        files = files_list(c.get('body') or '')
+        except (Stop, ValueError, AttributeError):
+            return None
+        return files, set(l for l in labels if l.startswith('area:'))
 
     def ask_owner(n):
         e = by_owner.get(n)
@@ -683,8 +779,19 @@ def issue_side(data, o):
     cap = None
     dep_blocked = False
     ready_wait = ''  # the wait a ready candidate's own routing answered: it ends the ready walk
+    # The ready issues whose expected files overlap an issue in flight (held or
+    # leased) go behind the others of their priority (#830). Nothing is read
+    # unless something is in flight and there is a choice to order.
+    overlapping = set()
+    busy_now = flight | busy
+    if busy_now and len(ready) > 1:
+        theirs_files = [e for e in (expected_files(m) for m in sorted(busy_now)) if e]
+        for n in ready:
+            mine = expected_files(n)
+            if mine and any(issues_overlap(mine, t) for t in theirs_files):
+                overlapping.add(n)
     walk['on'] = True
-    for n in pick_order(data, inflight, ready):
+    for n in pick_order(data, inflight, ready, overlapping):
         try:
             if n in flight:
                 if n in busy:
