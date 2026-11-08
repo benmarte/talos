@@ -2061,7 +2061,7 @@ _TALOS_PROMPT_NAMES="ISSUE PR ROLE ROLE_TITLE BASE_BRANCH VCS_PROVIDER COMMENTS_
   VERIFY_TARGETED VERIFY_TIMEOUT_MS VERIFY_CI_WAIT_S VERIFY_QA_MODE VERIFY_COMMANDS REQUIRED_CHECKS_LINE
   VERIFY_TIMEOUT_LINE SPEC_SOURCE ISOLATION_NOTE PRIOR_STAGE_SUMMARY HANDOFF_LINE DRAFT_PR_LINE FIX_ROUND_LINES
   PASSED_LEAD DOCS_DIFF_INSTRUCTION TITLE BODY RESTAMP_INPUTS STOP_RULE QA_CI_WAIT_LINE QA_RULE QA_GATE_STEP
-  QA_TARGETED_LINE WORKTREE_PATH CHANGE_BLOCK GUIDE_BLOCK SCRIPTS_DIR TEMPLATES_DIR INSTALL_LINES"
+  QA_TARGETED_LINE QA_WALK_LINE WORKTREE_PATH CHANGE_BLOCK GUIDE_BLOCK SCRIPTS_DIR TEMPLATES_DIR INSTALL_LINES"
 
 # The renderer: argv = template, values file, output file, allowed names. The
 # values file is NUL-delimited NAME, VALUE pairs; a NAME written `<NAME` carries
@@ -2563,6 +2563,13 @@ _talos_prompt() {
         _talos_pv QA_TARGETED_LINE ""
       else
         _talos_pv QA_TARGETED_LINE "Targeted run: this repo has no \`tests/run-tests.sh\`, so the step 2 command that runs it does not apply. The targeted run is the one \`qa-run\` already did through \`verify.targeted_commands\`; the verdict reports that, never a missing file."
+      fi
+      # #827: with verify.walk.specs set, qa-run attaches only the work video and
+      # the verdict reports it; unset, the line is empty and the prompt unchanged.
+      if [ -n "$(cfg verify.walk.specs)" ]; then
+        _talos_pv QA_WALK_LINE "Work video: \`qa-run\` attaches only the recordings of the e2e specs this PR touches. Put its \`qa-run: work video ...\` line in the verdict, attached or not attached with its reason. Write a Results table in the verdict: per-suite pass/fail counts, known flakes, and the lint, gitleaks and generate-gate results."
+      else
+        _talos_pv QA_WALK_LINE ""
       fi
       # The QA pre-CI gate (#535): with it on, the PR itself says which text QA
       # gets -- a draft is pre-CI, a ready PR is today's -- and anything else
