@@ -891,6 +891,7 @@ _INT_KEYS = {
     "agents.stage_timeout_s": ("seconds", 60, 86400),
     "verify.e2e_artifacts.max_files": ("files", 1, 1000),
     "verify.e2e_artifacts.max_mb": ("megabytes", 1, 10240),
+    "verify.walk.max_mb": ("megabytes", 1, 10240),
 }
 
 def _int_spec(key):

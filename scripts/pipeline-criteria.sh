@@ -887,13 +887,36 @@ _QA_ART=0 _QA_ART_RAN=0 _QA_ART_DONE=0
 _QA_ART_DIR="" _QA_ART_MAXF=12 _QA_ART_MAXMB=25
 _QA_ART_TMP="" _QA_ART_TOP="" _QA_ART_PR="" _QA_ART_VCS=""
 _QA_ART_INC=()
+# verify.walk (#827, repo-only, opt-in): with verify.walk.specs set, only the
+# recordings of the e2e specs the PR adds or touches are attached, in place of
+# the #776 sample. _QA_WALK_REFUSE holds the reason the require_video flag turns
+# a PASS into a FAIL, else nothing.
+_QA_WALK=0 _QA_WALK_RAN=0 _QA_WALK_MAXMB=50 _QA_WALK_REQ=0 _QA_WALK_REFUSE=""
+_QA_WALK_SPECS=() _QA_WALK_UI=()
 
 # _qa_art_init TMP TOP PR VCS -- read the config; the feature is on only with a
 # dir and at least one include glob.
 _qa_art_init() {
   local dir g
   _QA_ART=0; _QA_ART_RAN=0; _QA_ART_DONE=0; _QA_ART_INC=()
+  _QA_WALK=0; _QA_WALK_RAN=0; _QA_WALK_REQ=0; _QA_WALK_REFUSE=""; _QA_WALK_SPECS=(); _QA_WALK_UI=()
   _QA_ART_TMP="$1"; _QA_ART_TOP="$2"; _QA_ART_PR="$3"; _QA_ART_VCS="$4"
+  while IFS= read -r g; do
+    [ -z "$g" ] || _QA_WALK_SPECS+=("$g")
+  done <<EOF
+$(cfg verify.walk.specs 2>/dev/null)
+EOF
+  if [ "${#_QA_WALK_SPECS[@]}" -gt 0 ]; then
+    _QA_WALK=1
+    while IFS= read -r g; do
+      [ -z "$g" ] || _QA_WALK_UI+=("$g")
+    done <<EOF
+$(cfg verify.walk.ui_paths 2>/dev/null)
+EOF
+    _QA_WALK_MAXMB="$(cfg verify.walk.max_mb 2>/dev/null)"
+    case "$_QA_WALK_MAXMB" in ''|*[!0-9]*|0) _QA_WALK_MAXMB=50 ;; esac
+    [ "$(cfg verify.walk.require_video 2>/dev/null)" != true ] || _QA_WALK_REQ=1
+  fi
   dir="$(cfg verify.e2e_artifacts.dir 2>/dev/null)"
   [ -n "$dir" ] || return 0
   while IFS= read -r g; do
@@ -918,6 +941,7 @@ EOF
 
 # _qa_art_begin -- the stamp a file must not be older than to belong to the next run.
 _qa_art_begin() {
+  _QA_WALK_RAN=1
   [ "$_QA_ART" -eq 1 ] || return 0
   touch "$_QA_ART_TMP/art.stamp"
 }
@@ -929,7 +953,7 @@ _qa_art_collect() {
   [ "$_QA_ART" -eq 1 ] || return 0
   _QA_ART_RAN=1
   local new="$_QA_ART_TMP/art.new"
-  rm -rf "${new:?}" "${_QA_ART_TMP:?}/art.new.list"
+  rm -rf "${new:?}" "${_QA_ART_TMP:?}/art.new.list" "${_QA_ART_TMP:?}/art.new.groups"
   mkdir -p "$new" || return 0
   python3 -I -c '
 import fnmatch, os, re, shutil, sys
@@ -952,7 +976,7 @@ for d, dirs, files in os.walk(root, followlinks=False):
             continue
         found.append(os.path.relpath(p, root))
 found.sort()
-used, out = set(), []
+used, out, groups = set(), [], []
 for r in found:
     n = re.sub(r"[^A-Za-z0-9_.-]", "-", r.replace(os.sep, "-")).lstrip(".-") or "file"
     stem, ext = os.path.splitext(n)
@@ -963,20 +987,175 @@ for r in found:
     used.add(n.lower())
     shutil.copyfile(os.path.join(root, r), os.path.join(dest, n))
     out.append(n)
+    groups.append("%s\t%s" % (n, os.path.dirname(r) or n))
 if out:
     print("\n".join(out))
+    with open(dest + ".groups", "w") as gf:
+        gf.write("\n".join(groups) + "\n")
 ' "$_QA_ART_TOP" "$_QA_ART_DIR" "$_QA_ART_TMP/art.stamp" "$new" "${_QA_ART_INC[@]}" > "$_QA_ART_TMP/art.new.list" 2>/dev/null || :
   if [ -s "$_QA_ART_TMP/art.new.list" ]; then
     rm -rf "${_QA_ART_TMP:?}/art"
     mv "$new" "$_QA_ART_TMP/art" && mv "$_QA_ART_TMP/art.new.list" "$_QA_ART_TMP/art.list"
+    mv "$_QA_ART_TMP/art.new.groups" "$_QA_ART_TMP/art.groups" 2>/dev/null || :
   else
-    rm -rf "${new:?}" "${_QA_ART_TMP:?}/art.new.list"
+    rm -rf "${new:?}" "${_QA_ART_TMP:?}/art.new.list" "${_QA_ART_TMP:?}/art.new.groups"
   fi
+}
+
+# The walk's selection (#827). argv: repo top, merge-base, the collected files
+# (<p>.list holds the flat names in sorted path order, <p>.groups name -> folder),
+# max_mb, the number of spec globs, then the spec globs and the ui_paths globs.
+# Prints `T <touched specs>`, `U <1 when the PR changes a ui path>`, `S <selected>`,
+# `V <1 when a video was selected>`, `F <name>` per file under the cap, `K <skipped>`
+# and `A <1 when a video is among the F files>`.
+_QA_WALK_PY='
+import os, re, subprocess, sys
+top, mb, art, maxmb, nspec = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5])
+spec_g, ui_g = sys.argv[6:6 + nspec], sys.argv[6 + nspec:]
+
+def glob_re(g):
+    out, i = "", 0
+    while i < len(g):
+        if g.startswith("**/", i):
+            out += "(.*/)?"; i += 3
+        elif g[i] == "*":
+            while i < len(g) and g[i] == "*":
+                i += 1
+            out += "[^/]*"
+        elif g[i] == "?":
+            out += "[^/]"; i += 1
+        else:
+            out += re.escape(g[i]); i += 1
+    return re.compile("^" + out + "$")
+
+spec_re, ui_re = [glob_re(g) for g in spec_g], [glob_re(g) for g in ui_g]
+is_spec = lambda p: any(r.match(p) for r in spec_re)
+
+def git(*a):
+    r = subprocess.run(["git", "-C", top] + list(a), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return [x for x in r.stdout.decode("utf-8", "replace").split("\0") if x] if r.returncode == 0 else []
+
+touched, changed = set(), []
+if mb:
+    changed = git("diff", "--name-only", "-z", mb + "..HEAD")
+    touched = set(p for p in git("diff", "--name-only", "--diff-filter=AMR", "-z", mb + "..HEAD") if is_spec(p))
+specs = set(p for p in git("ls-files", "-z") if is_spec(p)) | touched
+
+def norm(s):
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
+def slugs(p):
+    parts = p.split("/")
+    parts[-1] = parts[-1].split(".")[0]
+    if not norm(parts[-1]):
+        return []
+    parts = [x for x in (norm(x) for x in parts) if x]
+    return ["-".join(parts[k:]) for k in range(len(parts))]
+
+def lines(path):
+    try:
+        return [l.rstrip("\n") for l in open(path) if l.strip()]
+    except OSError:
+        return []
+
+names = lines(art + ".list")
+groups = dict(l.split("\t", 1) for l in lines(art + ".groups") if "\t" in l)
+owned = []
+for n in names:
+    nn = norm(n)
+    best, who = 0, set()
+    for p in specs:
+        for s in slugs(p):
+            if nn.startswith(s + "-"):
+                if len(s) > best:
+                    best, who = len(s), set([p])
+                elif len(s) == best:
+                    who.add(p)
+    if who & touched:
+        owned.append(n)
+
+VID, IMG = (".webm", ".mp4"), (".png", ".jpg", ".jpeg")
+last_img = {}
+for n in owned:
+    if n.lower().endswith(IMG):
+        last_img[groups.get(n, n)] = n
+sel = [n for n in owned if n.lower().endswith(VID) or last_img.get(groups.get(n, n)) == n]
+cap, total, keep, skipped = maxmb * 1024 * 1024, 0, [], 0
+for n in sel:
+    size = os.path.getsize(os.path.join(art, n))
+    if total + size > cap:
+        skipped += 1
+        continue
+    total += size
+    keep.append(n)
+print("T %d" % len(touched))
+print("U %d" % (1 if not ui_re or any(r.match(p) for p in changed for r in ui_re) else 0))
+print("S %d" % len(sel))
+print("V %d" % (1 if any(n.lower().endswith(VID) for n in sel) else 0))
+for n in keep:
+    print("F " + n)
+print("K %d" % skipped)
+print("A %d" % (1 if any(n.lower().endswith(VID) for n in keep) else 0))
+'
+
+# _qa_walk_attach -- the walk's attach (#827): the recordings of the specs the PR
+# adds or touches, one `qa-run: work video ...` line, ahead of the verdict line.
+# Sets _QA_WALK_REFUSE to the reason when require_video must fail a PASS.
+_qa_walk_attach() {
+  local plan line files=() rc=0 bref mb="" touched=0 ui=1 sel=0 vsel=0 skipped=0 vatt=0 reason="" vreason=""
+  _QA_WALK_REFUSE=""
+  if [ "$_QA_ART" -ne 1 ]; then
+    echo "qa-run: work video not attached (verify.e2e_artifacts.dir and include are not set)"
+    return 0
+  fi
+  _merge_base_of HEAD
+  plan="$(python3 -I -c "$_QA_WALK_PY" "$_QA_ART_TOP" "$mb" "$_QA_ART_TMP/art" "$_QA_WALK_MAXMB" \
+    "${#_QA_WALK_SPECS[@]}" "${_QA_WALK_SPECS[@]}" ${_QA_WALK_UI[@]+"${_QA_WALK_UI[@]}"} 2>/dev/null)" || plan=""
+  while IFS= read -r line; do
+    case "$line" in
+      "T "*) touched="${line#T }" ;;
+      "U "*) ui="${line#U }" ;;
+      "S "*) sel="${line#S }" ;;
+      "V "*) vsel="${line#V }" ;;
+      "K "*) skipped="${line#K }" ;;
+      "A "*) vatt="${line#A }" ;;
+      "F "*) files+=("$_QA_ART_TMP/art/${line#F }") ;;
+    esac
+  done <<EOF
+$plan
+EOF
+  if [ "$touched" -eq 0 ]; then reason="no e2e spec touched by the PR"
+  elif [ "$sel" -eq 0 ]; then reason="no recording found for the touched spec(s)"
+  elif [ "${#files[@]}" -eq 0 ]; then reason="over the $_QA_WALK_MAXMB MB cap"
+  fi
+  if [ -n "$reason" ]; then
+    printf 'qa-run: work video not attached (%s)\n' "$reason"
+    vreason="$reason"
+  else
+    bash "$_QA_ART_VCS" attach-files "$_QA_ART_PR" "${files[@]}" >/dev/null || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      printf 'qa-run: work video not attached (upload failed (exit %s))\n' "$rc"
+      return 0
+    fi
+    printf 'qa-run: work video attached (%s file(s))\n' "${#files[@]}"
+    [ "$skipped" -eq 0 ] || printf 'qa-run: work video skipped %s file(s) over the %s MB cap\n' "$skipped" "$_QA_WALK_MAXMB"
+    if [ "$vatt" -eq 0 ]; then
+      if [ "$vsel" -eq 1 ]; then vreason="over the $_QA_WALK_MAXMB MB cap"; else vreason="no recording found for the touched spec(s)"; fi
+    fi
+  fi
+  [ "$_QA_WALK_REQ" -eq 1 ] && [ "$ui" -eq 1 ] && _QA_WALK_REFUSE="$vreason"
+  return 0
 }
 
 # _qa_art_attach -- once per qa-run, ahead of the verdict line, for a run that
 # judged the head: the limits, then attach-files.
 _qa_art_attach() {
+  if [ "$_QA_WALK" -eq 1 ]; then
+    [ "$_QA_WALK_RAN" -eq 1 ] && [ "$_QA_ART_DONE" -eq 0 ] || return 0
+    _QA_ART_DONE=1
+    _qa_walk_attach
+    return 0
+  fi
   [ "$_QA_ART" -eq 1 ] && [ "$_QA_ART_RAN" -eq 1 ] && [ "$_QA_ART_DONE" -eq 0 ] || return 0
   _QA_ART_DONE=1
   local plan line files=() rc=0
@@ -1180,6 +1359,15 @@ _tc_pick() {
   return 1
 }
 
+# _merge_base_of REF BASE: sets the caller's bref (BASE, else base_branch, else
+# origin/HEAD, else main) and mb (the merge-base of REF with it, empty when none).
+_merge_base_of() {
+  bref="${2:-$(cfg base_branch 2>/dev/null)}"
+  [ -n "$bref" ] || bref="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
+  [ -n "$bref" ] || bref=main
+  mb="$(git merge-base "$1" "origin/$bref" 2>/dev/null || git merge-base "$1" "$bref" 2>/dev/null)"
+}
+
 # _red_commit REF BASE (#747): the red proof qa-run and red-check share. Sets the
 # caller's bref (BASE, else base_branch, else origin/HEAD, else main), mb (the
 # merge-base of REF with it), red (the first commit after it, empty when it
@@ -1187,11 +1375,8 @@ _tc_pick() {
 # (empty for a usable red commit, else the reason: no commit, or not tests-only).
 _red_commit() {
   local ref="$1" f bad_path=""
-  bref="${2:-$(cfg base_branch 2>/dev/null)}"
-  [ -n "$bref" ] || bref="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
-  [ -n "$bref" ] || bref=main
+  _merge_base_of "$ref" "${2:-}"
   red=""; red8=""; red_why=""
-  mb="$(git merge-base "$ref" "origin/$bref" 2>/dev/null || git merge-base "$ref" "$bref" 2>/dev/null)"
   [ -z "$mb" ] || red="$(git rev-list --reverse "$mb".."$ref" 2>/dev/null | head -n 1)"
   if [ -z "$red" ]; then
     red_why="no red commit found after the merge-base with $bref"
@@ -1591,6 +1776,10 @@ EOF
     e2e_s=" e2e ok"
   fi
   _qa_art_attach
+  if [ -n "$_QA_WALK_REFUSE" ]; then
+    _qa_fail "work video not attached ($_QA_WALK_REFUSE)"
+    return $?
+  fi
   printf 'qa-run: verdict PASS (%s test criteria green,%s %s prose to hand-check)%s\n' "$n_test" "$([ "$n_same" -eq 0 ] || printf ' %s same,' "$n_same")" "$n_prose" "$e2e_s"
   return 0
 }
