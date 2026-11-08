@@ -88,7 +88,10 @@
 #         the next item still runs). First line `post_merge=done|handoff`,
 #         `sweep=done` or `summary=done`, or a lone `stop`. post-merge is idempotent
 #         per item; --heal skips the sibling sync and releases no lease; --handoff
-#         only posts approved.md. Keys: `sibling=<pr> action=clean|mergebase|
+#         only posts approved.md. An open issue is closed (and set to Done) only
+#         when `pr-closes-issue` answers `closes`; `part-of` leaves it open with a
+#         part-of comment and board `In progress`; any other answer closes
+#         nothing and adds `warn reason=closing-unverified` (#822). Keys: `sibling=<pr> action=clean|mergebase|
 #         update-branch|developer|unverified`, `recorded=yes|no`,
 #         `checkout=returned|synced|kept|failed`, `spend=<line>`,
 #         `heal=<n> pr=<m>`, `worktree_sweep=<line>`, `blocked_issues=<K>`,
@@ -98,7 +101,7 @@
 #         <issue>`, run before the worktree removal: a checkout left on the merged
 #         issue's branch goes back to the base branch and is fast-forwarded, never
 #         forced; `failed` adds `warn reason=checkout-return-failed`.
-# post-merge-reasons: branch-left comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified board-failed checkout-return-failed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted lease-release-failed value-truncated
+# post-merge-reasons: branch-left comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified closing-unverified board-failed checkout-return-failed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted lease-release-failed value-truncated
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #   warn: all the others
 # sweep-reasons: issues-unlisted prs-unlisted find-pr-unverified find-pr-failed worktree-sweep-failed epic-close-failed epic-label-failed epic-comment-failed epic-acceptance-unsupported unblock-failed notify-failed
@@ -1751,51 +1754,90 @@ _talos_issue_open() {
 }
 
 # _talos_post_merge_run <pr> <issue> <heal 0|1> <ci-runs or empty> [known-open]:
-# the items, in order. Siblings (a merge, not a heal), the issue-closed
-# comment, close-issue (only while the issue is open: the github verb comments
-# on every call), board Done, the checkout back on the base (`checkout=`,
-# #601), worktree remove, the notices, the
-# merged and issue-closed events and the spend block. A 5th argument of 1 says
-# the caller just listed the issue as open (the sweep heal).
+# the items, in order. Siblings (a merge, not a heal), the issue's state and,
+# for an open issue, whether the merged PR closes it (`pr-closes-issue`, #822),
+# the issue-closed comment, close-issue (only while the issue is open: the
+# github verb comments on every call), board Done, the checkout back on the
+# base (`checkout=`, #601), worktree remove, the notices, the merged and
+# issue-closed events and the spend block. A PR that is only "Part of #N"
+# (mode part-of) leaves the issue open: a part-of comment instead of the
+# issue-closed one, no close-issue, board `In progress`, no issue-closed
+# notice or event. A closing that cannot be verified (mode unverified) changes
+# neither the issue nor the board and records nothing, so a later heal does it.
+# A 5th argument of 1 says the caller just listed the issue as open (the sweep
+# heal).
 _talos_post_merge_run() {
-  local _pr="$1" _n="$2" _heal="$3" _ci="$4" _known="${5:-0}" _rec=0 _mk _cnt _rc
+  local _pr="$1" _n="$2" _heal="$3" _ci="$4" _known="${5:-0}" _rec=0 _mk _pk _cnt _pcnt _rc _mode=closes
   _PM_ISSUE="$_n"
   _mk="<!-- talos:issue-closed pr=$_pr -->"
+  _pk="<!-- talos:part-of pr=$_pr -->"
   [ "$_heal" -eq 1 ] || _talos_siblings "$_n" "$_pr"
 
   # The marker of an earlier run (a trusted author's) means the comment and
   # everything that tells someone it happened were done: skip those. close-issue
   # runs while the issue is still open (a close that failed after the marker was
   # posted is retried by the next heal; the verb comments on every call, so a
-  # closed or unverifiable state never reaches it) and board Done always runs.
+  # closed or unverifiable state never reaches it) and the board item always runs.
   _TALOS_TRUST_SOFT=1
   _talos_trust
   _talos_cap _vcs read-comments "$_n"
-  if [ "$_RC" -eq 0 ] && _cnt="$(_talos_count_marker "$_mk" "$_OUT")" && _talos_isnum "$_cnt"; then
-    [ "$_cnt" -eq 0 ] || _rec=1
+  if [ "$_RC" -eq 0 ] && _cnt="$(_talos_count_marker "$_mk" "$_OUT")" && _talos_isnum "$_cnt" \
+      && _pcnt="$(_talos_count_marker "$_pk" "$_OUT")" && _talos_isnum "$_pcnt"; then
+    :
   else
+    _cnt=0; _pcnt=0
     _talos_warn comments-unreadable "issue=$_n"
   fi
-  if [ "$_rec" -eq 0 ]; then
-    if _talos_render issue-closed "#$_n" "PR #$_pr" CLOSED "all stages passed" /dev/null; then
-      _BODY="$_BODY"$'\n'"$_mk"
-      _talos_say comment-issue "$_n" --allow-closed || _talos_warn comment-failed "issue=$_n"
-    else
-      _talos_warn comment-failed "issue=$_n"
-    fi
-  fi
+
+  # The issue's state first, then (an open issue only) whether this PR closes
+  # it. Closed by the forge, or a state that cannot be read, keeps the flow of
+  # a closing PR; for an open issue anything but a clean answer is "not
+  # verified": never closed, never Done.
   if [ "$_known" = "1" ]; then _rc=0; else _talos_issue_open "$_n"; _rc=$?; fi
-  case "$_rc" in
-    0)
-      _talos_run_capture close-issue _vcs close-issue "$_n" "closed by PR #$_pr"
-      [ "$_RC" -eq 0 ] || _talos_warn close-failed "issue=$_n"
+  if [ "$_rc" -eq 0 ]; then
+    _talos_cap _vcs pr-closes-issue "$_pr" "$_n"
+    case "$_RC:$_OUT" in
+      0:closes) _mode=closes ;;
+      0:part-of) _mode=part-of ;;
+      *) _mode=unverified; _talos_warn closing-unverified "issue=$_n pr=$_pr" ;;
+    esac
+  fi
+
+  case "$_mode" in
+    closes)
+      [ "$_cnt" -eq 0 ] || _rec=1
+      if [ "$_rec" -eq 0 ]; then
+        if _talos_render issue-closed "#$_n" "PR #$_pr" CLOSED "all stages passed" /dev/null; then
+          _BODY="$_BODY"$'\n'"$_mk"
+          _talos_say comment-issue "$_n" --allow-closed || _talos_warn comment-failed "issue=$_n"
+        else
+          _talos_warn comment-failed "issue=$_n"
+        fi
+      fi
+      case "$_rc" in
+        0)
+          _talos_run_capture close-issue _vcs close-issue "$_n" "closed by PR #$_pr"
+          [ "$_RC" -eq 0 ] || _talos_warn close-failed "issue=$_n"
+          ;;
+        1) : ;;
+        *) _talos_warn issue-state-unverified "issue=$_n" ;;
+      esac
       ;;
-    1) : ;;
-    *) _talos_warn issue-state-unverified "issue=$_n" ;;
+    part-of)
+      [ "$_pcnt" -eq 0 ] || _rec=1
+      if [ "$_rec" -eq 0 ]; then
+        _BODY="PR #$_pr merged (part of #$_n)"$'\n'"$_pk"
+        _talos_say comment-issue "$_n" || _talos_warn comment-failed "issue=$_n"
+      fi
+      ;;
   esac
   _talos_emit recorded "$([ "$_rec" -eq 1 ] && echo yes || echo no)"
 
-  _talos_run_capture board bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "Done"
+  case "$_mode" in
+    closes) _talos_run_capture board bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "Done" ;;
+    part-of) _talos_run_capture board bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "In progress" ;;
+    *) _RC=0 ;;
+  esac
   [ "$_RC" -eq 0 ] || _talos_warn board-failed "issue=$_n"
 
   # A checkout left on the merged issue's branch goes back to the base, fast-
@@ -1814,12 +1856,16 @@ _talos_post_merge_run() {
   _talos_run_capture worktree bash "$SCRIPT_DIR/pipeline-worktree.sh" remove "$_n"
   [ "$_RC" -eq 0 ] || _talos_warn worktree-remove-failed "issue=$_n"
 
-  [ "$_rec" -eq 0 ] || return 0
-  _talos_notify orchestrator "#$_n" "all stages passed — merged PR #$_pr, issue closed" "$_n"
+  [ "$_rec" -eq 0 ] && [ "$_mode" != unverified ] || return 0
+  if [ "$_mode" = closes ]; then
+    _talos_notify orchestrator "#$_n" "all stages passed — merged PR #$_pr, issue closed" "$_n"
+  else
+    _talos_notify orchestrator "#$_n" "all stages passed — merged PR #$_pr, part of #$_n, issue stays open" "$_n"
+  fi
   _talos_notify merged "#$_n" "PR #$_pr merged" "$_n"
-  _talos_notify issue-closed "#$_n" "issue resolved" "$_n"
+  [ "$_mode" != closes ] || _talos_notify issue-closed "#$_n" "issue resolved" "$_n"
   _talos_post_stage merged orchestrator "$_n" --pr "$_pr" --summary "PR #$_pr merged" ${_ci:+--ci-runs "$_ci"}
-  _talos_post_stage issue-closed orchestrator "$_n" --pr "$_pr" --summary "issue resolved"
+  [ "$_mode" != closes ] || _talos_post_stage issue-closed orchestrator "$_n" --pr "$_pr" --summary "issue resolved"
   _talos_spend "$_n" "$_pr"
 }
 
