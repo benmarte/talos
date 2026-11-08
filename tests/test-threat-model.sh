@@ -203,4 +203,10 @@ printf '  ok  AC1 a login with a bad MFA code is refused\n' > "$SANDBOX/run.out"
 assert_eq "AC1 pass
 AC2 missing" "$(bash "$GS/pipeline-criteria.sh" map "$SANDBOX/run.out" --spec "$SANDBOX/spec.md" 2>"$ERR")" "AC8 map reports a threat (test) id with no output as missing"
 
+# ── AC9: `threat` is a known stage of the attempt-marker contract ────────────
+# record-attempt writes `talos:attempt stage=threat`; the next read-attempt
+# fails closed on a stage outside TALOS_ROLES, which blocks the developer.
+CONTRACT_ROLES="$(bash -c '. "$1/pipeline-contract.sh"; printf "%s\n" "${TALOS_ROLES[@]}"' _ "$GS" 2>"$ERR")"
+assert_contains "$CONTRACT_ROLES" "threat" "AC9 TALOS_ROLES in pipeline-contract.sh lists threat"
+
 finish
