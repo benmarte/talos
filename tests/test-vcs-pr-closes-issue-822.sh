@@ -10,6 +10,9 @@ use_stubs
 
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
 printf '%s\n' '{"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "main"}' > talos.pipeline.json
+# An ambient PIPELINE_CONFIG (a stage session exports one) would win over the
+# per-provider config this file rewrites below and answer every provider as github.
+export PIPELINE_CONFIG="$SANDBOX/talos.pipeline.json"
 
 # check_gh <label> <body> <expected> [issue]: the github answer for a PR with <body>.
 check_gh() {
