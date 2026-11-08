@@ -939,7 +939,14 @@ Under `talos.sh run` the developer, QA, reviewer and security run in the driver'
 
 ### Parallel runs and locking
 
-`issues.max_parallel` caps the issues in flight: `talos.sh next` counts the leases other runs hold and answers `action=wait reason=cap` at the cap.
+`issues.max_parallel` caps the issues in flight: `talos.sh next` counts the leases other runs hold and answers `action=wait reason=cap` at the cap. The value is honoured as given (default 1; `4` holds up to four issues at once, the third leased issue still leaves room for a fourth and the fourth lease answers `wait reason=cap`). Under `execution.isolation: branch` a value above 1 is refused.
+
+**Overlap preference.** With something in flight (an issue in the state or one with a lease) and more than one ready issue, `next` orders the ready issues of one priority so that those whose expected files do not overlap an in-flight issue come first. An overlapping issue is demoted, never blocked: it is still dispatched when nothing else fits and the cap allows it. Priority stays the first sort key, and `state --summary` keeps its order. Nothing extra is read when nothing is in flight; an issue that cannot be read counts as not overlapping.
+
+- *Files list.* The expected files of an issue are the bullets under a `Files touched` or `Files likely to change` heading or bold label in the issue body (a trailing parenthesised note is dropped, a backticked path is read as written); when the body has none, the same list in the PM spec (`view-issue --spec`).
+- *Area labels.* With no list on either side, the expected "files" are the issue's `area:*` labels (only labels starting `area:`): two issues sharing one overlap.
+- *Generated files.* A path whose last component is `querier.go`, `openapi.yaml`, `schema.ts` or matches `generated*.go` never counts, as it is regenerated on merge.
+- *Migrations.* Two issues that each list a path under a `migrations/` or `migrate/` directory overlap even though the file names differ (they would allocate the same number).
 
 **Leases.** Before `next` answers a dispatch or merge it records the issue in `<git common dir>/talos-lease.ledger`. A second run on that issue gets `wait reason=lease retry_after_s=<s>` and never takes over. `done`, `post-merge` and the end of the run release it. A lease lasts `verify.timeout_ms/1000 + verify.ci_wait_s` seconds, at least 30 minutes; a line whose process is gone is reclaimed after 10 s (`TALOS_LEASE_RECLAIM_S`). `bash scripts/talos.sh lease prune` deletes dead and expired lines.
 
