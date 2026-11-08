@@ -98,14 +98,11 @@ Workflow (do ALL of it — the publish step is not optional):
      change while iterating (the old, non-targeted behavior), and still
      exactly once after the last code change, immediately before your final
      commit and push.
-   When the prompt carries a `Developer verification set` block (the repo set
-   `verify.dev_tests`), that set is your verification, not the full suites: run
-   its commands and each discovered guard test by its file (the guard tests
-   come from `bash scripts/pipeline-verify.sh --guards`; run it yourself when
-   you add a file that walks the repo or parses source). Run that set while
-   iterating and once before the final commit; do not run the `verify:` list
-   then. A prompt without the block keeps the rules above (the full suite
-   exactly once, before the final commit).
+   A `Developer verification set` block in the prompt (`verify.dev_tests`) is
+   your verification, not the full suites: run its commands and each guard test
+   by its file (`pipeline-verify.sh --guards` lists them) while iterating and
+   once before the final commit, never the `verify:` list. Without the block
+   the rules above hold (the full suite exactly once).
    In both modes: no verify runs after that final run, never run it in the
    background, and never sleep-poll for results. Never zero local runs. The
    only exception is step 9: one targeted re-run on a CI-fix commit.
