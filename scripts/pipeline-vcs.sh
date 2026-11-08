@@ -10727,10 +10727,18 @@ fi
 # `check-approval-sha <n> --require-ci` is the same read as a verb. Both use
 # pr-checks-required, i.e. merge.required_checks (for example one aggregate job).
 
-# _vcs_ci_parallel -- 0 when the effective mode is on.
+# _vcs_ci_parallel -- 0 when the effective mode is on, 1 when it is off, 2 when
+# the resolver cannot answer (missing, non-zero exit, or neither `true` nor
+# `false`). Fail closed: a caller treats 2 as a refusal, never as off.
 _vcs_ci_parallel() {
-  [ -f "$SCRIPT_DIR/pipeline-draft-check.sh" ] || return 1
-  [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ci-parallel 2>/dev/null)" = "true" ]
+  local _v
+  [ -f "$SCRIPT_DIR/pipeline-draft-check.sh" ] || return 2
+  _v="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ci-parallel 2>/dev/null)" || return 2
+  case "$_v" in
+    true) return 0 ;;
+    false) return 1 ;;
+    *) return 2 ;;
+  esac
 }
 
 # _vcs_ci_read <pr> [<wait seconds>] -- one read of the required checks at the
@@ -11102,9 +11110,22 @@ if [ "$VERB" = "post-approval" ]; then
   # and no label. --recover-only re-applies a stamp earned earlier and posts
   # nothing, so it is not gated here (gate merge reads CI itself).
   # The self-check after the writes passes --require-ci in the same mode.
-  if [ "$_pa_role" = qa ] && [ "$_pa_recover" -eq 0 ] && _vcs_ci_parallel; then
-    _pa_ci_flag="--require-ci"
-    _vcs_ci_gate_qa "$_pa_n" "$_pa_sha" || exit 1
+  if [ "$_pa_role" = qa ] && [ "$_pa_recover" -eq 0 ]; then
+    _pa_par_rc=0
+    _vcs_ci_parallel || _pa_par_rc=$?
+    case "$_pa_par_rc" in
+      0)
+        _pa_ci_flag="--require-ci"
+        _vcs_ci_gate_qa "$_pa_n" "$_pa_sha" || exit 1
+        ;;
+      1) ;;
+      *)
+        # The resolver could not answer: QA ran with no pre-QA CI wait in this
+        # mode, so skipping the check could approve a red head. Refuse.
+        echo "pipeline-vcs: post-approval: qa refused: ci.parallel_with_qa could not be resolved" >&2
+        exit 1
+        ;;
+    esac
   fi
 
   # Construct the marker body. The marker is a fixed template with only two
