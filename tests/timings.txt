@@ -45,6 +45,7 @@
 0 test-callsite-literal-defaults.sh
 32 test-canary.sh
 35 test-ci-gate.sh
+15 test-ci-parallel-qa.sh
 4 test-ci-runs-metric.sh
 0 test-ci-tests-workflow.sh
 79 test-claim.sh

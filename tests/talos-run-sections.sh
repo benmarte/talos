@@ -392,7 +392,8 @@ fi
 # The draft_* helpers below are shared by every part: they are defined outside
 # the part guard.
 draft_cfg() {  # $1 = the verify block's members ; $2 = extra top-level members
-  printf '{"vcs": {"provider": "github"}, "issues": {"max_parallel": 1}, "roles": {"validator": true, "qa": true, "docs": true, "reviewer": true, "security": true}, "pr": {"draft": true}, "verify": {%s}%s}' \
+  # ci.parallel_with_qa off: these sections pin the sequential order (the CI wait before QA); the parallel one is tests/test-ci-parallel-qa.sh.
+  printf '{"vcs": {"provider": "github"}, "issues": {"max_parallel": 1}, "roles": {"validator": true, "qa": true, "docs": true, "reviewer": true, "security": true}, "pr": {"draft": true}, "ci": {"parallel_with_qa": false}, "verify": {%s}%s}' \
     "${1:-}" "${2:-}" > "$SANDBOX/talos.pipeline.json"
 }
 draft_collect() {  # $1 = the PR's collect stage

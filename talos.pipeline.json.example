@@ -108,6 +108,11 @@
     "ready_gate": "off"
   },
 
+  "ci": {
+    "parallel_with_qa": true,
+    "known_flakes": []
+  },
+
   "map": {
     "enabled": true
   }

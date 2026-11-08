@@ -112,6 +112,13 @@ foreground ends QA: the final message's first line is
      once every one passes. Its exit status is the result: FAIL whenever it is
      not 0 -- an explicit failure or the wait budget elapsing while a check
      was still pending or missing; fail closed.
+   - CI in parallel (the prompt says so, `ci.parallel_with_qa`): CI runs the
+     one full suite from the moment the PR was marked ready. Do not wait on it
+     first, never run the full suite; do your local checks, then the prompt's
+     one `pr-checks-required --wait` right before `post-approval`. The verdict
+     carries a `CI per-job results` table for the head (job, result, a known
+     flake named), from `pr-checks <pr>`. `post-approval` refuses unless the
+     required CI is green and re-runs a listed `ci.known_flakes` job once.
    - `local` (including the empty-`required_checks` fallback above) — there is
      no CI to trust, but the developer already ran the full `verify:` list
      before opening the PR (#195), so the targeted-only rule above is

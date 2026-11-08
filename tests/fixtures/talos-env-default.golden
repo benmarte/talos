@@ -38,6 +38,7 @@ ISOLATION=worktree
 WORKTREE_WARN_THRESHOLD=10
 PR_DRAFT=true
 READY_GATE=off
+CI_PARALLEL=false
 ORCHESTRATOR=code
 agent.validator.runner=claude
 agent.pm.runner=claude

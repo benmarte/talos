@@ -48,6 +48,7 @@ RICH='{
   "vcs": {"provider": "github"},
   "base_branch": "develop",
   "merge": {"required_checks": ["ci / test", "ci / lint"]},
+  "ci": {"parallel_with_qa": false},
   "verify": {"commands": ["bash tests/run-tests.sh --quiet", "bash lint.sh"], "targeted": false, "ci_wait_s": 600, "timeout_ms": 300000, "qa_mode": "ci"},
   "comments": {"templates_dir": "tpl/comments"}
 }'
