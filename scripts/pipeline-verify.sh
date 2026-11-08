@@ -12,6 +12,7 @@
 #
 # Usage:
 #   pipeline-verify.sh [--issue N] [--worktree PATH] [--role ROLE] [--all] [-- <cmd...>]
+#   pipeline-verify.sh --guards [--worktree PATH]
 #
 # Identity resolution (per variable, first match wins):
 #   1. --issue / --worktree flags
@@ -52,6 +53,11 @@
 # the targeted form instead. `--all` is the explicit opt-in to run the
 # `verify:` list (the pre-CI gate uses it); with a command it is a usage error.
 #
+# `--guards` (#832) prints the repo-wide guard tests of the checkout (--worktree
+# PATH, else the current directory), one path per line, sorted, at most 50, and
+# changes nothing: git-tracked test files whose content walks the repo or parses
+# source. The developer prompt names them next to `verify.dev_tests`.
+#
 # Always prints one line to stderr — "talos:verify issue=<N> worktree=<path>"
 # — so a transcript or log shows which identity a verify run actually used.
 #
@@ -71,6 +77,7 @@ _issue=""
 _worktree=""
 _role=""
 _all=0
+_guards=0
 _cmd=()
 
 while [ $# -gt 0 ]; do
@@ -86,6 +93,8 @@ while [ $# -gt 0 ]; do
       _role="$2"; shift 2 ;;
     --all)
       _all=1; shift ;;
+    --guards)
+      _guards=1; shift ;;
     --)
       shift
       _cmd=("$@")
@@ -93,11 +102,36 @@ while [ $# -gt 0 ]; do
       ;;
     *)
       echo "pipeline-verify: unknown argument: $1" >&2
-      echo "usage: pipeline-verify.sh [--issue N] [--worktree PATH] [--role ROLE] [--all] [-- <cmd...>]" >&2
+      echo "usage: pipeline-verify.sh [--issue N] [--worktree PATH] [--role ROLE] [--all | --guards] [-- <cmd...>]" >&2
       exit 2
       ;;
   esac
 done
+
+# --guards (#832): the repo-wide guard tests, discovered from the checkout. A
+# guard is a git-tracked test file whose content walks the repo or parses
+# source, so a run scoped to the touched package cannot miss it. Read-only: one
+# repo-relative path per line, sorted, at most 50; empty output when none match.
+if [ "$_guards" -eq 1 ]; then
+  if [ "$_all" -eq 1 ] || [ "${#_cmd[@]}" -gt 0 ]; then
+    echo "pipeline-verify: --guards lists the guard tests and takes no --all or -- <cmd>" >&2
+    exit 2
+  fi
+  _groot="${_worktree:-.}"
+  _gre='filepath\.(Walk|WalkDir)|go/parser|go/ast|packages\.Load|os\.walk\(|os\.Walk\(|rglob\(|glob\.glob\(|ast\.parse\(|ts\.createProgram|readdirSync\(.*recursive|git ls-files'
+  {
+    while IFS= read -r -d '' _gf; do
+      case "${_gf##*/}" in
+        *_test.go|test_*.py|*_test.py|*.test.js|*.test.jsx|*.test.ts|*.test.tsx|\
+        *.spec.js|*.spec.jsx|*.spec.ts|*.spec.tsx|*Test.java|*_spec.rb|test-*.sh) ;;
+        *) continue ;;
+      esac
+      [ -f "$_groot/$_gf" ] || continue
+      grep -Eq -- "$_gre" "$_groot/$_gf" 2>/dev/null && printf '%s\n' "$_gf"
+    done < <(git -C "$_groot" ls-files -z 2>/dev/null)
+  } | LC_ALL=C sort -u | head -n 50
+  exit 0
+fi
 
 if [ "$_all" -eq 1 ] && [ "${#_cmd[@]}" -gt 0 ]; then
   echo "pipeline-verify: --all runs the verify: list and takes no -- <cmd>" >&2
