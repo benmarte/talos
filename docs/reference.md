@@ -50,7 +50,7 @@ Approval order (`APPROVALS` in `pipeline-next.py`): validator, planner (optional
 | docs | code gate, LLM only if needed | `roles.docs`, `roles.docs_mode`, `docs.paths` | `docs-gate` stamps `docs:done` itself unless the PR changes a path matching `docs.paths` (shell globs, `*` and `**` match across `/`; default `README.md`, `docs/*`, `scripts/pipeline-defaults.sh`; `roles.docs_mode: always` forces the agent). The code driver puts the diff sections of those files and of `CHANGELOG.md` in the agent's prompt (the whole diff when `docs-gate` names no paths, as under `roles.docs_mode: always`), within the same `TALOS_PROMPT_CHANGE_MAX_BYTES` limit as the reviewer's; over it or on a failed read the prompt is the one without the hunks and the agent reads the change itself. After a fix round that leaves `docs:done` on the PR and stale, `docs-gate` looks only at the docs-relevant paths changed since the approved SHA: when there are none it stamps again, otherwise the agent gets a read-only re-stamp of that delta ([Stale approvals and the delta re-stamp](#stale-approvals-and-the-delta-re-stamp)). |
 | reviewer, security | LLM | `roles.reviewer`, `roles.security` | The code driver (`talos.sh run`) hands them the spec and the whole PR diff in the prompt (`talos.sh prompt --embed-change`, up to `TALOS_PROMPT_CHANGE_MAX_BYTES` bytes of data, default 60000; a larger change or a failed read is one line that tells them to read it once), so they fetch neither; the data sits between `----- BEGIN SPEC|DIFF <token> -----` and `----- END ... -----` lines whose token is new for every render. Without it they read `diff-pr --stat`, then the full diff once. On a re-review (the stage's own `talos:reviewed` findings comment or `talos:approval role=<stage>` marker is already on the PR, newest by list order, trusted authors only) the prompt carries instead the diff from that sha to the PR head, limited to the files the PR changes (so a merge of the base branch shows nothing), plus the stage's previous comment, and no spec; with no usable sha (none, an unreadable thread, a rebased or missing commit) it falls back to the whole change after one `Re-review: full diff (<reason>)` line. Every finding is tagged `Important`, `Nit` or `Pre-existing` (the defect is on lines the PR did not change); only `Important` ones block and count, the others go under `**Non-blocking notes:**`, and each `Pre-existing` one (a `PRE-EXISTING: <path>:<line> — <text>` line in the stage's final message) is filed by `talos.sh done` as one follow-up issue of plain bullets per review. Run no tests. A security finding blocks only on an attacker path that does not start from something the user already controls, or on loss or corruption of user data in normal use; the rest go under `**Non-blocking notes:**` in the same comment and are filed as one follow-up issue, never a fix round. |
 | adversarial | LLM, off | `roles.adversarial` | Second opinion on another backend. Blocks on the same two grounds as security. |
-| merge | code | `merge.auto` | `gate merge` checks every gate; `merge-pr`; `post-merge` closes the issue, sets the board to Done, returns the checkout to the base branch, removes the worktree, notifies. |
+| merge | code | `merge.auto` | `gate merge` checks every gate; `merge-pr`; `post-merge` closes the issue only when the merged PR closes it (a closing keyword for it in the body; see [Closing the issue after a merge](#closing-the-issue-after-a-merge)), sets the board to Done, returns the checkout to the base branch, removes the worktree, notifies. |
 
 Everything except the stage agents is mechanical: routing (`next`), bookkeeping (`done`), gates, sweeps, merge.
 
@@ -831,6 +831,7 @@ Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azu
 |---|---|---|---|---|
 | `edit-pr-body` | yes | yes | yes (refuses a body over 4000 characters) | exception: no PRs |
 | `check-pr-body` | yes | yes (the MR description) | yes (the PR description) | exception: no PRs |
+| `pr-closes-issue` | yes (closing keyword in the PR body) | yes (closing keyword in the MR description) | yes (the PR is linked to the work item) | exception: no PRs (always exits 2) |
 | `conflict-files` | yes | yes (fetches `refs/merge-requests/<iid>/head`) | yes (fetches the source branch) | exception: no PRs |
 | `upsert-pr-comment` | yes | yes (merge requests) | yes | exception: no PRs |
 | `attach-files` | yes (commits to the `talos-evidence` branch) | yes (commits to the `talos-evidence` branch) | yes (pushes to the `talos-evidence` branch) | exception: no PRs |
@@ -903,6 +904,7 @@ From `~/.talos/scripts` (or `scripts/` in a checkout); `--dry-run` prints the ca
 
 - `pipeline-vcs.sh list-issues | list-prs | view-issue <n> | view-pr <n>`: read as JSON.
 - `pipeline-vcs.sh check-pr-body <pr>`: exit 0 when the PR body has a `Positive controls:` and an `AC to test map:` section with text under them; exit 1 with `check-pr-body: missing positive-control list` / `missing AC to test map` on stderr; exit 2 for a non-numeric PR; a failed fetch exits 1.
+- `pipeline-vcs.sh pr-closes-issue <pr> <issue>`: prints `closes` or `part-of` (exit 0), or exits 2 with nothing on stdout when the PR cannot be read ([Closing the issue after a merge](#closing-the-issue-after-a-merge)).
 - `pipeline-vcs.sh label-issue <n> --add pipeline:ready`: queue an issue (`--remove` drops a label).
 - `pipeline-vcs.sh current-user | assert-sync`: your login; checkout clean and level.
 - `pipeline-vcs.sh comment-issue <n> | comment-pr <n>`: post a comment. A stage writes its body to `.talos/<role>-*.body` or passes `--body-file -` with a heredoc on stdin; a `--body-file` or stdin body is never read as a path. A positional or `--body` body that is one whitespace-free token naming a readable file (bare, relative or absolute) is refused with "use `--body-file`", so a path is never posted as the comment; any other text is posted as written.
@@ -1004,6 +1006,14 @@ Identity, resolved once per run: `issues.assignee` when it names a login, else `
 | 8 | `merge.auto` | `merge` / `handoff` |
 
 An unreadable gate answers `stop reason=<r>` (fail closed). Gates 3, 4 and 4b set `pipeline:blocked`; only a human clears it (for 4b, fix the body with `edit-pr-body` first).
+
+#### Closing the issue after a merge
+
+`talos.sh post-merge` (and the `sweep` heal of a merged-but-open issue) closes an issue only when the merged PR closes it. For an open issue it asks `pipeline-vcs.sh pr-closes-issue <pr> <issue>`, which prints `closes` or `part-of` and exits 0, or exits 2 with nothing on stdout when the PR cannot be read (fail closed, like `pr-is-draft`). On GitHub and GitLab `closes` means the PR body (the MR description) has a closing keyword for the issue (`close(s|d)`, `fix(es|ed)`, `resolve(s|d)` followed by `#N`, `owner/repo#N`, `GH-N` or the issue URL), by the same scan `check-closing-keyword` uses; on Azure DevOps it means the PR is linked to the work item; file mode always exits 2.
+
+- `closes` (or an issue the forge already closed, which is never asked): the issue-closed comment, `close-issue`, board `Done`.
+- `part-of` (a "Part of #N" PR, or a keyword aimed at another issue): the issue stays open, gets one `PR #<pr> merged (part of #<n>)` comment (it carries a hidden per-PR marker, so a second run or heal posts nothing), and its board status goes to `In progress`. No `close-issue`, no issue-closed notice or event.
+- exit 2 or any other answer: nothing is closed, commented or moved on the board, and the run prints `warn reason=closing-unverified issue=<n> pr=<pr>`; the next heal tries again.
 
 ### Verify once, QA trusts CI
 

@@ -66,8 +66,8 @@ PYEOF
 # its verb set must stay the 41 verbs the two former implementations each
 # exposed (so neither provider lost a verb in the merge) plus the assignee
 # verbs added since (#560), pr-head-ref (#607), assign-pr (#775), attach-files (#776),
-# evidence-prune (#817), check-pr-body (#831) and the scoreboard reads list-default-commits and list-regresses (#800).
-EXPECTED_VERBS="approve-pr attach-files assign-issue assign-pr check-approval-sha check-attempt check-closing-keyword check-epic-acceptance check-pr-body check-pr-files checkout-pr close-issue comment-issue comment-pr create-issue create-pr current-user diff-pr draft-pr edit-pr-body evidence-prune find-pr issue-assignees label-issue label-pr list-assignees list-default-commits list-issues list-needs-owner list-prs list-regresses mark-needs-owner merge-pr pr-checks pr-checks-required pr-ci-runs pr-files pr-head pr-head-ref pr-is-draft pr-mergeable read-attempt read-comments ready-pr record-attempt rerun-ci unassign-issue update-branch upsert-pr-comment view-issue view-pr"
+# evidence-prune (#817), check-pr-body (#831), pr-closes-issue (#822) and the scoreboard reads list-default-commits and list-regresses (#800).
+EXPECTED_VERBS="approve-pr attach-files assign-issue assign-pr check-approval-sha check-attempt check-closing-keyword check-epic-acceptance check-pr-body check-pr-files checkout-pr close-issue comment-issue comment-pr create-issue create-pr current-user diff-pr draft-pr edit-pr-body evidence-prune find-pr issue-assignees label-issue label-pr list-assignees list-default-commits list-issues list-needs-owner list-prs list-regresses mark-needs-owner merge-pr pr-checks pr-checks-required pr-ci-runs pr-files pr-head pr-head-ref pr-is-draft pr-mergeable pr-closes-issue read-attempt read-comments ready-pr record-attempt rerun-ci unassign-issue update-branch upsert-pr-comment view-issue view-pr"
 _github_verbs="$(extract_verbs _github)"
 
 assert_eq "$(printf '%s\n' $EXPECTED_VERBS | sort | tr '\n' ' ')" "$(printf '%s\n' $_github_verbs | sort | tr '\n' ' ')" \
