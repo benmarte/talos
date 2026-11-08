@@ -470,9 +470,18 @@ def pr_side(data):
 # blocked.
 
 FILES_HEADING_RE = re.compile(
-    r'^\s*(?:#{1,6}\s*|[*_]{2})\s*files\s+(?:touched|likely\s+to\s+change)\s*:?\s*(?:[*_]{2})?\s*:?\s*$', re.I)
+    r'^\s*(?:#{1,6}|[*_]{2})\s*files\s+(?:touched|likely\s+to\s+change)[\s:*_]*$', re.I)
+MAX_LINE = 2000  # a longer line is no heading or bullet of a files list
 GENERATED_NAMES = frozenset(('querier.go', 'openapi.yaml', 'schema.ts'))
 MIGRATION_DIRS = frozenset(('migrations', 'migrate'))
+
+
+def _drop_note(t):
+    """t without a trailing parenthesised note."""
+    i = t.rfind('(')
+    if t.endswith(')') and i >= 0 and ')' not in t[i + 1:-1]:
+        return t[:i].rstrip()
+    return t
 
 
 def files_list(text):
@@ -482,7 +491,7 @@ def files_list(text):
     first backticked span, else its text without a trailing parenthesised note."""
     lines = text.splitlines()
     for i, line in enumerate(lines):
-        if not FILES_HEADING_RE.match(line):
+        if len(line) > MAX_LINE or not FILES_HEADING_RE.match(line):
             continue
         out = []
         for item in lines[i + 1:]:
@@ -490,12 +499,12 @@ def files_list(text):
                 if out:
                     break
                 continue
-            m = re.match(r'^\s*[-*+]\s+(.*\S)\s*$', item)
+            m = re.match(r'[-*+]\s+(.+)$', item.strip()) if len(item) <= MAX_LINE else None
             if not m:
                 break
-            t = m.group(1)
+            t = _drop_note(m.group(1))
             b = re.search(r'`([^`]+)`', t)
-            t = (b.group(1) if b else re.sub(r'\s*\([^()]*\)\s*$', '', t)).strip()
+            t = (b.group(1) if b else t).strip()
             if t.startswith('./'):
                 t = t[2:]
             if t and ' ' not in t:
