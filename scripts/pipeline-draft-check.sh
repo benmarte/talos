@@ -5,6 +5,7 @@
 # Usage: pipeline-draft-check.sh [check [<workflows-dir>]]
 #        pipeline-draft-check.sh resolve
 #        pipeline-draft-check.sh ready-gate
+#        pipeline-draft-check.sh ci-parallel
 #        pipeline-draft-check.sh edit <workflow-file> [--write]
 #
 #   check     Scan <workflows-dir> (default .github/workflows) for *.yml and
@@ -55,6 +56,13 @@
 #             answers true and `roles.qa` is on; otherwise `off`, with one stderr
 #             line saying why. The one resolver: pipeline-status-file.sh and
 #             talos.sh read it, none re-derives it.
+#   ci-parallel (#836) The effective `ci.parallel_with_qa` on stdout, `true` or
+#             `false`: CI runs the one full suite while the final QA works.
+#             True only when the key is on (the default), `resolve` answers true,
+#             `roles.qa` is on, `merge.required_checks` is non-empty and
+#             `ready-gate` answers off; otherwise `false`, with one stderr line
+#             saying why when the key is set to true explicitly (silent when it
+#             is only the default). The one resolver, as above.
 #   edit      The minimal workflow change /talos:setup offers. Without
 #             --write it prints the unified diff and writes nothing; with
 #             --write it applies exactly that diff. Only two kinds of change:
@@ -345,6 +353,44 @@ _dc_ready_gate() {
   echo qa-local
 }
 
+# ── ci-parallel (#836) ────────────────────────────────────────────────────────
+# The effective `ci.parallel_with_qa`: CI is the one full-suite run, in parallel
+# with the final QA. True only when it is on (the default) AND the draft window
+# exists (pr.draft resolves true) AND there is a QA stage AND CI can be the
+# oracle (merge.required_checks non-empty) AND pr.ready_gate is off (qa-local
+# runs QA before CI by design). One stderr line says why a key set to true
+# explicitly reads false (a defaulted key stays silent). The one resolver: talos.sh reads it, none re-derives it.
+_dc_ci_parallel() {
+  local key qa checks asked=0
+  key="$(_dc_cfg ci.parallel_with_qa)"
+  case "$key" in ''|true) ;; *) echo false; return ;; esac
+  # The default is on, so a project that never set the key is not told why the
+  # mode is off for it: the stderr line is for a key that asks for it explicitly.
+  bash "$SCRIPT_DIR/pipeline-config.sh" --has ci.parallel_with_qa >/dev/null 2>&1 && asked=1
+  if [ "$(_dc_resolve 2>/dev/null)" != true ]; then
+    [ "$asked" -eq 0 ] || echo "pipeline: ci.parallel_with_qa ignored: pr.draft is off, so there is no draft window" >&2
+    echo false; return
+  fi
+  qa="$(bash "$SCRIPT_DIR/pipeline-config.sh" roles.qa)" || {
+    [ "$asked" -eq 0 ] || echo "pipeline: ci.parallel_with_qa ignored: roles.qa could not be read" >&2
+    echo false; return
+  }
+  if [ "$(printf '%s' "$qa" | tr '[:upper:]' '[:lower:]')" = false ]; then
+    [ "$asked" -eq 0 ] || echo "pipeline: ci.parallel_with_qa ignored: roles.qa is off, so there is no QA stage" >&2
+    echo false; return
+  fi
+  checks="$(bash "$SCRIPT_DIR/pipeline-config.sh" merge.required_checks 2>/dev/null)"
+  if [ -z "$(printf '%s' "$checks" | tr -d '[:space:]')" ]; then
+    [ "$asked" -eq 0 ] || echo "pipeline: ci.parallel_with_qa ignored: merge.required_checks is empty, so CI cannot be the oracle" >&2
+    echo false; return
+  fi
+  if [ "$(_dc_ready_gate 2>/dev/null)" = qa-local ]; then
+    [ "$asked" -eq 0 ] || echo "pipeline: ci.parallel_with_qa ignored: pr.ready_gate is qa-local, which runs QA before CI" >&2
+    echo false; return
+  fi
+  echo true
+}
+
 # ── edit ──────────────────────────────────────────────────────────────────────
 read -r -d '' _DC_EDIT_PY <<'TALOS_e7Zt3Hc8Vm5F' || true
 import difflib, os, shutil, stat, sys, tempfile
@@ -559,6 +605,7 @@ case "${1:-check}" in
   check)   _dc_check "${2:-}"; exit 0 ;;
   resolve) _dc_resolve; exit 0 ;;
   ready-gate) _dc_ready_gate; exit 0 ;;
+  ci-parallel) _dc_ci_parallel; exit 0 ;;
   edit)    shift; _dc_edit "$@"; exit $? ;;
-  *) echo "usage: pipeline-draft-check.sh [check [<workflows-dir>] | resolve | ready-gate | edit <file> [--write]]" >&2; echo unknown; exit 0 ;;
+  *) echo "usage: pipeline-draft-check.sh [check [<workflows-dir>] | resolve | ready-gate | ci-parallel | edit <file> [--write]]" >&2; echo unknown; exit 0 ;;
 esac

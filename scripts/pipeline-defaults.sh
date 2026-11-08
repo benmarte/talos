@@ -61,6 +61,10 @@
 # (qa-local only with pr.draft and roles.qa on) is `pipeline-draft-check.sh
 # ready-gate` (#535), the one place that decides it.
 #
+# ci.parallel_with_qa is not derived either (true is its table default). The
+# EFFECTIVE mode (also needs pr.draft, roles.qa, merge.required_checks and
+# pr.ready_gate off) is `pipeline-draft-check.sh ci-parallel` (#836).
+#
 # execution.orchestrator is not derived either: code is its table default. The
 # EFFECTIVE mode (llm also under vcs.provider file and roles.planner true, which
 # the code driver cannot run) is `talos.sh env`'s ORCHESTRATOR line (#602).
@@ -219,6 +223,8 @@ limits.warn_at	float	0.8	-	-	any
 spend.comment	bool	true	-	-	any
 pr.draft	bool		derived	-	any
 pr.ready_gate	enum	off	-	-	any
+ci.parallel_with_qa	bool	true	-	-	any
+ci.known_flakes	list		-	-	repo
 markers.trusted_authors	list		-	-	repo
 markers.verify_authors	bool	true	-	-	repo
 hooks.pre_dispatch	str		-	-	any

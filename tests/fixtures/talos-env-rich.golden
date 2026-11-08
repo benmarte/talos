@@ -38,6 +38,7 @@ ISOLATION=worktree
 WORKTREE_WARN_THRESHOLD=4
 PR_DRAFT=true
 READY_GATE=off
+CI_PARALLEL=true
 ORCHESTRATOR=llm
 agent.validator.runner=claude
 agent.validator.model=sonnet

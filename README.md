@@ -9,7 +9,7 @@ It is code-driven by default: `/talos:pipeline` starts `scripts/talos.sh run`, t
 - **Trackers:** GitHub (the `gh` CLI or a token), GitLab, Azure DevOps, or a local `plan.md` checklist.
 - **Harnesses:** Claude Code natively; pi, Codex CLI, Gemini CLI, Antigravity, or any agentic CLI (including a local llama.cpp model) as the stage runner.
 - **Notifications:** Slack, Discord, Teams, Buzz and a generic command sink.
-- **Safe by default:** approvals bound to the PR head SHA, draft PRs with one CI run, a forbidden-files gate, secrets only by reference, and an opt-in token budget guard (`limits.tokens_per_issue`, unset by default).
+- **Safe by default:** approvals bound to the PR head SHA, draft PRs with one CI run that works in parallel with the final QA (`ci.parallel_with_qa`; the CI gate is `merge.required_checks`, for example one aggregate `ci-complete` job), a forbidden-files gate, secrets only by reference, and an opt-in token budget guard (`limits.tokens_per_issue`, unset by default).
 
 ## How it works
 

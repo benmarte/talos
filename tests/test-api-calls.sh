@@ -39,7 +39,9 @@ use_stubs
 [ -z "${TALOS_API_CALLS_NO_GRAPHQL:-}" ] || export STUB_GH_NO_GRAPHQL=1
 
 BEFORE_GRAPHQL=49 BEFORE_REST=86
-CEIL_GRAPHQL=6 CEIL_REST=71
+# CEIL_REST 71 -> 75 (#836): with ci.parallel_with_qa on (the default with required_checks) post-approval qa
+# reads the required checks at the head once before posting and its stamp check reads them again.
+CEIL_GRAPHQL=6 CEIL_REST=75
 
 export CLAUDE_CONFIG_DIR="$SANDBOX/cc" TALOS_RETRY_SLEEP_SCALE=0
 TALOS="$TALOS_ROOT/scripts/talos.sh"

@@ -113,7 +113,7 @@ if not lines:
 stop_extra = {"usage", "unknown-verb", "scripts-missing", "python-missing", "scratch-unavailable",
               "config-unreadable", "draft-resolve-failed", "view-failed", "labels-unreadable",
               "approval-sha-failed", "draft-unverified", "ci-unverified", "head-unresolved",
-              "comments-unreadable", "handoff-label-failed", "trust-unverified"}
+              "comments-unreadable", "handoff-label-failed", "trust-unverified", "draft-pr-failed"}
 warn_ok = {"ci-runs-unrecorded","budget-check-failed", "unblock-failed",
            "comment-failed", "label-failed", "value-truncated", "area-check-failed", "board-failed"}
 kv = re.compile(r"([A-Za-z][A-Za-z0-9_.]*)=")

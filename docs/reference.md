@@ -546,6 +546,13 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `pr.draft` | bool | derived | - | any |
 | `pr.ready_gate` | enum | `off` | - | any |
 
+#### ci.*
+
+| Key | Type | Default | Env override | Scope |
+|---|---|---|---|---|
+| `ci.parallel_with_qa` | bool | `true` | - | any |
+| `ci.known_flakes` | list | - | - | repo |
+
 #### markers.*
 
 | Key | Type | Default | Env override | Scope |
@@ -1093,6 +1100,10 @@ On `azure` an empty `merge.required_checks` is not a refusal: the verb judges th
 **QA pre-CI gate.** `pr.ready_gate: qa-local` (default `off`, which is the flow above, unchanged) makes QA the last stage of the draft window: docs, reviewer, security (+ adversarial), then QA on the draft, then `ready-pr`. QA checks out the PR head, runs the `qa-run` criteria and the full `verify:` list once through `pipeline-verify.sh` (the suite CI would run), never waits for CI, and `post-approval` stamps the head SHA it verified. Only a PASS fires `ready-pr`, so the one CI run is never spent on a head QA rejects; a FAIL runs the normal fix round on the still-draft PR (no `draft-pr`, no CI was ever spent) and QA runs again on the new head. CI stays the merge authority: `gate merge` is unchanged and still needs `pr-checks-required` green on the final head. After `ready-pr` no QA is dispatched and nothing waits inside a QA stage; the next pass is the ordinary `ci` / `merge` stage.
 
 The gate applies only while `pr.draft` resolves true and `roles.qa` is on (`pipeline-draft-check.sh ready-gate` prints the effective value, `talos.sh env` as `READY_GATE`); otherwise it reads `off` with one stderr line. An unknown value reads `off` with a warning. A ready PR without `qa:pass` (a human marked it ready) gets QA after ready as before.
+
+**CI in parallel with QA (`ci.parallel_with_qa`, default `true`).** CI is the single full-suite run, and it runs while the final QA works. PRs stay draft through dev and fix rounds (CI runs no jobs on drafts). When a head is the final candidate (every draft-window approval fresh, no open blocking finding), the run calls `ready-pr` and dispatches QA straight away, with no CI wait in between. QA runs `qa-run`, lint, the secret scan, the generate gate, the touched packages and the PR's own e2e, and the live walk; it never runs the full suite. Only then does it make one bounded `pr-checks-required <pr> --wait` right before `post-approval`, and its verdict carries a `CI per-job results` table for the head (job, result, a known flake named). The CI gate is `merge.required_checks`: name one aggregate job there (for example `ci-complete`) and that job is the oracle. `post-approval <pr> qa` is refused (exit 1, no marker, no label, `post-approval: qa refused: required CI <missing|pending|failed>: <names>`) unless every required check is green at the PR head; `check-approval-sha <n> --require-ci` is the same read as a verb (`check-approval-sha: ci: <kind>: <names>`, no `stale role=` line). `ci.known_flakes` (a list of CI check names, repo config only) allows ONE automatic `rerun-ci` when every failed required check is in the list and the head has no `talos:ci-rerun` marker yet; the marker is posted (it counts toward `gate merge`'s two re-runs), one bounded wait follows, and the approval stands only if that run is green. A failed check outside the list is never re-run. If QA or CI finds a real problem, `draft-pr` runs before the fix push (a QA FAIL inside `done`, a `gate merge` `reason=ci-failed` redispatch inside the gate), so the fix costs no CI run.
+
+The mode is on only while `pr.draft` resolves true, `roles.qa` is on, `merge.required_checks` is non-empty and `pr.ready_gate` is `off` (`pipeline-draft-check.sh ci-parallel` prints the effective value, `talos.sh env` as `CI_PARALLEL`); otherwise it reads `false` with one stderr line and the flow above runs as before (the `qa_mode: ci` wait comes before QA). Set `ci.parallel_with_qa` to `false` to turn it off.
 
 Costs and limits. QA-local cannot guarantee CI green: CI runs on ubuntu while a local run is often macOS (#329), so it only avoids spending the run on a locally red head. The full `verify:` list costs one more suite run per PR, bounded by `verify.timeout_ms`, and QA now runs before CI instead of alongside it: roughly 20 minutes more wall time per PR when everything is green.
 

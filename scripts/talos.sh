@@ -79,7 +79,7 @@
 #   stop: usage unknown-verb scripts-missing python-missing scratch-unavailable config-unreadable
 #         draft-resolve-failed view-failed labels-unreadable approval-sha-failed
 #         unsupported-verb:<verb> draft-unverified ci-unverified head-unresolved
-#         comments-unreadable handoff-label-failed trust-unverified
+#         comments-unreadable handoff-label-failed trust-unverified draft-pr-failed
 #   warn: ci-runs-unrecorded budget-check-failed
 #         area-check-failed unblock-failed comment-failed label-failed value-truncated
 #         board-failed
@@ -834,6 +834,15 @@ EOF
   esac
   _talos_emit READY_GATE "$_val"
 
+  # CI_PARALLEL (#836): the effective ci.parallel_with_qa, from the same resolver:
+  # CI runs the one full suite while the final QA works.
+  _val="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ci-parallel)" || _talos_stop draft-resolve-failed
+  case "$_val" in
+    true | false) : ;;
+    *) _talos_stop draft-resolve-failed ;;
+  esac
+  _talos_emit CI_PARALLEL "$_val"
+
   # ORCHESTRATOR (#602): the effective execution.orchestrator. `code` is the
   # default: the playbook starts `talos.sh run` once and acts on its end line.
   # `llm` is the per-stage loop, asked for by the key or forced by what the
@@ -1450,7 +1459,15 @@ _talos_gate_merge() {
         _talos_post "$_pr" "CI still failing after 2 re-runs for this head; not merging."$'\n\n'"$_cierr"$'\n'"<!-- talos:ci-failed $_sha -->"
       fi
       _talos_emit reason ci-failed
-      if [ "$_draft" = "true" ]; then _talos_verdict redispatch; fi
+      if [ "$_draft" = "true" ]; then
+        # CI in parallel with QA (#836): the PR is ready, so the fix push would
+        # burn a CI run. Convert it back to a draft first, as a QA FAIL does.
+        if [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ci-parallel 2>/dev/null)" = "true" ]; then
+          _talos_cap _vcs draft-pr "$_pr"
+          [ "$_RC" -eq 0 ] || _talos_stop draft-pr-failed
+        fi
+        _talos_verdict redispatch
+      fi
       _talos_verdict wait ;;
   esac
 
@@ -2124,7 +2141,7 @@ _TALOS_PROMPT_NAMES="ISSUE PR ROLE ROLE_TITLE BASE_BRANCH VCS_PROVIDER COMMENTS_
   VERIFY_TARGETED VERIFY_TIMEOUT_MS VERIFY_CI_WAIT_S VERIFY_QA_MODE VERIFY_COMMANDS REQUIRED_CHECKS_LINE
   VERIFY_TIMEOUT_LINE SPEC_SOURCE ISOLATION_NOTE PRIOR_STAGE_SUMMARY HANDOFF_LINE DRAFT_PR_LINE FIX_ROUND_LINES
   PASSED_LEAD DOCS_DIFF_INSTRUCTION TITLE BODY RESTAMP_INPUTS STOP_RULE QA_CI_WAIT_LINE QA_RULE QA_GATE_STEP
-  QA_TARGETED_LINE QA_WALK_LINE DEV_TESTS_LINE WORKTREE_PATH CHANGE_BLOCK GUIDE_BLOCK SCRIPTS_DIR TEMPLATES_DIR INSTALL_LINES"
+  QA_TARGETED_LINE QA_WALK_LINE QA_CI_STEP DEV_TESTS_LINE WORKTREE_PATH CHANGE_BLOCK GUIDE_BLOCK SCRIPTS_DIR TEMPLATES_DIR INSTALL_LINES"
 
 # The renderer: argv = template, values file, output file, allowed names. The
 # values file is NUL-delimited NAME, VALUE pairs; a NAME written `<NAME` carries
@@ -2660,7 +2677,13 @@ _talos_prompt() {
             *) _talos_stop draft-unverified ;;
           esac
         fi
+        # #836: CI is running the full suite in parallel with this QA. (ready_gate
+        # off is part of the rule, so it never meets the pre-ci shape above.)
+        if [ "$_v" = ci ] && [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ci-parallel 2>/dev/null)" = true ]; then
+          _v=parallel
+        fi
       fi
+      _talos_pv QA_CI_STEP ""
       if [ "$_v" = pre-ci ]; then
         _talos_pv REQUIRED_CHECKS_LINE ""
         _talos_pv QA_CI_WAIT_LINE ""
@@ -2672,8 +2695,18 @@ post-approval stamps the head SHA you verified (the PR head, not a stale checkou
       else
         _talos_pv REQUIRED_CHECKS_LINE "$(_talos_prompt_checks)"
         _talos_pv QA_CI_WAIT_LINE "CI wait budget: $(cfg verify.ci_wait_s) seconds"
-        _talos_pf QA_RULE "$_tpl/_qa-ci.md"
         _talos_pv QA_GATE_STEP ""
+        if [ "$_v" = parallel ]; then
+          _talos_pf QA_RULE "$_tpl/_qa-ci-parallel.md"
+          _r="$(cfg ci.known_flakes | paste -sd, - | sed 's/,/, /g')"
+          _talos_pv QA_CI_STEP "CI wait, after every local check above is done (CI has been running the full suite since the PR was marked ready): one bounded foreground command, run once.
+  bash $SCRIPT_DIR/pipeline-vcs.sh pr-checks-required ${_pr} --wait <CI wait budget above>
+Exit 0: every required check is green. Any other exit is a FAIL (a red job: name it; still pending at the budget: fail closed). Do not wait on CI earlier.
+Put a \`CI per-job results\` table in the verdict, read from \`bash $SCRIPT_DIR/pipeline-vcs.sh pr-checks ${_pr}\`: job, result, and a known flake named as one${_r:+ (known flakes: $_r)}.
+Then post the verdict. The approval verb refuses unless the required CI is green at the head, and re-runs a listed known flake once."
+        else
+          _talos_pf QA_RULE "$_tpl/_qa-ci.md"
+        fi
       fi ;;
     reviewer | security)
       # #596: the spec and the whole diff, or the one line that says why they
@@ -5235,7 +5268,8 @@ _talos_run_lease() {
 # pass finishes the Draft stage order itself. The write is leased first (the
 # same shape `next`'s dispatch path uses); the ready verb runs once; the
 # Draft guard asks the PR itself, never memory; the one CI wait runs only
-# under qa_mode: ci; QA dispatches through the driver's one dispatch path;
+# under qa_mode: ci, and not with ci.parallel_with_qa (#836: CI runs the full
+# suite while QA works, so QA is dispatched at once); QA dispatches through the driver's one dispatch path;
 # and the lease is released before the function returns to the loop. With the
 # QA pre-CI gate on (pr.ready_gate qa-local, #535), or a qa:pass fresh at the
 # head (#689), QA already passed: the function ends after the guard, with no QA
@@ -5244,7 +5278,7 @@ _talos_run_lease() {
 # the next pass's existing merge arm runs (the gate reads ci_runs before the
 # write that deletes the head branch).
 _talos_run_draft_complete() {
-  local _pr="$1" _n="$2" _r _b _ci_wait _t_ms _wait_args _l _fresh
+  local _pr="$1" _n="$2" _r _b _ci_wait _t_ms _wait_args _l _fresh _par
   # The write is leased first: a held lease or an unavailable ledger/lock ends
   # the run with the lease wait, zero ready-pr.
   _talos_run_lease "$_n"
@@ -5301,7 +5335,11 @@ _talos_run_draft_complete() {
   # integer. rc 0 or 2 dispatches QA; rc 1 with the failed line in stderr ends
   # the run with the ci wait shape (a red build is scheduling, not a fault);
   # rc 1 without it dispatches QA.
-  if [ "$(cfg verify.qa_mode)" = "ci" ]; then
+  # CI in parallel with QA (#836): the one CI run IS the full suite, and it runs
+  # while QA works, so there is no wait here -- QA waits for it once, right
+  # before post-approval, after its own local checks.
+  _par="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ci-parallel 2>/dev/null)" || _par=false
+  if [ "$_par" != "true" ] && [ "$(cfg verify.qa_mode)" = "ci" ]; then
     _ci_wait="$(cfg verify.ci_wait_s)"; _t_ms="$(cfg verify.timeout_ms)"
     _b=""
     case "$_ci_wait" in ''|*[!0-9]*) ;; *)

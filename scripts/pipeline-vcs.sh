@@ -10720,6 +10720,151 @@ if [ "$VERB" = "label-pr" ] && [ "${#ARGS[@]}" -ge 1 ]; then
   fi
 fi
 
+# ── CI in parallel with QA (#836) ────────────────────────────────────────────
+# With ci.parallel_with_qa on (`pipeline-draft-check.sh ci-parallel`, the one
+# resolver) CI runs the full suite while the final QA works, so QA's approval
+# needs a green required CI at the head: post-approval qa checks it, and
+# `check-approval-sha <n> --require-ci` is the same read as a verb. Both use
+# pr-checks-required, i.e. merge.required_checks (for example one aggregate job).
+
+# _vcs_ci_parallel -- 0 when the effective mode is on, 1 when it is off, 2 when
+# the resolver cannot answer (missing, non-zero exit, or neither `true` nor
+# `false`). Fail closed: a caller treats 2 as a refusal, never as off.
+_vcs_ci_parallel() {
+  local _v
+  [ -f "$SCRIPT_DIR/pipeline-draft-check.sh" ] || return 2
+  _v="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ci-parallel 2>/dev/null)" || return 2
+  case "$_v" in
+    true) return 0 ;;
+    false) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
+# _vcs_ci_read <pr> [<wait seconds>] -- one read of the required checks at the
+# PR head. Sets _CI_KIND green | pending | failed | missing and _CI_NAMES (the
+# check names, ", "-joined). pending is a check still running or not reported
+# yet (pr-checks-required exit 2); missing is no usable answer at all (an empty
+# merge.required_checks, an unreadable head, an unsupported provider).
+_vcs_ci_read() {
+  local _o _rc _w=()
+  [ -z "${2:-}" ] || _w=(--wait "$2")
+  _o="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-checks-required "$1" ${_w[@]+"${_w[@]}"} ${REPO:+--repo "$REPO"} 2>&1)"; _rc=$?
+  _CI_NAMES=""
+  case "$_rc" in
+    0) _CI_KIND=green ;;
+    2) _CI_KIND=pending
+       _CI_NAMES="$(printf '%s\n' "$_o" | sed -n 's/^pr-checks-required: pending or missing: //p' | tail -n 1)" ;;
+    1) if grep -q '^pr-checks-required: failed: ' <<<"$_o"; then
+         _CI_KIND=failed
+         _CI_NAMES="$(printf '%s\n' "$_o" | sed -n 's/^pr-checks-required: failed: //p' | tail -n 1)"
+       else
+         _CI_KIND=missing
+       fi ;;
+    *) _CI_KIND=missing ;;
+  esac
+}
+
+# --require-ci on check-approval-sha: exit 1 with one `ci:` line unless the
+# required checks are green; no `stale role=` line, so no caller strips a label
+# for it. Green: the flag is dropped and the provider's own check runs as before.
+if [ "$VERB" = "check-approval-sha" ]; then
+  _rc_keep=() _rc_req=0
+  for _rc_a in ${ARGS[@]+"${ARGS[@]}"}; do
+    if [ "$_rc_a" = "--require-ci" ]; then _rc_req=1; else _rc_keep+=("$_rc_a"); fi
+  done
+  if [ "$_rc_req" -eq 1 ]; then
+    ARGS=(${_rc_keep[@]+"${_rc_keep[@]}"})
+    case "${ARGS[0]:-}" in
+      '' | *[!0-9]*) ;;
+      *)
+        if [ "$DRY_RUN" != "true" ]; then
+          _vcs_ci_read "${ARGS[0]}"
+          if [ "$_CI_KIND" != green ]; then
+            echo "check-approval-sha: ci: $_CI_KIND${_CI_NAMES:+: $_CI_NAMES}" >&2
+            exit 1
+          fi
+        fi ;;
+    esac
+  fi
+fi
+
+# _vcs_ci_wait_budget -- the wait budget for a CI re-run: verify.ci_wait_s
+# (default 900), at most the verb's own 3600 bound.
+_vcs_ci_wait_budget() {
+  local _b
+  _b="$(cfg verify.ci_wait_s 2>/dev/null)"
+  case "$_b" in '' | *[!0-9]*) _b=900 ;; esac
+  [ "${#_b}" -gt 4 ] && _b=3600
+  _b=$((10#$_b))
+  [ "$_b" -gt 3600 ] && _b=3600
+  printf '%s' "$_b"
+}
+
+# _vcs_ci_gate_qa <pr> <head sha> -- post-approval qa in parallel mode: 0 when
+# the required checks at the head are green, else 1 with one refusal line
+# `post-approval: qa refused: required CI <missing|pending|failed>: <names>`.
+# A red check whose every failed name is in ci.known_flakes, with no
+# talos:ci-rerun marker for the head yet, gets ONE rerun-ci (the marker is
+# posted, so it counts toward gate merge's 2 per head) and one bounded wait;
+# the approval stands only if that run is green. A name outside the list is
+# never rerun here.
+_vcs_ci_gate_qa() {
+  local _pr="$1" _sha="$2" _flakes _name _all=1 _seen _com _cnt _tf _try _scale
+  _vcs_ci_read "$_pr"
+  if [ "$_CI_KIND" = failed ]; then
+    _flakes="$(cfg ci.known_flakes 2>/dev/null)"
+    if [ -n "$_flakes" ]; then
+      _seen="$_CI_NAMES"
+      while [ -n "$_seen" ]; do
+        _name="${_seen%%, *}"
+        if [ "$_name" = "$_seen" ]; then _seen=""; else _seen="${_seen#*, }"; fi
+        grep -qxF -- "$_name" <<<"$_flakes" || _all=0
+      done
+    else
+      _all=0
+    fi
+    if [ "$_all" -eq 1 ]; then
+      _com="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-comments "$_pr" ${REPO:+--repo "$REPO"} 2>/dev/null)" || _com=""
+      _cnt="$(printf '%s' "$_com" | PA_MARKER="<!-- talos:ci-rerun $_sha -->" python3 -I -c "$(_vcs_shared_trust_py)
+import json, os, sys
+marker = os.environ.get('PA_MARKER', '')
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print('error')
+    sys.exit(0)
+print(sum(1 for c in data.get('comments', []) if body_last_line(c.get('body', '') or '') == marker))
+")"
+      case "$_cnt" in
+        0)
+          if bash "$SCRIPT_DIR/pipeline-vcs.sh" rerun-ci "$_pr" ${REPO:+--repo "$REPO"} >/dev/null 2>&1; then
+            _tf="$(mktemp)" && [ -n "$_tf" ] || { echo "pipeline-vcs: post-approval: cannot create a temp file" >&2; return 1; }
+            printf 'CI re-run 1 of 2 for this head (a known flake).\n<!-- talos:ci-rerun %s -->\n' "$_sha" > "$_tf"
+            bash "$SCRIPT_DIR/pipeline-vcs.sh" comment-pr "$_pr" --body-file "$_tf" >/dev/null 2>&1 || {
+              rm -f "${_tf:?}"
+              echo "pipeline-vcs: post-approval: the CI re-run marker could not be posted for PR #$_pr; not re-running again" >&2
+              return 1
+            }
+            rm -f "${_tf:?}"
+            # A re-run replaces the failed check within moments; a read right after it
+            # can still show the old red one, so a red answer is read again, a few times.
+            _scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
+            case "$_scale" in '' | *[!0-9.]*) _scale=1 ;; esac
+            for _try in 1 2 3; do
+              _vcs_ci_read "$_pr" "$(_vcs_ci_wait_budget)"
+              [ "$_CI_KIND" = failed ] || break
+              [ "$_try" -lt 3 ] && sleep "$(awk -v k="$_scale" 'BEGIN { print 10 * k }')"
+            done
+          fi ;;
+      esac
+    fi
+  fi
+  [ "$_CI_KIND" = green ] && return 0
+  echo "post-approval: qa refused: required CI $_CI_KIND${_CI_NAMES:+: $_CI_NAMES}" >&2
+  return 1
+}
+
 # ── post-approval: atomic marker-post + label (#146) ─────────────────────────
 # github, github-api and azure (and gitlab, #736). For other providers, exit 1.
 #
@@ -10888,6 +11033,7 @@ if [ "$VERB" = "post-approval" ]; then
   # (#554) This pass shares one set of reads between the verbs it spawns (see
   # "Per-pass read cache"): the PR, its comments and the login are read once
   # before the writes and once after them. _talos_on_exit removes the directory.
+  _pa_ci_flag=""
   _pa_cache="$(mktemp -d "${TMPDIR:-/tmp}/talos-pass.XXXXXX" 2>/dev/null)" && {
     printf '%s' "$$" > "$_pa_cache/owner" && export TALOS_PASS_CACHE="$_pa_cache" \
       && _talos_on_exit 'rm -rf "$_pa_cache"'
@@ -10912,7 +11058,7 @@ if [ "$VERB" = "post-approval" ]; then
   _pa_result() {
     local _r_out _r_rc _r_why _r_stale
     _r_out="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" check-approval-sha "$_pa_n" --stale-list \
-      ${REPO:+--repo "$REPO"} 2>&1)"; _r_rc=$?
+      ${_pa_ci_flag:+"$_pa_ci_flag"} ${REPO:+--repo "$REPO"} 2>&1)"; _r_rc=$?
     if [ "$_r_rc" -eq 0 ] && grep -q 'all approval labels are current' <<<"$_r_out"; then
       _vcs_hand_note approval-posted --pr "$_pa_n" ${_pa_issue:+--issue "$_pa_issue"}
       printf 'post-approval: PR #%s %s %s; stamp ok\n' "$_pa_n" "$_pa_role" "$1"
@@ -10957,6 +11103,29 @@ if [ "$VERB" = "post-approval" ]; then
   if [ "${#_pa_sha}" -ne 40 ]; then
     echo "pipeline-vcs: post-approval: SHA must be 40 hex chars, got ${#_pa_sha}: '$_pa_sha'" >&2
     exit 1
+  fi
+
+  # (#836) CI in parallel with QA: the qa approval needs a green required CI at
+  # this head. Checked before anything is posted, so a refusal leaves no marker
+  # and no label. --recover-only re-applies a stamp earned earlier and posts
+  # nothing, so it is not gated here (gate merge reads CI itself).
+  # The self-check after the writes passes --require-ci in the same mode.
+  if [ "$_pa_role" = qa ] && [ "$_pa_recover" -eq 0 ]; then
+    _pa_par_rc=0
+    _vcs_ci_parallel || _pa_par_rc=$?
+    case "$_pa_par_rc" in
+      0)
+        _pa_ci_flag="--require-ci"
+        _vcs_ci_gate_qa "$_pa_n" "$_pa_sha" || exit 1
+        ;;
+      1) ;;
+      *)
+        # The resolver could not answer: QA ran with no pre-QA CI wait in this
+        # mode, so skipping the check could approve a red head. Refuse.
+        echo "pipeline-vcs: post-approval: qa refused: ci.parallel_with_qa could not be resolved" >&2
+        exit 1
+        ;;
+    esac
   fi
 
   # Construct the marker body. The marker is a fixed template with only two

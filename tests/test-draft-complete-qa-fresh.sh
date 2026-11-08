@@ -73,7 +73,7 @@ rn() { OUT="$(bash "$RUN" run "$@" 2>"$ERR")"; RC=$?; }
 fixture() {
   rm -rf "${STUB_DIR:?}"; mkdir -p "$STUB_DIR"
   rm -f "$LEASE" "${LEASE:?}.lock.d"
-  printf '{"vcs": {"provider": "github"}, "issues": {"max_parallel": 1}, "roles": {"validator": true, "qa": true, "docs": true, "reviewer": true, "security": true}, "pr": {"draft": true}, "verify": {"qa_mode": "ci", "timeout_ms": 600000, "ci_wait_s": 900}, "merge": {"required_checks": ["test (ubuntu-latest)"]}}' \
+  printf '{"vcs": {"provider": "github"}, "issues": {"max_parallel": 1}, "roles": {"validator": true, "qa": true, "docs": true, "reviewer": true, "security": true}, "pr": {"draft": true}, "verify": {"qa_mode": "ci", "timeout_ms": 600000, "ci_wait_s": 900}, "merge": {"required_checks": ["test (ubuntu-latest)"]}, "ci": {"parallel_with_qa": false}}' \
     > "$SANDBOX/talos.pipeline.json"
   printf '{"number": 9, "title": "t", "labels": [{"name": "pipeline:review"}], "body": "body", "state": "open"}' > "$STUB_DIR/view-issue.9"
   printf '{"prs":[{"n":12,"issue":9,"head":"a4f9","owner":false,"stage":"ready"}],"pr_total":1,"ignored":0,"blocked":[],"queued":[],"held":[],"owners":[],"capped":[]}' \
