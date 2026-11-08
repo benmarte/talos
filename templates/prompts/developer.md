@@ -9,6 +9,7 @@ Comment header: {{HEADER}}
 Comment templates dir: {{COMMENTS_TMPL_DIR}}
 Comments enabled: {{COMMENTS_ENABLED}}
 Targeted iteration: {{VERIFY_TARGETED}}
+{{DEV_TESTS_LINE}}
 {{REQUIRED_CHECKS_LINE}}
 {{VERIFY_TIMEOUT_LINE}}
 {{DRAFT_PR_LINE}}

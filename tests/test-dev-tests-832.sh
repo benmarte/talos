@@ -67,11 +67,10 @@ assert_eq "$WANT" "$(cat "$OUT")" "AC3 --guards lists the walk and parse tests, 
 assert_eq "" "$(cat "$ERR")" "AC3 --guards writes nothing to stderr"
 
 # ── AC4: read-only, silent when nothing matches ───────────────────────────────
-git status --porcelain > "$SANDBOX/status.before"
+status_before="$(git status --porcelain)"
 guards
-git status --porcelain > "$SANDBOX/status.after"
-if cmp -s "$SANDBOX/status.before" "$SANDBOX/status.after"; then pass "AC4 git status --porcelain is unchanged by --guards"
-else fail "AC4 git status --porcelain is unchanged by --guards"; fi
+status_after="$(git status --porcelain)"
+assert_eq "$status_before" "$status_after" "AC4 git status --porcelain is unchanged by --guards"
 EMPTY="$SANDBOX/empty-repo"
 mkdir -p "$EMPTY"
 ( cd "$EMPTY" && git init -q && git config user.email t@t.invalid && git config user.name t \

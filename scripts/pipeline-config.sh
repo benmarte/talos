@@ -1316,8 +1316,21 @@ def _apply_effort(flat):
         else:
             flat[_ekey] = _evalue
 
+# verify.dev_tests (#832): a list of non-empty command strings. Anything else
+# warns once on stderr and reads as empty, so the developer's set is today's.
+def _validate_dev_tests(key, value):
+    if key != "verify.dev_tests" or value is None:
+        return value
+    if isinstance(value, list) and all(isinstance(v, str) and v.strip() for v in value):
+        return value
+    sys.stderr.write(
+        "pipeline-config: verify.dev_tests must be a list of non-empty command "
+        "strings -- got: %r -- reading it as empty\n" % (value,)
+    )
+    return None
+
 def _lookup(key, default, no_default):
-    value = walk(cfg, key.split("."))
+    value = _validate_dev_tests(key, walk(cfg, key.split(".")))
     # "verify" is historically a flat list of shell commands; the dict form
     # (verify: {commands: [...], qa_mode: ..., ...}) reads as its commands.
     if key == "verify" and isinstance(value, dict):
@@ -1382,6 +1395,9 @@ def _dump(env_keys, secrets_path):
     if isinstance(flat.get("verify.targeted_commands"), list):
         import json
         flat["verify.targeted_commands"] = json.dumps(flat["verify.targeted_commands"])
+
+    if "verify.dev_tests" in flat and _validate_dev_tests("verify.dev_tests", flat["verify.dev_tests"]) is None:
+        del flat["verify.dev_tests"]
 
     # An invalid value warns once on stderr and is dropped: the caller then
     # gets the key's table default. The defaults are the CALLER's -- the dump
