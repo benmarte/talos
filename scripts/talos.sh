@@ -1631,8 +1631,9 @@ if mode == "heal":
     opened = set(n for n, _, _ in items)
     for n, names, b in items:
         # A batch member (#834) whose lead is closed rides the merged PR of that lead.
+        # Only one carrying an epic:<n> label (the planner sets it; a stranger cannot).
         m = re.search(r"^[ \t]*Batched into:[ \t]*#([0-9]+)(?![0-9])", b, re.M)
-        if m and int(m.group(1)) not in opened:
+        if m and any(isinstance(x, str) and x.startswith("epic:") for x in names) and int(m.group(1)) not in opened:
             print("member", n, m.group(1))
         elif any(isinstance(x, str) and x.startswith("pipeline:") for x in names):
             print("heal", n)
@@ -1816,8 +1817,14 @@ _talos_issue_open() {
 _TALOS_MEMBERS_PY='
 import json, re, sys
 line = re.compile(r"^[ \t]*Batched into:[ \t]*#" + sys.argv[1] + r"(?![0-9])", re.M)
+def epic(i):
+    for l in i.get("labels") or []:
+        name = l.get("name") if isinstance(l, dict) else l
+        if isinstance(name, str) and name.startswith("epic:"):
+            return True
+    return False
 for n in sorted(i.get("number") for i in json.load(sys.stdin)
-                if isinstance(i.get("number"), int) and line.search(i.get("body") or "")):
+                if isinstance(i.get("number"), int) and epic(i) and line.search(i.get("body") or "")):
     print(n)
 '
 _TALOS_ISSUE_LIST=""

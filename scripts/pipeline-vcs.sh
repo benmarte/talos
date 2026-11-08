@@ -1251,6 +1251,28 @@ print(json.dumps(d))
 " "$1"
 }
 
+# _azure_body_text: the list-issues array on stdin with each `body` (ADO's HTML
+# description, cut to _VCS_AZURE_SCAN_CAP) turned into text lines. Input that is
+# not a JSON array passes through unchanged.
+_azure_body_text() {
+  python3 -I -c '
+import html, json, re, sys
+raw = sys.stdin.read()
+cap = int(sys.argv[1])
+try:
+    d = json.loads(raw)
+    if isinstance(d, list):
+        for i in d:
+            if isinstance(i, dict) and isinstance(i.get("body"), str):
+                t = re.sub(r"<br\s*/?>|</(?:p|div|li|ul|ol|h[1-6]|tr|blockquote|pre)>", "\n", i["body"][:cap], flags=re.I)
+                i["body"] = html.unescape(re.sub(r"<[^<>]*>", "", t))
+except Exception:
+    sys.stdout.write(raw)
+    sys.exit(0)
+print(json.dumps(d))
+' "${_VCS_AZURE_SCAN_CAP:-65536}"
+}
+
 # _json_array_len: like _json_array_count, but exits non-zero when stdin is
 # not a JSON array -- for callers where "unreadable" must not read as empty
 # (#319).
@@ -8553,12 +8575,14 @@ print(len(d), min((p.get("creationDate") or "")[:10] for p in d) if d else "")
       fi
       local _azli_out
       _azli_out="$(az boards query $ORG_ARG $PROJ_ARG \
-        --wiql "SELECT [System.Id], [System.Title], [System.State], [System.Tags] FROM WorkItems WHERE [System.State] NOT IN ('Closed', 'Done', 'Removed') ORDER BY [System.ChangedDate] DESC" \
+        --wiql "SELECT [System.Id], [System.Title], [System.State], [System.Tags], [System.Description] FROM WorkItems WHERE [System.State] NOT IN ('Closed', 'Done', 'Removed') ORDER BY [System.ChangedDate] DESC" \
         --output json)" || exit 1
       local _azli_count
       _azli_count="$(printf '%s' "$_azli_out" | _json_array_count)"
       _list_cap_warn list-issues "$_azli_cap" "$_azli_count" "ADO flat-WIQL 20000-item server ceiling" "work items"
-      printf '%s\n' "$_azli_out" | _azure_normalise issues
+      # The body is the work item's HTML description (#834): block ends become
+      # newlines and the other tags go, so a `Batched into:` line is a line.
+      printf '%s\n' "$_azli_out" | _azure_normalise issues | _azure_body_text
       ;;
     view-issue)
       # The work item plus its comments (#696), each body turned back from the
@@ -11573,7 +11597,9 @@ _vcs_pr_checks_required_dispatch() {
 }
 
 # batch-members <lead> (#834): the numbers of the open issues whose body has a
-# line `Batched into: #<lead>` (the number not followed by a digit), ascending,
+# line `Batched into: #<lead>` (the number not followed by a digit) and that
+# carry an `epic:<n>` label (the planner sets it on every member; only a user
+# who can label can, so a stranger's issue cannot join a lead), ascending,
 # one per line. One read, `list-issues` of whichever provider is configured, so
 # every provider answers it the same way. Nothing on stdout and a non-zero exit
 # when the list cannot be read; a lead with no member is no output and exit 0.
@@ -11591,10 +11617,16 @@ _vcs_batch_members() {
 import json, re, sys
 lead = sys.argv[1]
 line = re.compile(r"^[ \t]*Batched into:[ \t]*#" + lead + r"(?![0-9])", re.M)
+def epic(i):
+    for l in i.get("labels") or []:
+        name = l.get("name") if isinstance(l, dict) else l
+        if isinstance(name, str) and name.startswith("epic:"):
+            return True
+    return False
 found = set()
 for i in json.load(sys.stdin):
     n = i.get("number", i.get("id"))
-    if isinstance(n, int) and not isinstance(n, bool) and line.search(i.get("body") or ""):
+    if isinstance(n, int) and not isinstance(n, bool) and epic(i) and line.search(i.get("body") or ""):
         found.add(n)
 out = "".join("%d\n" % n for n in sorted(found))
 sys.stdout.write(out)

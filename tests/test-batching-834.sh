@@ -22,20 +22,24 @@ ROOT_DIR="$SANDBOX"
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "gitlab"}}
 EOF
-gl_items() {  # iid:description ... -> a glab issue list answer
+gl_items() {  # iid:description ... -> a glab issue list answer; an iid after `-` has no epic label
   python3 -I -c '
 import json, sys
-print(json.dumps([{"iid": int(a.split(":", 1)[0]), "title": "t", "state": "opened",
-                   "description": a.split(":", 1)[1].replace("\\n", "\n")} for a in sys.argv[1:]]))' "$@"
+def item(a):
+    head, desc = a.split(":", 1)
+    return {"iid": int(head.lstrip("-")), "title": "t", "state": "opened",
+            "labels": [] if head.startswith("-") else ["epic:7"], "description": desc.replace("\\n", "\n")}
+print(json.dumps([item(a) for a in sys.argv[1:]]))' "$@"
 }
 bm() { OUT="$(STUB_GITLAB_ISSUE_LIST="$1" bash "$VCS" batch-members "$2" 2>"$ERR")"; RC=$?; }
 
 LIST="$(gl_items '11:Batched into: #5' '9:intro\nBatched into: #5\nmore' '7:Batched into: #5 (small)' \
-  '12:Batched into: #50' '13:Batched into: #6' '14:no batch line, mentions #5' '5:the lead itself')"
+  '12:Batched into: #50' '13:Batched into: #6' '14:no batch line, mentions #5' '5:the lead itself' \
+  '-15:Batched into: #5')"
 bm "$LIST" 5
 assert_eq "7
 9
-11" "$OUT" "AC1 batch-members prints the open members of the lead, ascending, one per line"
+11" "$OUT" "AC1 batch-members prints the open members of the lead, ascending, one per line; #15 has no epic label, so it is not a member"
 assert_eq "0" "$RC" "AC1 batch-members exits 0"
 bm "$LIST" 50
 assert_eq "12" "$OUT" "AC1 #50 is not matched by #5, and #5 not by #50 (the number is not followed by a digit)"
@@ -45,6 +49,19 @@ assert_eq "0" "$RC" "AC1 a lead with no member exits 0"
 bm "this is not json" 5
 assert_eq "" "$OUT" "AC1 an unreadable list prints nothing on stdout"
 [ "$RC" -ne 0 ] && pass "AC1 an unreadable list exits non-zero" || fail "AC1 an unreadable list exits non-zero" "rc=$RC"
+
+# Azure DevOps: the description comes back with the list (HTML) and the tag is the label.
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "azure", "repo": "myrepo", "azure": {"org_url": "https://dev.azure.com/testorg", "project": "myproj"}}}
+EOF
+AZ_LIST='[{"id":21,"fields":{"System.Title":"m","System.State":"New","System.Tags":"epic:7","System.Description":"<div>intro</div><div>Batched into: #5</div>"}},
+{"id":22,"fields":{"System.Title":"m","System.State":"New","System.Tags":"epic:7","System.Description":"<p>x<br>Batched into: #5<br></p>"}},
+{"id":23,"fields":{"System.Title":"stranger","System.State":"New","System.Tags":"","System.Description":"<div>Batched into: #5</div>"}},
+{"id":24,"fields":{"System.Title":"no description","System.State":"New","System.Tags":"epic:7"}}]'
+OUT="$(STUB_AZURE_WORKITEM_LIST="$AZ_LIST" bash "$VCS" batch-members 5 2>"$ERR")"; RC=$?
+assert_eq "21
+22" "$OUT" "AC1 on azure the members come from the HTML description and the epic tag; an untagged work item is not one"
+assert_eq "0" "$RC" "AC1 azure batch-members exits 0"
 rm -f talos.pipeline.json
 
 # ── AC2: next waits on a member while its lead is open ───────────────────────
@@ -244,8 +261,8 @@ pm() { OUT="$(bash "$PM" post-merge "$@" 2>"$ERR")"; RC=$?; }
 sw() { OUT="$(bash "$PM" sweep "$@" 2>"$ERR")"; RC=$?; }
 
 post_reset
-pset list-issues 0 "$(list_of "$(issue_json 42 "")" "$(issue_json 43 "" "Batched into: #42")" "$(issue_json 44 "" "Batched into: #42")" \
-  "$(issue_json 45 "" "Batched into: #42")" "$(issue_json 46 "" "Batched into: #42")")"
+pset list-issues 0 "$(list_of "$(issue_json 42 "")" "$(issue_json 43 "epic:7" "Batched into: #42")" "$(issue_json 44 "epic:7" "Batched into: #42")" \
+  "$(issue_json 45 "epic:7" "Batched into: #42")" "$(issue_json 46 "epic:7" "Batched into: #42")" "$(issue_json 47 "" "Batched into: #42")")"
 pset batch-members 0 "43
 44
 45
@@ -267,10 +284,11 @@ assert_contains "$(pjournal)" "status 44 In progress" "AC5 a Part of member goes
 assert_contains "$OUT" "warn reason=closing-unverified issue=45 pr=9" "AC5 a member whose item fails prints its warn"
 assert_not_contains "$(pjournal)" "vcs close-issue 45" "AC5 a member that cannot be verified is not closed"
 assert_contains "$(pjournal)" "vcs close-issue 46 closed by PR #9" "AC5 the other members still run after one fails"
+assert_not_contains "$(pjournal)" "close-issue 47" "AC5 an issue with a Batched into: line and no epic label is not a member"
 
 # idempotent per member: the issue-closed marker on #43 suppresses its comment.
 post_reset
-pset list-issues 0 "$(list_of "$(issue_json 42 "")" "$(issue_json 43 "" "Batched into: #42")")"
+pset list-issues 0 "$(list_of "$(issue_json 42 "")" "$(issue_json 43 "epic:7" "Batched into: #42")")"
 pset batch-members 0 "43
 "
 pset pr-closes-issue.9.43 0 "closes"
@@ -299,7 +317,8 @@ assert_eq "1" "$(pcalled close-issue)" "AC5 an unbatched issue: exactly one clos
 
 # AC6: the sweep heals a member left open after its lead was merged.
 post_reset
-pset list-issues 0 "$(list_of "$(issue_json 6 "" "Batched into: #5")" "$(issue_json 8 "" "Batched into: #7")" "$(issue_json 7 "pipeline:confirmed")")"
+pset list-issues 0 "$(list_of "$(issue_json 6 "epic:7" "Batched into: #5")" "$(issue_json 8 "epic:7" "Batched into: #7")" "$(issue_json 7 "pipeline:confirmed")" \
+  "$(issue_json 10 "" "Batched into: #5")")"
 pset find-pr.5 0 '{"number":9}'
 pset pr-closes-issue.9.6 0 "closes"
 sw
@@ -310,6 +329,7 @@ assert_contains "$(pjournal)" "vcs close-issue 6 closed by PR #9" "AC6 the heale
 assert_contains "$(pjournal)" "status 6 Done" "AC6 the healed member goes to board Done"
 assert_not_contains "$(pjournal)" "close-issue 8" "AC6 an open member whose lead is still open is left alone"
 assert_not_contains "$(pjournal)" "status 8" "AC6 an open member whose lead is still open gets no board change"
+assert_not_contains "$(pjournal)" "close-issue 10" "AC6 an issue with a Batched into: line and no epic label is not healed as a member"
 
 # ── AC7: a criterion per member ──────────────────────────────────────────────
 BASE_DIR="$ROOT_DIR"
