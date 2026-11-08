@@ -120,6 +120,7 @@ verify.commands	list		-	-	repo
 verify.qa_mode	enum	local	-	-	repo
 verify.targeted	bool	true	-	-	any
 verify.targeted_commands	list		-	-	repo
+verify.dev_tests	list		-	-	repo
 verify.e2e	str		-	-	repo
 verify.guide	str	VERIFY.md	-	-	repo
 review.guide	str	REVIEW.md	-	-	repo
