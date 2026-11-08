@@ -831,6 +831,7 @@ Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azu
 |---|---|---|---|---|
 | `edit-pr-body` | yes | yes | yes (refuses a body over 4000 characters) | exception: no PRs |
 | `check-pr-body` | yes | yes (the MR description) | yes (the PR description) | exception: no PRs |
+| `pr-closes-issue` | yes (closing keyword in the PR body) | yes (closing keyword in the MR description) | yes (the PR is linked to the work item) | exception: no PRs (always exits 2) |
 | `conflict-files` | yes | yes (fetches `refs/merge-requests/<iid>/head`) | yes (fetches the source branch) | exception: no PRs |
 | `upsert-pr-comment` | yes | yes (merge requests) | yes | exception: no PRs |
 | `attach-files` | yes (commits to the `talos-evidence` branch) | yes (commits to the `talos-evidence` branch) | yes (pushes to the `talos-evidence` branch) | exception: no PRs |
@@ -903,6 +904,7 @@ From `~/.talos/scripts` (or `scripts/` in a checkout); `--dry-run` prints the ca
 
 - `pipeline-vcs.sh list-issues | list-prs | view-issue <n> | view-pr <n>`: read as JSON.
 - `pipeline-vcs.sh check-pr-body <pr>`: exit 0 when the PR body has a `Positive controls:` and an `AC to test map:` section with text under them; exit 1 with `check-pr-body: missing positive-control list` / `missing AC to test map` on stderr; exit 2 for a non-numeric PR; a failed fetch exits 1.
+- `pipeline-vcs.sh pr-closes-issue <pr> <issue>`: prints `closes` or `part-of` (exit 0), or exits 2 with nothing on stdout when the PR cannot be read ([Closing the issue after a merge](#closing-the-issue-after-a-merge)).
 - `pipeline-vcs.sh label-issue <n> --add pipeline:ready`: queue an issue (`--remove` drops a label).
 - `pipeline-vcs.sh current-user | assert-sync`: your login; checkout clean and level.
 - `pipeline-vcs.sh comment-issue <n> | comment-pr <n>`: post a comment. A stage writes its body to `.talos/<role>-*.body` or passes `--body-file -` with a heredoc on stdin; a `--body-file` or stdin body is never read as a path. A positional or `--body` body that is one whitespace-free token naming a readable file (bare, relative or absolute) is refused with "use `--body-file`", so a path is never posted as the comment; any other text is posted as written.
