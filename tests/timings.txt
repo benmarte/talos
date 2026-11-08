@@ -249,6 +249,8 @@
 3 test-talos-lease.sh
 71 test-talos-next.sh
 53 test-talos-postmerge.sh
+12 test-talos-post-merge-closing-822.sh
+6 test-vcs-pr-closes-issue-822.sh
 51 test-talos-prompt.sh
 144 test-talos-run-drain-docs.sh
 157 test-talos-run-fix-rounds.sh
