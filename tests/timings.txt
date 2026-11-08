@@ -257,6 +257,7 @@
 10 test-talos-status-line.sh
 8 test-targeted-commands-716.sh
 1 test-tests-line-directory-672.sh
+20 test-threat-model.sh
 2 test-timing-guard.sh
 6 test-unsafe-cleanup-guard.sh
 79 test-upsert-pr-comment.sh

@@ -352,7 +352,7 @@ check_env_output "$SANDBOX/out.draftstop"; assert_eq "0" "$?" "stop: the draft-r
 proj_json '{"agents": {"runner": "bogus"}}'
 out="$(env_run)"; rc=$?
 assert_eq "0" "$rc" "warn: an unusable runner does not stop the run"
-assert_eq "9" "$(printf '%s\n' "$out" | grep -c '^warn reason=resolve-failed role=')" "warn: one resolve-failed line per role"
+assert_eq "10" "$(printf '%s\n' "$out" | grep -c '^warn reason=resolve-failed role=')" "warn: one resolve-failed line per role"
 assert_eq "0" "$(printf '%s\n' "$out" | grep -c '^agent\.')" "warn: no agent line for a role that failed to resolve"
 assert_contains "$(cat "$ERR")" "unknown agents.runner 'bogus'" "warn: the resolver's stderr line passes through"
 printf '%s\n' "$out" > "$SANDBOX/out.warn"
