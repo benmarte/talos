@@ -100,6 +100,23 @@ issue 3 "pipeline:ready" "$(files scripts/b.sh)"
 state "2,3" "1"
 walk 4 "1"
 assert_eq "action=dispatch stage=validator issue=3" "$OUT" "AC2 a bullet note is stripped and a backticked path is read"
+# A backticked word inside the trailing note is not the path.
+reset
+issue 1 "pipeline:dev" "$(files 'scripts/a.sh (the `issue_side` walk)')"
+issue 2 "pipeline:ready" "$(files scripts/a.sh)"
+issue 3 "pipeline:ready" "$(files scripts/b.sh)"
+state "2,3" "1"
+walk 4 "1"
+assert_eq "action=dispatch stage=validator issue=3" "$OUT" "AC2 a backticked word in a bullet note is not read as the path"
+# A padded heading or bullet line cannot stall the walk.
+reset
+_pad="$(python3 -I -c "print(' ' * 60000)")"
+issue 1 "pipeline:dev" "## Files touched${_pad}x"$'\n- scripts/a.sh'
+issue 2 "pipeline:ready" "$(files scripts/a.sh)${_pad}"
+state "2" "1"
+_t0=$SECONDS
+walk 4 "1"
+if [ $((SECONDS - _t0)) -le 10 ]; then pass "AC2 a padded heading or bullet line is read in bounded time"; else fail "AC2 a padded heading or bullet line is read in bounded time"; fi
 
 # ── AC3: area labels stand in for a missing files list ────────────────────────
 reset
