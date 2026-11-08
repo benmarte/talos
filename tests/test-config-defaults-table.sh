@@ -59,7 +59,7 @@ print("\n".join(bad))
 print("ROWS=%d" % len(rows))
 TALOS_PYtab7Gw3Nd5Xk
 )"
-assert_eq "ROWS=139" "$(printf '%s\n' "$_out" | tail -n1)" "AC10 the table has one row per config key (139 rows)"
+assert_eq "ROWS=140" "$(printf '%s\n' "$_out" | tail -n1)" "AC10 the table has one row per config key (140 rows)"
 assert_eq "" "$(printf '%s\n' "$_out" | sed '$d')" \
   "every row has six fields, a unique key, a valid type/derived/env/scope column, and a default of the right shape"
 
@@ -73,7 +73,7 @@ verify.targeted verify.targeted_commands verify.dev_tests verify.e2e verify.guid
 merge.required_checks merge.forbidden_files
 merge.forbidden_files_replace merge.forbidden_files_allow merge.approval_waiver_paths
 merge.union_paths merge.auto_sync issues.label_filter issues.skip_labels
-issues.max_parallel issues.assignee issues.claim identity.name execution.isolation execution.worktree_warn_threshold execution.orchestrator execution.context_budget_tokens
+issues.max_parallel issues.assignee issues.claim pipeline.risk_areas identity.name execution.isolation execution.worktree_warn_threshold execution.orchestrator execution.context_budget_tokens
 roles.validator roles.pm roles.pm_skip_when_spec_present roles.qa roles.reviewer
 roles.security roles.adversarial roles.docs roles.docs_mode roles.planner docs.paths
 comments.enabled comments.header comments.templates_dir

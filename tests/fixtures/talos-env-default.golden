@@ -48,3 +48,4 @@ agent.security.runner=claude
 agent.adversarial.runner=claude
 agent.docs.runner=claude
 agent.planner.runner=claude
+agent.threat.runner=claude

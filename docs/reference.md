@@ -45,6 +45,7 @@ Approval order (`APPROVALS` in `pipeline-next.py`): validator, planner (optional
 | validator | LLM | `roles.validator` | Reads the issue. Verdict CONFIRMED, ALREADY_FIXED, DUPLICATE, NEEDS_MORE_INFO or SECURITY_THREAT; anything but CONFIRMED sets `pipeline:blocked`. |
 | planner | LLM, off | `roles.planner` | Epics only (`epic` label, 4 or more `- [ ]` items, or body of 2000+ characters): at most 10 sub-issues, dependencies via `Depends on:`. The epic gets `pipeline:epic-decomposed`. |
 | pm | LLM | `roles.pm` | Posts the spec with numbered acceptance criteria. Skipped by code when `roles.pm_skip_when_spec_present` and the issue body already has an acceptance-criteria heading with a checklist, or carries `spec:ready`. |
+| threat | LLM, off | `pipeline.risk_areas` | Design-mode security pass on the spec, before the developer ([Threat model](#threat-model-before-the-build)). Runs only for an issue that names a risk area; appends a `## Threat model` section of `(test)` criteria to the spec. |
 | developer | LLM, always | none | Reads the spec. Branch `fix/issue-N-slug` (`feat/` for a `feat` title). Red tests first, runs `verify` once before the final commit, opens the PR. The only stage that writes code. |
 | qa | LLM | `roles.qa` | Checks each acceptance criterion; runs targeted tests only, never the full suite; under `verify.qa_mode: ci` waits for required CI. With `pr.ready_gate: qa-local` it runs last on the draft, before CI, and also runs the full `verify:` list once. |
 | docs | code gate, LLM only if needed | `roles.docs`, `roles.docs_mode`, `docs.paths` | `docs-gate` stamps `docs:done` itself unless the PR changes a path matching `docs.paths` (shell globs, `*` and `**` match across `/`; default `README.md`, `docs/*`, `scripts/pipeline-defaults.sh`; `roles.docs_mode: always` forces the agent). The code driver puts the diff sections of those files and of `CHANGELOG.md` in the agent's prompt (the whole diff when `docs-gate` names no paths, as under `roles.docs_mode: always`), within the same `TALOS_PROMPT_CHANGE_MAX_BYTES` limit as the reviewer's; over it or on a failed read the prompt is the one without the hunks and the agent reads the change itself. After a fix round that leaves `docs:done` on the PR and stale, `docs-gate` looks only at the docs-relevant paths changed since the approved SHA: when there are none it stamps again, otherwise the agent gets a read-only re-stamp of that delta ([Stale approvals and the delta re-stamp](#stale-approvals-and-the-delta-re-stamp)). |
@@ -53,6 +54,18 @@ Approval order (`APPROVALS` in `pipeline-next.py`): validator, planner (optional
 | merge | code | `merge.auto` | `gate merge` checks every gate; `merge-pr`; `post-merge` closes the issue only when the merged PR closes it (a closing keyword for it in the body; see [Closing the issue after a merge](#closing-the-issue-after-a-merge)), sets the board to Done, returns the checkout to the base branch, removes the worktree, notifies. |
 
 Everything except the stage agents is mechanical: routing (`next`), bookkeeping (`done`), gates, sweeps, merge.
+
+### Threat model before the build
+
+Design gaps found in review (races, bypass paths, what an approval is bound to, crash behaviour) cost several fix rounds once the code exists. `pipeline.risk_areas` lists the areas where that is worth a pass on the spec first; it is a list in the repo's own config file, empty by default, and an empty list switches the stage off:
+
+```json
+{"pipeline": {"risk_areas": ["tenant data", "auth/authz/MFA", "credentials", "isolation", "migrations", "egress", "approval/go-live gates"]}}
+```
+
+Routing is code, in `pipeline-next.py`. When a developer would be dispatched for an issue with no open PR (never in a fix round), and the issue title, body or latest `**PM spec:**` contains an area (a case-insensitive substring), and that spec has no `## Threat model` line yet, `next` answers `action=dispatch stage=threat issue=<N>` instead. The same rule holds on the `pipeline:confirmed` path when the PM is skipped for an issue body that is already a spec. Nothing else is classified: no keyword list ships and no model decides.
+
+The `threat` stage runs the security agent in Design mode (`agents/security.md`), on the spec and not on code. It posts the whole spec again as a new `**PM spec:**` comment with a `## Threat model` section appended: one `- [ ] AC<n> ... (test)` line per finding, numbered after the spec's last id, with its test file on the `**Tests:**` line, or the single line `No findings.` Because that comment is now the latest spec, the developer's red-first tests, `red-check` and `qa-run` read the new criteria like the PM's, and the developer proves each with a test that fails without the fix. `done threat` takes no verdict and runs the same `Tests:` line check as `done pm`. It has no `roles.threat` flag; `agents.roles.threat.model` pins its model (for example the strongest one).
 
 With `pr.draft` true (the default; it resolves to false when CI lacks a `ready_for_review` trigger, and for the `github-api` and `file` providers) the order changes: developer opens a draft PR, docs, reviewer and security (and adversarial) review the draft in one batch, one developer fix round covers all findings, `ready-pr` starts the one CI run, then QA, then merge. With `pr.ready_gate: qa-local`, QA runs on the draft before `ready-pr` instead. See [Gates: verify, QA, CI and merge](#gates-verify-qa-ci-and-merge).
 
@@ -405,6 +418,12 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `issues.max_parallel` | int | `1` | - | any |
 | `issues.assignee` | str | `self` | - | any |
 | `issues.claim` | bool | `true` | - | any |
+
+#### pipeline.*
+
+| Key | Type | Default | Env override | Scope |
+|---|---|---|---|---|
+| `pipeline.risk_areas` | list | - | - | repo |
 
 #### identity.*
 

@@ -15,6 +15,8 @@ It is code-driven by default: `/talos:pipeline` starts `scripts/talos.sh run`, t
 
 An issue moves by label: `pipeline:ready` (you queue it), validator, PM spec, developer (opens the PR), then docs, reviewer and security, QA, and the merge. Each stage is a fresh agent that posts its verdict as a comment and an approval label bound to the PR head SHA; code, not an LLM, routes between stages, runs the gates and merges. With draft PRs (the default) review runs on the draft, a single fix round covers all findings, and CI runs once before QA. Every stage except the developer can be switched off with `roles.*`, and only a person queues work, clears a block or merges when `merge.auto` is false.
 
+For specs that touch risky ground, list the areas in `pipeline.risk_areas` (for example `["tenant data", "auth/authz/MFA", "credentials", "isolation", "migrations", "egress", "approval/go-live gates"]`; empty by default, which switches this off). An issue whose title, body or spec names one gets a `threat` stage between the PM spec and the developer: the security agent reads the spec, not code, and appends a `## Threat model` section of `(test)` criteria that the developer proves with tests and QA maps like the PM's. Details: [Threat model before the build](docs/reference.md#threat-model-before-the-build).
+
 ## Install
 
 Claude Code plugin (installs the required [agent-skills](https://github.com/addyosmani/agent-skills) plugin as a dependency):
