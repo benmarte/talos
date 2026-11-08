@@ -285,7 +285,15 @@
 #                                             Exits 0 + stdout marker when data
 #                                             cannot be fetched or scanned;
 #                                             `talos.sh gate merge` waits on it.
-#   rerun-ci <n>                              Re-run failed CI for the PR head SHA
+#   pr-closes-issue <n> <issue>               Print `closes` when the merged PR's
+#                                             body has a closing keyword for <issue>
+#                                             (azure: the PR is linked to work item
+#                                             <issue>), else `part-of` (#822). Exit
+#                                             0, or 2 with nothing on stdout when
+#                                             the PR cannot be read (fail closed;
+#                                             file mode). `talos.sh post-merge`
+#                                             closes the issue only on `closes`.
+#   rerun-ci <n>                             Re-run failed CI for the PR head SHA
 #   pr-head <n>                               Print the current head SHA for a PR
 #   pr-head-ref <n>                           Print the PR's head branch name (#607).
 #                                             Exits 1 with nothing on stdout when it
@@ -3850,10 +3858,14 @@ _vcs_shared_siblings_capped() {
   echo "talos:closing-keyword-unverified pr=$1 issue=$2 reason=siblings-capped"
 }
 
-_vcs_shared_check_closing_keyword() {
-  local issue_n="$1" pr_number="$2" pr_ref="$3" siblings_fetch_fn="$4" flavor="${5:-github}" host="${6:-}"
-  local pr_body
-  pr_body="$(cat)"
+# _vcs_shared_body_closes_issue <issue_n> [flavor] [host] (#822)
+#   The one keyword scan: reads a PR body on stdin and prints `yes` when it
+#   carries a closing keyword for <issue_n>, `no` when it does not, and
+#   nothing (a failed scan) otherwise. env: REPO scopes the reference forms.
+#   flavor / host: see _vcs_shared_check_closing_keyword. Shared by
+#   check-closing-keyword and pr-closes-issue so there is one regex.
+_vcs_shared_body_closes_issue() {
+  local issue_n="$1" flavor="${2:-github}" host="${3:-}"
 
   # Check for a closing keyword for #<issue_n> in the PR body.
   # Patterns (case-insensitive):
@@ -3864,8 +3876,7 @@ _vcs_shared_check_closing_keyword() {
   #     owner/repo#N    — scoped to current repo (case-insensitive)
   #     GH-N            — case-insensitive; left-guard prevents digit-prefix collision
   #     https://github.com/<owner>/<repo>/issues/N  — scoped to current repo
-  local has_closing
-  has_closing="$(printf '%s' "$pr_body" | python3 -I -c "
+  python3 -I -c "
 import re, sys
 body = sys.stdin.read()
 n    = sys.argv[1]
@@ -3915,7 +3926,55 @@ if re.search(pattern, body, re.IGNORECASE):
     print('yes')
 else:
     print('no')
-" "$issue_n" "$REPO" "$flavor" "$host" 2>/dev/null)"
+" "$issue_n" "$REPO" "$flavor" "$host" 2>/dev/null
+}
+
+# _vcs_shared_pr_closes_issue <issue_n> [flavor] [host] (#822): the answer of
+# `pr-closes-issue` for a PR body on stdin: `closes` or `part-of` on stdout. A
+# scan that answered neither is exit 2 with nothing on stdout (fail closed).
+_vcs_shared_pr_closes_issue() {
+  local _has
+  _has="$(_vcs_shared_body_closes_issue "$@")"
+  case "$_has" in
+    yes) echo closes ;;
+    no) echo part-of ;;
+    *)
+      echo "pipeline-vcs: pr-closes-issue: could not scan the PR body for a closing keyword -- unverified" >&2
+      exit 2
+      ;;
+  esac
+}
+
+# _vcs_shared_json_text_field <field> (#822): a JSON object on stdin; prints its
+# string <field> (null or absent is the empty string, as for an empty PR body)
+# and exits 2 for anything that is not an object or holds a non-string.
+_vcs_shared_json_text_field() {
+  python3 -I -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(2)
+v = d.get(sys.argv[1]) if isinstance(d, dict) else 0
+if v is None:
+    v = ""
+if not isinstance(v, str):
+    sys.exit(2)
+sys.stdout.write(v)
+' "$1"
+}
+
+# _vcs_pr_closes_unreadable <pr> (#822): the one stderr line for a PR whose body
+# could not be read; the caller exits 2.
+_vcs_pr_closes_unreadable() {
+  echo "pipeline-vcs: pr-closes-issue: could not read PR #$1 -- unverified" >&2
+}
+
+_vcs_shared_check_closing_keyword() {
+  local issue_n="$1" pr_number="$2" pr_ref="$3" siblings_fetch_fn="$4" flavor="${5:-github}" host="${6:-}"
+  local pr_body has_closing
+  pr_body="$(cat)"
+  has_closing="$(printf '%s' "$pr_body" | _vcs_shared_body_closes_issue "$issue_n" "$flavor" "$host")"
 
   # No closing keyword → nothing to check. A scan that answered neither word
   # is not "no": say so, so the gate waits instead of reading it as clean.
@@ -5757,6 +5816,29 @@ json.dump([dict(p, headRefName=(p.get('head') or {}).get('ref', '')) for p in pr
         _vcs_shared_check_closing_keyword "$issue_n" "$_cc_num" "$pr_ref" _github_fetch_closing_siblings
       exit $?
       ;;
+    pr-closes-issue)
+      # pr-closes-issue <pr> <issue> (#822): `closes` when the PR body has a
+      # closing keyword for <issue>, `part-of` when it does not. Fail closed:
+      # an unreadable PR is exit 2, nothing on stdout. The scan is
+      # _vcs_shared_body_closes_issue, the one check-closing-keyword uses.
+      local _pc_n="${1:-}" _pc_issue="${2:-}" _pc_raw _pc_body
+      if ! _vcs_pr_id_numeric "$_pc_n" || ! _vcs_pr_id_numeric "$_pc_issue"; then
+        echo "pipeline-vcs: pr-closes-issue: PR and issue ids must be numeric (got '$_pc_n' '$_pc_issue') -- unverified" >&2
+        exit 2
+      fi
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] pr-closes-issue $_pc_n $_pc_issue: GET $_GH_API/pulls/$_pc_n (.body, closing keyword)"; return 0; }
+      if [ -z "$REPO" ]; then
+        echo "pipeline-vcs: pr-closes-issue: repository unresolved -- unverified" >&2
+        exit 2
+      fi
+      if ! { _pc_raw="$(_gh_try GET "$_GH_API/pulls/$_pc_n" 2>/dev/null)" && [ -n "$_pc_raw" ] \
+          && _pc_body="$(printf '%s' "$_pc_raw" | _vcs_shared_json_text_field body)"; }; then
+        _vcs_pr_closes_unreadable "$_pc_n"
+        exit 2
+      fi
+      printf '%s' "$_pc_body" | REPO="$REPO" _vcs_shared_pr_closes_issue "$_pc_issue"
+      exit $?
+      ;;
     pr-head)
       # pr-head <n> -- print the current head SHA for a PR (fail-closed: exits 1 if unresolvable)
       local n="${1:-}" sha
@@ -7011,6 +7093,28 @@ print(d.get('merge_status') or d.get('detailed_merge_status') or '')
       }
       printf '%s' "$_glck_body" | REPO="$_glck_repo" \
         _vcs_shared_check_closing_keyword "$issue_n" "$_glck_number" "$pr_ref" _gl_fetch_closing_siblings gitlab "$(_gl_repo_host)"
+      exit $?
+      ;;
+    pr-closes-issue)
+      # pr-closes-issue <iid> <issue> (#822): as on github, from the MR
+      # description. Fail closed: an unreadable MR is exit 2.
+      local _pc_n="${1:-}" _pc_issue="${2:-}" _pc_repo _pc_raw _pc_body
+      if ! _vcs_pr_id_numeric "$_pc_n" || ! _vcs_pr_id_numeric "$_pc_issue"; then
+        echo "pipeline-vcs: pr-closes-issue: MR and issue ids must be numeric (got '$_pc_n' '$_pc_issue') -- unverified" >&2
+        exit 2
+      fi
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] pr-closes-issue $_pc_n $_pc_issue: glab mr view $_pc_n --output json (description, closing keyword)"; return 0; }
+      _pc_repo="$(_gl_repo_path)"
+      if [ -z "$_pc_repo" ]; then
+        echo "pipeline-vcs: pr-closes-issue: project path unresolved -- unverified" >&2
+        exit 2
+      fi
+      if ! { _pc_raw="$(glab mr view "$_pc_n" --output json $RARG 2>/dev/null)" && [ -n "$_pc_raw" ] \
+          && _pc_body="$(printf '%s' "$_pc_raw" | _vcs_shared_json_text_field description)"; }; then
+        _vcs_pr_closes_unreadable "$_pc_n"
+        exit 2
+      fi
+      printf '%s' "$_pc_body" | REPO="$_pc_repo" _vcs_shared_pr_closes_issue "$_pc_issue" gitlab "$(_gl_repo_host)"
       exit $?
       ;;
     check-epic-acceptance)
@@ -9150,6 +9254,27 @@ print("yes" if sys.argv[1] in {str(w["id"]) for w in json.load(sys.stdin)} else 
         "is linked to work item #$issue_n, so completing it closes the item," "unlink work item #$issue_n from this PR"
       exit 1
       ;;
+    pr-closes-issue)
+      # pr-closes-issue <pr-id> <work-item-id> (#822): ADO closes through the
+      # PR's work-item link, so `closes` = the PR is linked to the work item
+      # (the same call as check-closing-keyword), `part-of` = it is not.
+      # Fail closed: an unreadable link list is exit 2.
+      local _pc_n="${1:-}" _pc_issue="${2:-}" _pc_linked
+      if ! _vcs_pr_id_numeric "$_pc_n" || ! _vcs_pr_id_numeric "$_pc_issue"; then
+        echo "pipeline-vcs: pr-closes-issue: PR and work item ids must be numeric (got '$_pc_n' '$_pc_issue') -- unverified" >&2
+        exit 2
+      fi
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] pr-closes-issue $_pc_n $_pc_issue: az repos pr work-item list --id $_pc_n"; return 0; }
+      _pc_linked="$(az repos pr work-item list --id "$_pc_n" $ORG_ARG --output json 2>/dev/null | python3 -I -c '
+import json, sys
+print("yes" if sys.argv[1] in {str(w["id"]) for w in json.load(sys.stdin)} else "no")
+' "$_pc_issue" 2>/dev/null)"
+      case "$_pc_linked" in
+        yes) echo closes ;;
+        no) echo part-of ;;
+        *) _vcs_pr_closes_unreadable "$_pc_n"; exit 2 ;;
+      esac
+      ;;
     check-epic-acceptance)
       # check-epic-acceptance <id> (#304): the work item's System.Description
       # (HTML) as text through the shared unticked-box scan. A failed fetch,
@@ -9405,8 +9530,8 @@ _file() {
       echo "file mode: no PR to merge — orchestrator should close-issue directly after verifying the branch" >&2
       return 0
       ;;
-    ready-pr|draft-pr|pr-is-draft|pr-ci-runs)
-      # (#332) No PR concept in file mode: exit 2 (unverified), nothing on stdout.
+    ready-pr|draft-pr|pr-is-draft|pr-ci-runs|pr-closes-issue)
+      # (#332, #822) No PR concept in file mode: exit 2 (unverified), nothing on stdout.
       _vcs_draft_unsupported "$verb" file
       ;;
     update-branch)
@@ -11070,6 +11195,13 @@ _vcs_draft_gate_dispatch() {
         if [ "$_g_rc" -eq 1 ] && [ "$_g_out" = "ready" ]; then echo ready; exit 1; fi
       fi
       ;;
+    pr-closes-issue)
+      if [ "$DRY_RUN" != "true" ] && [ "$_g_rc" -eq 0 ]; then
+        case "$_g_out" in
+          closes|part-of) printf '%s\n' "$_g_out"; exit 0 ;;
+        esac
+      fi
+      ;;
     pr-ci-runs)
       if [ "$DRY_RUN" != "true" ] && [ "$_g_rc" -eq 0 ]; then
         case "$_g_out" in
@@ -11157,7 +11289,7 @@ _vcs_pr_checks_required_dispatch() {
 _DISPATCH_RC=0
 case "$VERB" in
   pr-checks-required) _vcs_pr_checks_required_dispatch ;;
-  pr-is-draft|pr-ci-runs|ready-pr|draft-pr) _vcs_draft_gate_dispatch ;;
+  pr-is-draft|pr-ci-runs|pr-closes-issue|ready-pr|draft-pr) _vcs_draft_gate_dispatch ;;
   create-pr) if [ "$_PR_DRAFT" = "true" ]; then _vcs_draft_gate_dispatch; else _vcs_dispatch_provider; fi ;;
   *) _vcs_dispatch_provider ;;
 esac

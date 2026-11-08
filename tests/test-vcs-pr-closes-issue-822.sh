@@ -41,6 +41,17 @@ out="$(bash "$VCS" pr-closes-issue abc 42 2>/dev/null)"; rc=$?
 assert_eq "2" "$rc" "AC8 a non-numeric PR id exits 2"
 assert_eq "" "$out" "AC8 a non-numeric PR id prints nothing"
 
+# ── AC10 check-closing-keyword keeps its exit codes and markers ──────────────
+_sib='[{"number":9,"state":"OPEN","title":"a","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":11,"state":"OPEN","title":"b","headRefName":"fix/issue-42-b","body":"Part of #42"}]'
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_LIST="$_sib" bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_eq "1" "$rc" "AC10 github: a closing keyword with an open sibling still exits 1"
+assert_contains "$out" "open sibling PR(s) still reference the same issue: #11" "AC10 github: and names the sibling"
+out="$(STUB_PR_BODY="Part of #42" STUB_PR_LIST="$_sib" bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_eq "0" "$rc" "AC10 github: no closing keyword still exits 0"
+out="$(STUB_GH_API_FAIL=pr bash "$VCS" check-closing-keyword 9 42 2>/dev/null)"; rc=$?
+assert_eq "0" "$rc" "AC10 github: an unreadable PR still fails open"
+assert_contains "$out" "talos:closing-keyword-unverified pr=9 issue=42 reason=pr-fetch-failed" "AC10 github: with its marker"
+
 # ── AC9 gitlab ───────────────────────────────────────────────────────────────
 git remote set-url origin git@gitlab.com:acme/widget.git
 printf '%s\n' '{"vcs": {"provider": "gitlab", "repo": "acme/widget"}}' > talos.pipeline.json
@@ -58,6 +69,10 @@ out="$(STUB_GITLAB_MR_VIEW_FAIL=1 bash "$VCS" pr-closes-issue 9 42 2>/dev/null)"
 assert_eq "2" "$rc" "AC9 gitlab: an unfetchable MR exits 2"
 assert_eq "" "$out" "AC9 gitlab: an unfetchable MR prints nothing"
 
+out="$(STUB_GITLAB_MR_VIEW_FAIL=1 bash "$VCS" check-closing-keyword 9 42 2>/dev/null)"; rc=$?
+assert_eq "0" "$rc" "AC10 gitlab: an unreadable MR still fails open"
+assert_contains "$out" "talos:closing-keyword-unverified pr=9 issue=42 reason=pr-fetch-failed" "AC10 gitlab: with its marker"
+
 # ── AC9 azure ────────────────────────────────────────────────────────────────
 printf '%s\n' '{"vcs": {"provider": "azure", "repo": "widget", "azure": {"org_url": "https://dev.azure.com/acme", "project": "proj"}}}' > talos.pipeline.json
 out="$(STUB_AZURE_PR_WORKITEMS='[{"id":"42"},{"id":"7"}]' bash "$VCS" pr-closes-issue 9 42 2>/dev/null)"; rc=$?
@@ -69,6 +84,10 @@ assert_eq "0" "$rc" "AC9 azure: part-of exits 0"
 out="$(STUB_AZURE_PR_WORKITEMS_FAIL=1 bash "$VCS" pr-closes-issue 9 42 2>/dev/null)"; rc=$?
 assert_eq "2" "$rc" "AC9 azure: an unreadable link list exits 2"
 assert_eq "" "$out" "AC9 azure: an unreadable link list prints nothing"
+
+out="$(STUB_AZURE_PR_WORKITEMS_FAIL=1 bash "$VCS" check-closing-keyword 9 42 2>/dev/null)"; rc=$?
+assert_eq "0" "$rc" "AC10 azure: an unreadable link list still fails open"
+assert_contains "$out" "talos:closing-keyword-unverified pr=9 issue=42 reason=pr-fetch-failed" "AC10 azure: with its marker"
 
 # ── AC9 file ─────────────────────────────────────────────────────────────────
 printf '%s\n' '{"vcs": {"provider": "file"}}' > talos.pipeline.json
