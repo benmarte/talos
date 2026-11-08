@@ -86,6 +86,7 @@
 1 test-contract.sh
 2 test-criteria-first.sh
 6 test-criteria-same-715.sh
+15 test-dev-checklist-831.sh
 4 test-diff-pr-stat-gitlab-azure-766.sh
 2 test-docs-149-config-examples.sh
 0 test-docs-662-release-gaps.sh

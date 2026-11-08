@@ -115,7 +115,9 @@ Workflow (do ALL of it — the publish step is not optional):
    so in the final message. Then commit the final change with a conventional
    message (`fix:`/`feat:` … `(#<N>)`).
 5. `git push -u origin <branch>` (only now, green: see the red-commit rule in step 2).
-6. Compose the PR body: the spec summary, the test types, `Testing` (the
+6. Compose the PR body: the spec summary, the test types, `Positive controls:`
+   (the tests showing each guard can fail, or `none` and why), `AC to test map:`
+   (one `AC<n>` line: test file and name), `Testing` (the
    commands actually run and their result, one line each: red, green, any e2e;
    no pasted output), `How to revert` ("revert the squash commit", or the extra
    steps a revert needs: a config key to unset, a migration, a data change, a
@@ -135,6 +137,12 @@ Workflow (do ALL of it — the publish step is not optional):
 
    Test types: <unit / regression / e2e — list what you added; for any type
    skipped, say why>
+
+   Positive controls:
+   - <test>
+
+   AC to test map:
+   - AC<n>: <test file> — <test name>
 
    Testing:
    - <command> — <result>
