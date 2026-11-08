@@ -165,10 +165,10 @@
 #         #535, a PR that is still a draft is not converted), board status, the role relay,
 #         post_stage, the spend block, the lifecycle event; then the issue's lease
 #         is released. <role>: validator pm developer qa reviewer security adversarial
-#         docs. --pr is required for qa, reviewer, security, adversarial,
+#         docs planner threat. --pr is required for qa, reviewer, security, adversarial,
 #         PR_OPENED and a docs RESTAMP_*. The summary (--summary-file F, or `-`
 #         for stdin) never travels on argv.
-#         Verdicts per role (pm takes none; the table is _talos_done_verdicts):
+#         Verdicts per role (pm and threat take none; the table is _talos_done_verdicts):
 #            validator CONFIRMED ALREADY_FIXED DUPLICATE NEEDS_MORE_INFO SECURITY_THREAT
 #            developer PR_OPENED BLOCKED        qa PASS FAIL RESTAMP_PASS RESTAMP_FAIL
 #            reviewer APPROVED CHANGES RESTAMP_PASS RESTAMP_FAIL
@@ -195,6 +195,8 @@
 #         ceiling: pipeline:blocked on the issue, next=stop. A failed label
 #         rollback is `stop reason=label-failed`. No PM spec comment: nothing is
 #         checked; a read that failed is `warn reason=spec-check-unread`.
+#         `done threat` (#837, no verdict) runs the same check on the spec the
+#         threat stage posted again with its `## Threat model` section.
 #         Output: `done=ok` first, `spend=<line>`, `spec_check=<slug>` (a refused
 #         PM spec only), `next=` last:
 #            continue | stop | fix-round stage=<role> | batch
@@ -220,7 +222,10 @@
 # next    Exactly one action, first match wins. PR side, then the issue queue:
 #           action=dispatch stage=<role> pr=<M> issue=<N>   qa docs reviewer security adversarial
 #           action=merge pr=<M> issue=<N>                   run `gate merge <M> <N>`
-#           action=dispatch stage=<validator|planner|pm|developer> issue=<N>
+#           action=dispatch stage=<validator|planner|pm|threat|developer> issue=<N>
+#                       (threat, #837: instead of the developer, for an issue with no
+#                       open PR that names a pipeline.risk_areas entry in its title,
+#                       body or latest PM spec while the spec has no `## Threat model`)
 #           action=ask-owner issue=<N> question=<sanitised>
 #           action=wait reason=<draft|ci|human-merge|blocked|owner|lease|dependency|cap|none>
 #                       [retry_after_s=<s>]
@@ -409,7 +414,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)" || exit 1
 . "$SCRIPT_DIR/pipeline-paths.sh"
 
 # The roles `pipeline-agent.sh --resolve-all` lists, in the same order.
-_TALOS_ROLES="validator pm developer qa reviewer security adversarial docs planner"
+_TALOS_ROLES="validator pm developer qa reviewer security adversarial docs planner threat"
 
 # The Step 0 settings: VARIABLE, config key, kind (s = scalar, l = list). The
 # order is the order of the output. A key absent from every config layer prints
@@ -3291,8 +3296,9 @@ _talos_done() {
   _talos_emit done ok
 
   # #594: a PM that posted a spec (no verdict; a BLOCKED PM posted none) has
-  # its Tests: line checked, before the relay.
-  [ "$_role" != pm ] || [ -n "$_v" ] || _talos_spec_check "$_n"
+  # its Tests: line checked, before the relay. So has the threat stage (#837),
+  # which posts the spec again with its `## Threat model` section.
+  case "$_role" in pm | threat) [ -n "$_v" ] || _talos_spec_check "$_n" ;; esac
 
   case "$_role:$_v" in
     *:BLOCKED) _col="Blocked"; _msg="$_role blocked"; _ev=blocked ;;
@@ -3779,6 +3785,7 @@ _talos_next() {
             --issue "$_issue" --roles "$_roles" --label-filter "$(cfg issues.label_filter)" \
             --skip-labels "$_skip" --max-parallel "$(cfg issues.max_parallel)" \
             --pm-skip "$(printf '%s' "$(cfg roles.pm_skip_when_spec_present)" | tr '[:upper:]' '[:lower:]')" \
+            --risk-areas "$(cfg pipeline.risk_areas)" \
             --leased "$_leased" 2>/dev/null)"
     _r=$?
     if [ "$_r" -ne 0 ]; then
@@ -4065,7 +4072,7 @@ _run_verdict() {
   _line="${_line#"${_line%%[![:space:]]*}"}"
   case "$_line" in "BLOCKED:"*) printf BLOCKED; return 0 ;; esac
   case "$_role" in
-    pm | planner)
+    pm | planner | threat)
       printf none; return 0 ;;
     docs)
       # #590: only its delta re-stamp answers with a verdict word (read below).
@@ -4457,7 +4464,7 @@ _talos_run_dispatch() {
   _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_a")"
   case " $_TALOS_ROLES " in *" $_role "*) : ;; *) _role=""; _run_fail unknown-role ;; esac
   case "$_role" in
-    validator | planner | pm | developer) [ -n "$_n" ] || _run_fail unknown-act ;;
+    validator | planner | pm | threat | developer) [ -n "$_n" ] || _run_fail unknown-act ;;
     qa | reviewer | security | adversarial | docs) [ -n "$_pr" ] || _run_fail unknown-act ;;
   esac
 

@@ -49,6 +49,8 @@ CAP_RE = re.compile(r'result capped at')
 STALE_RE = re.compile(r'^stale role=([a-z]+) label=')
 EVIDENCE_LOST_RE = re.compile(r'^evidence role=([a-z]+) label=\S+ state=lost$')
 UNSUPPORTED_RE = re.compile(r'not implemented for provider|unknown verb')
+# The line that marks a spec the design-mode security pass has been through (#837).
+THREAT_MODEL_RE = re.compile(r'^[ \t]*## Threat model[ \t]*$', re.M)
 APPROVALS = (('qa', 'qa:pass'), ('docs', 'docs:done'), ('reviewer', 'review:approved'),
              ('security', 'security:approved'), ('adversarial', 'adversarial:approved'))
 ROLE_STAGES = tuple(role for role, _ in APPROVALS)
@@ -556,7 +558,7 @@ def issues_overlap(a, b):
 
 def issue_side(data, o):
     """Options o (--name value): vcs budget issue roles label-filter skip-labels
-    max-parallel pm-skip leased. Read verbs only, unbounded (no deadline)."""
+    max-parallel pm-skip risk-areas leased. Read verbs only, unbounded (no deadline)."""
     prs = data.get('prs') or []
     queued = data.get('queued') or []
     qset = set(queued)
@@ -572,6 +574,8 @@ def issue_side(data, o):
     target = o.get('issue', '')
     leased = [x for x in o.get('leased', '').split(',') if x]
     pm_skip = o.get('pm-skip') == 'true'
+    # pipeline.risk_areas (#837), one per line; an empty list switches the threat stage off.
+    risk_areas = [a.strip().lower() for a in o.get('risk-areas', '').split('\n') if a.strip()]
     planner_on = 'planner' in roles
     validator_on = 'validator' in roles
     pm_on = 'pm' in roles
@@ -664,11 +668,42 @@ def issue_side(data, o):
             raise Stop('max-fix-attempts')
         raise Stop('record-failed')
 
+    def needs_threat(n):
+        """Does issue n still need its design-mode security pass (#837)? Its
+        title, body or latest PM spec names a risk area and that spec has no
+        `## Threat model` line yet. One `view-issue --spec` read, only with
+        areas configured; an unreadable issue is never guessed."""
+        if not risk_areas:
+            return False
+        rc, out, err = run_vcs('view-issue', str(n), '--spec')
+        if rc != 0:
+            if UNSUPPORTED_RE.search(err):
+                raise Stop('unsupported-verb:view-issue')
+            raise Stop('state-unavailable')
+        try:
+            d = json.loads(out)
+        except ValueError:
+            raise Stop('state-unavailable')
+        if not isinstance(d, dict):
+            raise Stop('state-unavailable')
+        spec = ''
+        for c in (d.get('comments') or [])[-1:]:
+            b = c.get('body') if isinstance(c, dict) else None
+            spec = b if isinstance(b, str) else ''
+        if THREAT_MODEL_RE.search(spec):
+            return False
+        text = '\n'.join(x for x in (d.get('title'), d.get('body'), spec) if isinstance(x, str)).lower()
+        return any(a in text for a in risk_areas)
+
     def developer_route(n):
         # A developer dispatch for an issue that already has an open PR is a fix
         # round: compose the gate outcome first, never dispatch past a ceiling.
+        # Without a PR, a spec that touches a risk area goes through the threat
+        # stage first (#837).
         if any(p.get('issue') == n for p in prs):
             fix_round_gate(n)
+        elif needs_threat(n):
+            say('dispatch', stage='threat', issue=n)
         say('dispatch', stage='developer', issue=n)
 
     def route(n, labels, body):
