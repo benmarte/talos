@@ -157,6 +157,7 @@
 57 test-notify-goldens.sh
 15 test-notify-threading.sh
 26 test-notify.sh
+2 test-parallel-overlap-830.sh
 12 test-pass-cache.sh
 12 test-per-agent-env.sh
 16 test-per-role-runner.sh
