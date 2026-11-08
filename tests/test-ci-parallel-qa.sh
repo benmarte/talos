@@ -242,6 +242,23 @@ cfg_par '[]' false
 pa_run 'unit pass\ne2e fail\n'
 assert_eq "0" "$RC" "AC5 parallel_with_qa false: post-approval qa ignores CI, as before"
 cfg_par '[]' true
+# AC5: a resolver that errors or answers neither true nor false fails closed: the
+# approval is refused (no marker, no label) instead of skipping the CI check.
+RT="$SANDBOX/resolver-tree"
+mkdir -p "$RT" && cp "$TALOS_ROOT"/scripts/* "$RT/"
+resolver_run() {  # <resolver body>
+  printf '#!/usr/bin/env bash\n%s\n' "$1" > "$RT/pipeline-draft-check.sh"
+  printf '%b' 'unit pass\ne2e fail\n' > "$CI_STATE"; printf '[]' > "$CSTORE"; : > "$GH_LOG"
+  OUT="$(bash "$RT/pipeline-vcs.sh" post-approval 9 qa 2>&1)"; RC=$?
+}
+for _stub in 'exit 1' 'echo garbage' 'exit 0'; do
+  resolver_run "$_stub"
+  assert_eq "1" "$RC" "AC5 resolver '$_stub': post-approval qa refuses (exit 1)"
+  assert_contains "$OUT" "post-approval: qa refused: ci.parallel_with_qa could not be resolved" "AC5 resolver '$_stub': the refusal line says why"
+  assert_eq "0" "$(wrote)" "AC5 resolver '$_stub': no marker and no label"
+done
+resolver_run 'echo false'
+assert_eq "0" "$RC" "AC5 resolver answers false: post-approval qa ignores CI, as before"
 
 # AC6: check-approval-sha --require-ci
 cas_run() {
