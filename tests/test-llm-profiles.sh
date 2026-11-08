@@ -101,7 +101,7 @@ set_cfg "$CFG_PROFILES"
 out="$(TALOS_PROFILE=local bash "$AGENT" --resolve-all 2>"$ERR")"; rc=$?
 assert_eq "0" "$rc" "TALOS_PROFILE=local: --resolve-all exits 0"
 assert_contains "$(printf '%s\n' "$out" | head -n 1)" "profile=local profile_origin=env" "TALOS_PROFILE=local: the header names the active profile and its origin (env)"
-assert_eq "9" "$(printf '%s\n' "$out" | role_rows | wc -l | tr -d ' ')" "TALOS_PROFILE=local: still one row per role"
+assert_eq "10" "$(printf '%s\n' "$out" | role_rows | wc -l | tr -d ' ')" "TALOS_PROFILE=local: still one row per role"
 for r in $ROLES; do
   row="$(printf '%s\n' "$out" | grep "^role=$r ")"
   assert_contains "$row" "model=glm-5.3-flash" "TALOS_PROFILE=local: $r runs the single model"
@@ -139,7 +139,7 @@ assert_eq "runner=codex runner_cmd= model=profile-model effort=low" "$(bash "$AG
 reset
 set_cfg "$CFG_PLAIN"
 out="$(CLAUDECODE=1 bash "$AGENT" --resolve-all 2>"$ERR")"
-assert_eq "9" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "no profiles: --resolve-all has exactly the nine role rows (no header line)"
+assert_eq "10" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "no profiles: --resolve-all has exactly the ten role rows (no header line)"
 assert_eq "0" "$(wc -c < "$ERR" | tr -d ' ')" "no profiles: nothing on stderr"
 assert_eq "0" "$(CLAUDECODE=1 bash "$CONFIG" --dump 2>/dev/null | tr '\0' '\n' | grep -c '^sources.profile\|^sources.harness')" "no profiles: --dump carries no profile or harness keys, even inside Claude Code"
 env_plain="$(CLAUDECODE=1 bash "$TALOS" env 2>/dev/null)"

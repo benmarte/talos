@@ -1790,7 +1790,7 @@ _vcs_shared_contract_env() {
   if [ -f "${SCRIPT_DIR:-}/pipeline-contract.sh" ]; then
     . "$SCRIPT_DIR/pipeline-contract.sh"
   elif [ "${TALOS_ROLES+set}" != "set" ]; then
-    TALOS_ROLES=(developer qa reviewer security docs validator pm orchestrator planner)
+    TALOS_ROLES=(developer qa reviewer security docs validator pm orchestrator planner threat)
     TALOS_APPROVAL_ROLES=(qa reviewer security docs)
     TALOS_APPROVAL_LABELS=("qa:pass|" "review:approved|" "security:approved|" "docs:done|")
   fi

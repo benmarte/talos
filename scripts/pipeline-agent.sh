@@ -440,7 +440,7 @@ _neutral_profile() {
 # _resolve_role_profile <role>: print the profile path (0), or explain on
 # stderr and return 1 (not found) / 2 (invalid role name).
 _resolve_role_profile() {
-  local _role="$1" _scripts _agents _neutral _c
+  local _role="$1" _scripts _agents _neutral _c _alias
   if ! _valid_role_name "$_role"; then
     echo "pipeline-agent: invalid role name '$(printf '%s' "$_role" | tr -d '[:cntrl:]')' (lowercase letters, digits and '-' only, starting with a letter)" >&2
     return 2
@@ -448,13 +448,19 @@ _resolve_role_profile() {
   _scripts="$(_resolve_talos_dir pipeline-vcs.sh 2>/dev/null || true)"
   _agents="${_scripts:+$(cd "$_scripts/.." && pwd)/agents}"
   _neutral="$(_neutral_profile "$_role" || true)"
+  # The threat role (#837) has no profile of its own: it is the security profile
+  # in its Design mode, so the install's agents/security.md is its last resort.
+  _alias="$_role"; [ "$_role" != threat ] || _alias=security
   for _c in \
     "$PWD/.claude/agents/$_role.md" \
     "$_neutral" \
     "${_agents:+$_agents/$_role.md}" \
     "$SCRIPT_DIR/../agents/$_role.md" \
     "$SCRIPT_DIR/../../agents/$_role.md" \
-    "$SCRIPT_DIR/../.claude/agents/$_role.md"; do
+    "$SCRIPT_DIR/../.claude/agents/$_role.md" \
+    "${_agents:+$_agents/$_alias.md}" \
+    "$SCRIPT_DIR/../agents/$_alias.md" \
+    "$SCRIPT_DIR/../../agents/$_alias.md"; do
     [ -n "$_c" ] || continue
     if [ -f "$_c" ]; then printf '%s\n' "$_c"; return 0; fi
   done
@@ -510,7 +516,7 @@ fi
 # a frontmatter `model:` line: that line applies whenever the config resolves
 # empty, so it defeats "the config is the only place a model is set".
 if [ "${1:-}" = "--resolve-all" ]; then
-  _ALL_ROLES="validator pm developer qa reviewer security adversarial docs planner"
+  _ALL_ROLES="validator pm developer qa reviewer security adversarial docs planner threat"
   # key<TAB>value<TAB>layer for every agents.* key (#442); one python3 spawn.
   # "repo" is the project file; a key set by neither file (default, env) has no
   # origin to show here, so it stays empty.

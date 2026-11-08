@@ -78,6 +78,11 @@ agent.planner.runner=claude
 agent.planner.model=sonnet
 agent.planner.effort=medium
 agent.planner.fallback=codex
+agent.threat.runner=claude
+agent.threat.model=sonnet
+agent.threat.effort=medium
+agent.threat.fallback=codex
+agent.threat.effort_notice=talos: notice: role 'threat' has effort=medium in config but its frontmatter has no effort: -- native path uses the committed frontmatter; config effort is advisory here
 ref=llm-loop
 ref=draft-order
 ref=planner

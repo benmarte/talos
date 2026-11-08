@@ -11,7 +11,7 @@ AGENT_SH="$TALOS_ROOT/scripts/pipeline-agent.sh"
 USER_DIR="$HOME/.talos"
 ERR="$SANDBOX/stderr"
 TAB="$(printf '\t')"
-ROLES="validator pm developer qa reviewer security adversarial docs planner"
+ROLES="validator pm developer qa reviewer security adversarial docs planner threat"
 
 reset_cfg() {
   rm -rf "$USER_DIR" "${SANDBOX:?}"/talos.pipeline.* "${SANDBOX:?}/.claude" "${HOME:?}/.claude"
@@ -23,15 +23,15 @@ proj_json() { printf '%s' "$1" > "$SANDBOX/talos.pipeline.json"; }
 all() { bash "$AGENT_SH" --resolve-all 2>"$ERR"; }
 line_for() { printf '%s\n' "$1" | grep "^role=$2 " ; }
 
-# ── AC9: one line per role, all nine, in a stable order ──────────────────────
+# ── AC9: one line per role, all ten, in a stable order ──────────────────────
 reset_cfg
 user_json '{"agents": {"model": "sonnet", "roles": {"security": {"model": "opus"}}}}'
 proj_json '{"agents": {"roles": {"qa": {"model": "haiku", "restamp_model": "sonnet"}}}}'
 out="$(all)"; rc=$?
 assert_eq "0" "$rc" "AC9: --resolve-all exits 0"
-assert_eq "9" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "AC9: exactly one line per role (nine)"
+assert_eq "10" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "AC9: exactly one line per role (ten)"
 got_roles="$(printf '%s\n' "$out" | sed 's/^role=\([a-z]*\) .*/\1/' | tr '\n' ' ' | sed 's/ $//')"
-assert_eq "$ROLES" "$got_roles" "AC9: all nine roles listed in pipeline order"
+assert_eq "$ROLES" "$got_roles" "AC9: all ten roles listed in pipeline order"
 assert_eq "role=qa model=haiku restamp_model=sonnet origin=project" "$(line_for "$out" qa)" "AC9: project role model + role re-stamp -> origin project"
 assert_eq "role=security model=opus restamp_model=sonnet origin=global" "$(line_for "$out" security)" "AC9: user-level role model -> origin global"
 assert_eq "role=docs model=sonnet restamp_model=sonnet origin=global" "$(line_for "$out" docs)" "AC9: role with no key falls to user-level agents.model -> origin global"
@@ -46,7 +46,7 @@ assert_eq "role=pm model=haiku restamp_model=haiku origin=project" "$(line_for "
 reset_cfg
 rm -rf "$USER_DIR"
 out="$(all)"
-assert_eq "9" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "AC9: nine lines with no config at all"
+assert_eq "10" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "AC9: ten lines with no config at all"
 assert_eq "role=developer model= restamp_model= origin=session default" "$(line_for "$out" developer)" "AC9: no model anywhere -> origin session default"
 
 # re-stamp chain across layers: role -> global re-stamp -> agents.model
@@ -80,7 +80,7 @@ assert_not_contains "$(cat "$ERR")" "$HOME/.claude/agents/docs.md" "AC9: \$CLAUD
 reset_cfg
 user_json '{"agents": {"model": "sonnet", "roles": {"qa": {"model": "evil\nrole=docs model=forged origin=project\u001b[31m"}}}}'
 out="$(all)"
-assert_eq "9" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "a newline in a model value cannot add a row to the table"
+assert_eq "10" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "a newline in a model value cannot add a row to the table"
 assert_eq "1" "$(printf '%s\n' "$out" | grep -c '^role=docs ')" "a forged role=docs row is not printed"
 assert_eq "role=docs model=sonnet restamp_model=sonnet origin=global" "$(line_for "$out" docs)" "the real docs row is unaffected by the forged value"
 if printf '%s' "$out" | LC_ALL=C grep -q "$(printf '\033')"; then
@@ -137,7 +137,7 @@ assert_eq "role=pm model= restamp_model= origin=session default runner_cmd_origi
 reset_cfg
 user_json '{"agents": {"runner_cmd": "a\nrole=docs forged\u001b\u009b[0m"}}'
 out="$(all)"
-assert_eq "9" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "a newline in runner_cmd cannot add a row"
+assert_eq "10" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "a newline in runner_cmd cannot add a row"
 assert_contains "$(line_for "$out" qa)" "runner_cmd_origin=global${TAB}runner_cmd=arole=docs forged[0m" "runner_cmd is sanitised like the model"
 
 # -- runner_cmd rows parse unambiguously (#342) ------------------------------

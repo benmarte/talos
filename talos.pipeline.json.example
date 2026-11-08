@@ -60,6 +60,10 @@
     "max_parallel": 1
   },
 
+  "pipeline": {
+    "risk_areas": []
+  },
+
   "execution": {
     "isolation": "worktree",
     "orchestrator": "code",
