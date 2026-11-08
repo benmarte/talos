@@ -87,6 +87,8 @@ reset_stubs() {
   set_stub list-prs 0 "[]"
   set_stub read-comments 0 '{"comments":[]}'
   set_stub list-issues 0 "[$(issue_json 42 "")]"
+  # The merged PR closes the issue (#822): a part-of answer is pinned in test-talos-post-merge-closing-822.sh.
+  set_stub pr-closes-issue 0 "closes"
   # The checkout is not on the issue's branch (#601): to-base has nothing to do.
   set_stub worktree.to-base 0 "talos:checkout state=kept"
 }
@@ -163,8 +165,9 @@ assert_out "post-merge" "$PM_FIRST"
 assert_eq "vcs list-prs
 vcs current-user
 vcs read-comments 42
-vcs comment-issue 42 --body-file F --allow-closed
 vcs list-issues
+vcs pr-closes-issue 9 42
+vcs comment-issue 42 --body-file F --allow-closed
 vcs close-issue 42 closed by PR #9
 status 42 Done
 worktree to-base 42
