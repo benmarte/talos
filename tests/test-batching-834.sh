@@ -217,6 +217,20 @@ assert_eq "verdict=merge" "$OUT" "AC4 a PR with no member merges"
 assert_eq "1" "$(gcalled check-closing-keyword)" "AC4 a PR with no member runs the one check it runs today"
 assert_eq "0" "$(gcalled pr-closes-issue)" "AC4 a PR with no member asks nothing about members"
 
+# A members read that failed is not "no members": the gate waits, retryably, and
+# nothing is merged. A verb the provider lacks is the unbatched case and merges.
+gate_reset
+gset batch-members 1 "" "pipeline-vcs: batch-members: could not read the issue list"
+gm
+assert_eq "verdict=wait
+reason=closing-keyword-unverified" "$OUT" "AC4 a members read that failed waits instead of merging"
+assert_eq "0" "$(gcalled pr-checks-required)" "AC4 no later gate runs after the wait"
+
+gate_reset
+gset batch-members 1 "" "pipeline-vcs: unknown verb: batch-members"
+gm
+assert_eq "verdict=merge" "$OUT" "AC4 a provider without the verb behaves as unbatched"
+
 # ── AC5, AC6: post-merge and the sweep ───────────────────────────────────────
 PSTUB="$SANDBOX/pstub"
 export PSTUB
@@ -351,10 +365,10 @@ case "$1" in
     python3 -I -c 'import json, sys
 print(json.dumps({"title": "t", "body": "issue body", "labels": [],
                   "comments": [{"body": open(sys.argv[1]).read()}]}))' "$QA_SPEC_FILE" ;;
-  batch-members) printf '%s' "${QA_MEMBERS:-}" ;;
+  batch-members) [ -z "${QA_MEMBERS_FAIL:-}" ] || { echo "pipeline-vcs: batch-members: could not read the issue list" >&2; exit 1; }; printf '%s' "${QA_MEMBERS:-}" ;;
   pr-mergeable) echo MERGEABLE ;;
   checkout-pr) : ;;
-  *) echo "stub pipeline-vcs: unexpected verb: $*" >&2; exit 99 ;;
+  *) echo "pipeline-vcs: unknown verb: $1" >&2; exit 1 ;;
 esac
 TALOS_Zr4Wn7QbL2xP
   git add -A
@@ -399,6 +413,13 @@ spec '- [ ] AC1 greet prints hello (test)' '' "$TESTS"
 usable
 assert_eq "spec-usable: ok" "$OUT" "AC7 an issue with no member is unchanged"
 unset QA_MEMBERS
+# a members read that failed is a fault of the read, not an unbatched issue.
+export QA_MEMBERS_FAIL=1
+spec '- [ ] AC1 greet prints hello (test)' '' "$TESTS"
+usable
+assert_eq "4" "$RC" "AC7 a members read that failed exits 4"
+assert_eq "spec-usable: BLOCKED spec: batch members unreadable for issue #5" "$OUT" "AC7 spec-usable does not pass a spec whose members could not be read"
+unset QA_MEMBERS_FAIL
 grep -v '^  batch-members) ' scripts/pipeline-vcs.sh > scripts/pipeline-vcs.sh.new
 mv scripts/pipeline-vcs.sh.new scripts/pipeline-vcs.sh
 usable
