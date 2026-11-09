@@ -79,7 +79,8 @@ def check_example(cfg_obj, label):
     leaves = []
     flatten(cfg_obj, "", leaves)
     for k in leaves:
-        if k.split(".")[-1] == "_note":
+        leaf = k.split(".")[-1]
+        if leaf == "_note" or leaf.startswith("_note_"):
             continue
         if not key_covered(k):
             missing.append("%s: %s" % (label, k))
