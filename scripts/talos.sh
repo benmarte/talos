@@ -1078,6 +1078,9 @@ _talos_roles_decide() {
   [ "$_RC" -eq 0 ] || return 0
   case "$_OUT" in *$'\n'*) return 0 ;; esac
   [[ "$_OUT" =~ ^required-roles\ head=([0-9a-f]{40}|[0-9a-f]{64}|-)\ roles=([a-z,-]+)\ skipped=([a-z,-]+)\ reason=([a-z-]+)\ matched=(.*)\ matched_count=([0-9]+)$ ]] || return 0
+  # An unreadable head (`head=-`) cannot be bound to a record: fail closed like
+  # pipeline-next.py, so every enabled role is required.
+  [ "${BASH_REMATCH[1]}" != "-" ] || return 0
   _RR_HEAD="${BASH_REMATCH[1]}"; _RR_ROLES="${BASH_REMATCH[2]}"; _RR_SKIPPED="${BASH_REMATCH[3]}"
   _RR_REASON="${BASH_REMATCH[4]}"; _RR_MATCHED="${BASH_REMATCH[5]}"; _RR_COUNT="${BASH_REMATCH[6]}"
   _RR_OK=1

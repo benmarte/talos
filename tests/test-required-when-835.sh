@@ -247,6 +247,10 @@ assert_contains "$(gline missing)" "security:approved" "AC6 the verb fails: miss
 gate_reset; set_stub required-roles 0 "garbage"
 gm
 assert_contains "$(gline missing)" "security:approved" "AC6 an unparsable answer: missing names the security label"
+gate_reset; set_stub required-roles 0 "required-roles head=- roles=reviewer skipped=security,adversarial reason=no-match matched=- matched_count=0"
+gm
+assert_eq "wait" "$(gline verdict)" "AC6 an unreadable head (head=-): wait, every enabled role is required"
+assert_contains "$(gline missing)" "security:approved" "AC6 an unreadable head (head=-): missing names the security label"
 # AC4 on the gate: without the key nothing is called or posted.
 gate_reset; printf '{"roles": {"adversarial": true}}' > "$SANDBOX/talos.pipeline.json"
 gm
