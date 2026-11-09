@@ -285,6 +285,7 @@
 14 test-verify-timeout-cap.sh
 11 test-view-issue-since-stage.sh
 24 test-view-issue-spec.sh
+14 test-view-issue-spec-trust-847.sh
 25 test-work-video-827.sh
 41 test-worktree-checkpoint.sh
 24 test-worktree-commit-docs.sh
