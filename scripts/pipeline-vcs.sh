@@ -310,7 +310,8 @@
 #                                             numbers, ascending, one per line, read
 #                                             from list-issues. A lead with no member
 #                                             prints nothing (exit 0); an unreadable
-#                                             list exits non-zero, nothing on stdout.
+#                                             list exits 3, nothing on stdout (the
+#                                             callers fail closed on exactly that).
 #   rerun-ci <n>                             Re-run failed CI for the PR head SHA
 #   pr-head <n>                               Print the current head SHA for a PR
 #   pr-head-ref <n>                           Print the PR's head branch name (#607).
@@ -11602,7 +11603,9 @@ _vcs_pr_checks_required_dispatch() {
 # who can label can, so a stranger's issue cannot join a lead), ascending,
 # one per line. One read, `list-issues` of whichever provider is configured, so
 # every provider answers it the same way. Nothing on stdout and a non-zero exit
-# when the list cannot be read; a lead with no member is no output and exit 0.
+# when the list cannot be read (exit 3: callers fail closed on it and on nothing
+# else, so a provider without the verb reads as unbatched); a lead with no member
+# is no output and exit 0.
 _vcs_batch_members() {
   local _bm_lead="${ARGS[0]:-}" _bm_list
   case "$_bm_lead" in
@@ -11612,7 +11615,8 @@ _vcs_batch_members() {
     echo "[dry-run] list-issues, then the open issues with a line 'Batched into: #$_bm_lead'"
     return 0
   fi
-  _bm_list="$(VERB=list-issues; ARGS=(); _vcs_dispatch_provider)" || exit 1
+  _bm_list="$(VERB=list-issues; ARGS=(); _vcs_dispatch_provider)" \
+    || { echo "pipeline-vcs: batch-members: could not read the issue list" >&2; exit 3; }
   printf '%s' "$_bm_list" | python3 -I -c '
 import json, re, sys
 lead = sys.argv[1]
@@ -11630,7 +11634,7 @@ for i in json.load(sys.stdin):
         found.add(n)
 out = "".join("%d\n" % n for n in sorted(found))
 sys.stdout.write(out)
-' "$_bm_lead" || exit 1
+' "$_bm_lead" || { echo "pipeline-vcs: batch-members: could not read the issue list" >&2; exit 3; }
 }
 
 _DISPATCH_RC=0

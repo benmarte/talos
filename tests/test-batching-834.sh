@@ -220,7 +220,7 @@ assert_eq "0" "$(gcalled pr-closes-issue)" "AC4 a PR with no member asks nothing
 # A members read that failed is not "no members": the gate waits, retryably, and
 # nothing is merged. A verb the provider lacks is the unbatched case and merges.
 gate_reset
-gset batch-members 1 "" "pipeline-vcs: batch-members: could not read the issue list"
+gset batch-members 3 "" "pipeline-vcs: batch-members: could not read the issue list"
 gm
 assert_eq "verdict=wait
 reason=closing-keyword-unverified" "$OUT" "AC4 a members read that failed waits instead of merging"
@@ -365,7 +365,7 @@ case "$1" in
     python3 -I -c 'import json, sys
 print(json.dumps({"title": "t", "body": "issue body", "labels": [],
                   "comments": [{"body": open(sys.argv[1]).read()}]}))' "$QA_SPEC_FILE" ;;
-  batch-members) [ -z "${QA_MEMBERS_FAIL:-}" ] || { echo "pipeline-vcs: batch-members: could not read the issue list" >&2; exit 1; }; printf '%s' "${QA_MEMBERS:-}" ;;
+  batch-members) [ -z "${QA_MEMBERS_FAIL:-}" ] || { echo "pipeline-vcs: batch-members: could not read the issue list" >&2; exit 3; }; printf '%s' "${QA_MEMBERS:-}" ;;
   pr-mergeable) echo MERGEABLE ;;
   checkout-pr) : ;;
   *) echo "pipeline-vcs: unknown verb: $1" >&2; exit 1 ;;

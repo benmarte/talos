@@ -1310,16 +1310,14 @@ _talos_gate_recover_stamps() {
 }
 
 # _talos_batch_members <lead> (#834): _MEMBERS is the lead's batch members, space-
-# separated (empty for none). A provider that lacks the verb ("unknown verb")
-# behaves as unbatched: no member, success. A read that failed returns 1, empty:
-# the caller must not treat that as "no members".
+# separated (empty for none). The verb exits 3 when it read and failed: that
+# returns 1, empty, and the caller must not treat it as "no members". Any other
+# failure (a provider without the verb) behaves as unbatched: no member, success.
 _talos_batch_members() {
   _MEMBERS=""
   _talos_cap _vcs batch-members "$1"
-  if [ "$_RC" -ne 0 ]; then
-    case "$_ERR" in *"unknown verb"*) return 0 ;; esac
-    return 1
-  fi
+  [ "$_RC" -ne 3 ] || return 1
+  [ "$_RC" -eq 0 ] || return 0
   _MEMBERS="$(grep -E '^[0-9]+$' <<< "$_OUT" | tr '\n' ' ')"
 }
 
