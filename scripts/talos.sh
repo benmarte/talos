@@ -2851,8 +2851,13 @@ _talos_prompt() {
       # #824: step 2's `run-tests.sh --changed` is Talos's own runner. A QA
       # checkout without it is told the targeted run is the one qa-run did.
       _r="${_wt:-$(git rev-parse --show-toplevel 2>/dev/null)}"
+      # #859: with merge.required_checks set, CI is the full run at the head and
+      # the merge gate waits for it, so the targeted run is skipped (it repeats
+      # CI and is what times out under load). The pre-CI shape clears it below.
+      _skip=0
       if [ -f "$_r/tests/run-tests.sh" ]; then
         _talos_pv QA_TARGETED_LINE ""
+        [ -z "$(cfg merge.required_checks)" ] || _skip=1
       else
         _talos_pv QA_TARGETED_LINE "Targeted run: this repo has no \`tests/run-tests.sh\`, so the step 2 command that runs it does not apply. The targeted run is the one \`qa-run\` already did through \`verify.targeted_commands\`; the verdict reports that, never a missing file."
       fi
@@ -2885,6 +2890,9 @@ _talos_prompt() {
         fi
       fi
       _talos_pv QA_CI_STEP ""
+      if [ "$_skip" = 1 ] && [ "$_v" != pre-ci ]; then
+        _talos_pv QA_TARGETED_LINE "Targeted run skipped: \`merge.required_checks\` is set, so CI is the full run at the head. Do not run the step 2 \`run-tests.sh --changed\` command; write \`targeted run skipped: CI is the full run (merge.required_checks)\` in the verdict. \`qa-run\` still checks every criterion red/green, and the required-checks gate is unchanged."
+      fi
       if [ "$_v" = pre-ci ]; then
         _talos_pv REQUIRED_CHECKS_LINE ""
         _talos_pv QA_CI_WAIT_LINE ""
