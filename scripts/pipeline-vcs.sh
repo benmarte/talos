@@ -3518,6 +3518,35 @@ if base_ref_name:
     except Exception:
         pr_own_files = None  # fail-open
 
+# A file both the PR and the base touched stays in pr_own_files, so a base merge
+# that only appended a line to it (tests/timings.txt, CHANGELOG.md) would stale
+# the approval. Compare the own patch to the file at the marker and at the head,
+# each against its own merge-base with the base: equal means the change came
+# from the base. None (any git failure) keeps the file changed (fail-closed).
+def own_patch(rev, path):
+    try:
+        mb = subprocess.run(
+            ['git', 'merge-base', 'origin/' + base_ref_name, rev],
+            capture_output=True, text=True, cwd=_own_root, timeout=30
+        )
+        mb_sha = mb.stdout.strip()
+        if mb.returncode != 0 or not mb_sha:
+            return None
+        diff = subprocess.run(
+            ['git', 'diff', '-U0', '--no-renames', mb_sha, rev, '--', path],
+            capture_output=True, text=True, cwd=_own_root, timeout=30
+        )
+        if diff.returncode != 0:
+            return None
+        return [ln for ln in diff.stdout.splitlines()
+                if not ln.startswith('@@') and not ln.startswith('index ')]
+    except Exception:
+        return None
+
+def changed_only_by_base(path, marker_sha, head):
+    at_head = own_patch(head, path)
+    return bool(at_head) and at_head == own_patch(marker_sha, path)
+
 try:
     marker_data = json.loads(os.environ.get('MARKER_ENTRIES', '') or '{}')
 except Exception:
@@ -3576,6 +3605,7 @@ for entry in entries:
     # If pr_own_files is None (three-dot diff unavailable) the filter is skipped.
     if pr_own_files is not None:
         changed = [f for f in changed if f in pr_own_files]
+        changed = [f for f in changed if not changed_only_by_base(f, found_sha, head_sha)]
 
     # First check hard-coded non-waivable paths (checked before the config waiver -- config cannot override)
     blocked = [p for p in changed if is_hardcoded_nonwaivable(p)]

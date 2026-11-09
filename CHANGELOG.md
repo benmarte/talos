@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: `pipeline-vcs.sh check-approval-sha` no longer stales an approval when merging the base only appended a sibling PR's line to a shared file the PR also changed (`tests/timings.txt`, `CHANGELOG.md`): the file is skipped when the PR's own `-U0` patch to it is the same at the marker and at the head; a change to the PR's own lines, or any git failure, still stales it.
 - fix: `tests/run-tests.sh --changed` / `--for` also select `test-shard-weights.sh` when a `tests/test-*.sh` is added or `tests/timings.txt` changes, so a missing timings line fails in the developer's own `verify.dev_tests` run instead of in CI.
 
 - fix: `pipeline-vcs.sh view-issue --spec` and `--since-stage` (github, github-api, gitlab, azure) accept a `**PM spec:**` (and, for the delta, `**Agent:**`) comment only from a trusted author (`markers.trusted_authors` and the authenticated user, the set `read-attempt` uses), so a commenter outside it can neither replace the spec nor plant a `## Threat model` line; `markers.verify_authors=false` keeps the old behaviour.
