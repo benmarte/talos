@@ -98,7 +98,7 @@ assert_eq "title,body,labels,comments" "$(out_of | python3 -I -c 'import json,sy
 assert_contains "$(out_of)" '"login": "alice"' "view-issue: comments carry author.login"
 assert_contains "$(out_of)" '"body": "hello"' "view-issue: comments carry body"
 
-Q="$(printf '%s\n' "$ISSUE3" '[{"id":1,"user":{"login":"alice"},"body":"**PM spec:** do x","created_at":"2026-10-01T00:00:00Z"},{"id":2,"user":{"login":"bob"},"body":"chatter","created_at":"2026-10-01T00:01:00Z"}]')"
+Q="$(printf '%s\n' "$ISSUE3" '[{"id":1,"user":{"login":"bot"},"body":"**PM spec:** do x","created_at":"2026-10-01T00:00:00Z"},{"id":2,"user":{"login":"bob"},"body":"chatter","created_at":"2026-10-01T00:01:00Z"}]')"
 parity "view-issue --spec" view-issue 3 --spec
 assert_contains "$(out_of)" "PM spec" "view-issue --spec: keeps the latest PM spec comment"
 assert_not_contains "$(out_of)" "chatter" "view-issue --spec: drops other comments"
