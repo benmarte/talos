@@ -17,50 +17,10 @@ mkdir -p "$PROJ" || exit 1
 cd "$PROJ" || exit 1
 
 # ── The table is well formed ─────────────────────────────────────────────────
-_out="$(python3 -I - "$DEFAULTS_SH" <<'TALOS_PYtab7Gw3Nd5Xk'
-import re
-import sys
-
-src = open(sys.argv[1]).read()
-m = re.search(r"<<'(TALOS_\w+)' \|\| true\n(.*?)\n\1\n", src, re.S)
-rows = [r.split("\t") for r in m.group(2).split("\n")]
-bad = []
-seen = set()
-for r in rows:
-    key = r[0]
-    if len(r) != 6:
-        bad.append("%s: %d fields, want 6" % (key, len(r)))
-        continue
-    _, typ, default, derived, env, scope = r
-    if scope not in ("any", "repo"):
-        bad.append("%s: scope column %r" % (key, scope))
-    if key in seen:
-        bad.append("%s: duplicate key" % key)
-    seen.add(key)
-    if typ not in ("str", "path", "int", "float", "bool", "enum", "list", "secret"):
-        bad.append("%s: type %r" % (key, typ))
-    if derived not in ("derived", "-"):
-        bad.append("%s: derived column %r" % (key, derived))
-    if env != "-" and not re.fullmatch(r"[A-Z][A-Z0-9_]*", env):
-        bad.append("%s: env-override %r" % (key, env))
-    if derived == "derived" and default != "":
-        bad.append("%s: a derived key keeps an empty default" % key)
-    if typ == "secret" and default != "":
-        bad.append("%s: a secret key has no default (it holds an env:NAME reference)" % key)
-    if typ == "bool" and default not in ("", "true", "false"):
-        bad.append("%s: bool default %r" % (key, default))
-    if typ == "int" and not re.fullmatch(r"[0-9]*", default):
-        bad.append("%s: int default %r" % (key, default))
-    if typ == "float" and not re.fullmatch(r"([0-9]+(\.[0-9]+)?)?", default):
-        bad.append("%s: float default %r" % (key, default))
-    if re.search(r"[^\x20-\x7e]", default):
-        bad.append("%s: default has a control or non-ASCII character" % key)
-print("\n".join(bad))
-print("ROWS=%d" % len(rows))
-TALOS_PYtab7Gw3Nd5Xk
-)"
-assert_eq "ROWS=144" "$(printf '%s\n' "$_out" | tail -n1)" "AC10 the table has one row per config key (144 rows)"
-assert_eq "" "$(printf '%s\n' "$_out" | sed '$d')" \
+# The check lives in tests/check-defaults-table.py and counts nothing: a new key
+# needs no edit here (#853).
+_out="$(python3 -I "$TALOS_ROOT/tests/check-defaults-table.py" "$DEFAULTS_SH" 2>&1)"
+assert_eq "" "$_out" \
   "every row has six fields, a unique key, a valid type/derived/env/scope column, and a default of the right shape"
 
 # ── (d) the table's key set is the old known-keys list: no key lost ──────────

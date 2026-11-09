@@ -289,6 +289,7 @@ bash ~/.talos/scripts/pipeline-config.sh --has KEY
 ```
 
 - `--show` prints `key<TAB>value<TAB>layer` for every table key plus any unknown key present; layer is `default`, `global`, `repo` or `env`. `--origin-only` drops the value; a prefix filters (`--show agents.`). A secret-typed key or `env:` value prints `env:NAME (set|unset|denied)`; a literal there prints `<masked>`. Validators are not applied, and a derived default shows empty.
+- A leaf named `_note` or starting `_note_` is prose: the loader never warns about it and `--show` never lists it. `talos.pipeline.json.example` keeps its per-key prose as one `_note_<key>` entry per line (dots in the key become underscores), so two PRs that document different keys edit different lines. A leaf `_notes` or `note_x` is not prose and warns.
 - `KEY` prints the config value, else the `default` argument, else the table default. `--has KEY` exits 0 if a config file sets it, 1 if not, 3 if one cannot be parsed; it ignores the env layer.
 - `pipeline-agent.sh --resolve-all` shows each role's model and deciding layer.
 
@@ -1220,6 +1221,19 @@ Docs is decided by `talos.sh docs-gate <pr> --issue <N>`. With `docs:done` on th
 | `merge.union_paths` | `["CHANGELOG.md"]` | paths `pipeline-mergebase.sh` may union-merge |
 
 When `conflict-files <pr>` lists only `merge.union_paths` entries, `scripts/pipeline-mergebase.sh <pr>` resolves them with `git merge-file --union` (both sides kept, the PR's first) in a throwaway worktree and pushes, with no developer dispatch. Exit 0 pushed, 3 a path is not unionable (developer merge-base task), 1 setup error. Entries matching `scripts/**`, `tests/**`, pipeline config or forbidden patterns are rejected.
+
+#### Mechanically resolved conflicts
+
+Every config or feature PR appends to a few shared files, so a sibling PR's merge makes the others CONFLICTING. `pipeline-mergebase.sh` resolves these paths itself, in one run and one merge commit even when they conflict together; any other conflicting path exits 3 with nothing pushed and the developer merge-base task runs as before. A path matching `merge.forbidden_files` is always refused.
+
+| Path | Resolved by |
+|---|---|
+| `merge.union_paths` (default `CHANGELOG.md`) | union, the PR's lines first |
+| `tests/timings.txt` | one line per test basename, sorted, leading `#` comments kept; a basename both sides changed takes the base branch's value (the next run refreshes it) |
+| the generated config table of `docs/reference.md` | regeneration with `python3 -I tests/gen-config-table.py --write docs/reference.md` from the merged `scripts/pipeline-defaults.sh` |
+| everything else | the developer merge-base task |
+
+The two built-in paths are not configurable. The table is regenerated only when the file merges cleanly with the block between the `config-table:start` and `config-table:end` markers replaced by a placeholder in the merge base, the PR and the base branch (the block is the only conflicting part), and only with a `tests/gen-config-table.py` identical to the base branch's, so a PR's own code is never run by the orchestrator; a PR that changed the generator, a conflict in `scripts/pipeline-defaults.sh` or missing markers exit 3. The same regeneration runs when the merge is clean but the table is stale. After a merge, the sync of the other open PRs (`merge.auto_sync`) tries `pipeline-mergebase.sh` first, then `update-branch`, then a developer.
 
 ### Forbidden-files gate
 

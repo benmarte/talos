@@ -49,12 +49,67 @@ rows = [r.split("\t") for r in m.group(2).split("\n")]
 repo = sorted(r[0] for r in rows if len(r) == 6 and r[5] == "repo")
 bad = ["%s: scope %r" % (r[0], r[5]) for r in rows if len(r) == 6 and r[5] not in ("any", "repo")]
 print("\n".join(bad))
-print("REPO=" + " ".join(repo))
+print("--REPO--")
+print("\n".join(repo))
 TALOS_PYscp4Hq8Wn2Zt
 )"
-EXPECTED_REPO="base_branch board.azure_board board.azure_columns.* board.azure_states.* board.azure_states.done board.azure_states.in_progress board.azure_states.in_review board.azure_states.ready board.azure_team board.enabled board.owner board.project_number board.status_field board.status_map.* board.statuses.* ci.known_flakes developer.checklist issues.label_filter issues.skip_labels markers.trusted_authors markers.verify_authors merge.approval_waiver_paths merge.forbidden_files merge.forbidden_files_allow merge.forbidden_files_replace merge.required_checks merge.union_paths pipeline.risk_areas repo review.guide roles.required_when.* vcs.azure.area_path vcs.azure.org_url vcs.azure.project vcs.azure.work_item_type vcs.file.source.path vcs.provider vcs.repo verify verify.commands verify.dev_tests verify.e2e verify.e2e_artifacts.dir verify.e2e_artifacts.include verify.e2e_artifacts.max_files verify.e2e_artifacts.max_mb verify.guide verify.qa_mode verify.ready verify.targeted_commands verify.walk.max_mb verify.walk.require_video verify.walk.specs verify.walk.ui_paths"
-assert_eq "REPO=$EXPECTED_REPO" "$(printf '%s\n' "$_scope_out" | tail -n1)" "the repo-only set is exactly the owner-approved list (hooks.* and notifications.cmd stay global)"
-assert_eq "" "$(printf '%s\n' "$_scope_out" | sed '$d')" "every table row's scope is any or repo"
+# One key per line, sorted: a PR that adds a repo-only key edits one line (#853).
+EXPECTED_REPO="base_branch
+board.azure_board
+board.azure_columns.*
+board.azure_states.*
+board.azure_states.done
+board.azure_states.in_progress
+board.azure_states.in_review
+board.azure_states.ready
+board.azure_team
+board.enabled
+board.owner
+board.project_number
+board.status_field
+board.status_map.*
+board.statuses.*
+ci.known_flakes
+developer.checklist
+issues.label_filter
+issues.skip_labels
+markers.trusted_authors
+markers.verify_authors
+merge.approval_waiver_paths
+merge.forbidden_files
+merge.forbidden_files_allow
+merge.forbidden_files_replace
+merge.required_checks
+merge.union_paths
+pipeline.risk_areas
+repo
+review.guide
+roles.required_when.*
+vcs.azure.area_path
+vcs.azure.org_url
+vcs.azure.project
+vcs.azure.work_item_type
+vcs.file.source.path
+vcs.provider
+vcs.repo
+verify
+verify.commands
+verify.dev_tests
+verify.e2e
+verify.e2e_artifacts.dir
+verify.e2e_artifacts.include
+verify.e2e_artifacts.max_files
+verify.e2e_artifacts.max_mb
+verify.guide
+verify.qa_mode
+verify.ready
+verify.targeted_commands
+verify.walk.max_mb
+verify.walk.require_video
+verify.walk.specs
+verify.walk.ui_paths"
+assert_eq "$EXPECTED_REPO" "$(printf '%s\n' "$_scope_out" | sed '1,/^--REPO--$/d')" "the repo-only set is exactly the owner-approved list (hooks.* and notifications.cmd stay global)"
+assert_eq "" "$(printf '%s\n' "$_scope_out" | sed '/^--REPO--$/,$d')" "every table row's scope is any or repo"
 
 # ── (a) global-only keys are read; the repo overrides key by key ─────────────
 GLOBAL_ANY='{"pr":{"draft":false},"limits":{"max_fix_attempts":5,"warn_at":0.5,"tokens_per_issue":9000},"spend":{"comment":false},"events":{"enabled":false,"path":"g/e.jsonl"},"verify":{"ci_wait_s":321,"targeted":false},"hooks":{"pre_dispatch":"echo hi","timeout_s":9},"notifications":{"cmd":"echo n","slack_channel":"CGLOBAL"},"issues":{"max_parallel":3}}'
@@ -111,9 +166,32 @@ assert_not_contains "$(bash "$CFG_SH" --has board.owner 2>/dev/null && echo yes)
 reset_cfg
 glob_json '{"base_branch":"b1","repo":"o/r","vcs":{"provider":"azure","repo":"o/r2","azure":{"org_url":"u","project":"p"},"file":{"source":{"path":"x.md"}}},"board":{"enabled":false,"project_number":4,"statuses":{"ready":"R"},"status_map":{"a":"b"}},"verify":{"commands":["make"],"qa_mode":"ci"},"merge":{"required_checks":["ci"],"forbidden_files":["f"],"forbidden_files_allow":["g"],"approval_waiver_paths":["w"],"union_paths":["u"]},"markers":{"trusted_authors":["t"],"verify_authors":false},"issues":{"label_filter":"l","skip_labels":["s"]}}'
 get base_branch >/dev/null
-assert_eq "22" "$(errlines)" "(b) one note per dropped repo-only key (22 keys across every group)"
+DROPPED_KEYS="base_branch
+repo
+vcs.provider
+vcs.repo
+vcs.azure.org_url
+vcs.azure.project
+vcs.file.source.path
+board.enabled
+board.project_number
+board.statuses.ready
+board.status_map.a
+verify.commands
+verify.qa_mode
+merge.required_checks
+merge.forbidden_files
+merge.forbidden_files_allow
+merge.approval_waiver_paths
+merge.union_paths
+markers.trusted_authors
+markers.verify_authors
+issues.label_filter
+issues.skip_labels"
+_dropped_n="$(printf '%s\n' "$DROPPED_KEYS" | grep -c .)"
+assert_eq "$_dropped_n" "$(errlines)" "(b) one note per dropped repo-only key ($_dropped_n keys across every group)"
 _e="$(cat "$ERR")"
-for _k in base_branch repo vcs.provider vcs.repo vcs.azure.org_url vcs.azure.project vcs.file.source.path board.enabled board.project_number board.statuses.ready board.status_map.a verify.commands verify.qa_mode merge.required_checks merge.forbidden_files merge.forbidden_files_allow merge.approval_waiver_paths merge.union_paths markers.trusted_authors markers.verify_authors issues.label_filter issues.skip_labels; do
+for _k in $DROPPED_KEYS; do
   assert_contains "$_e" "'$_k'" "(b) the repo-only key $_k is named in a note"
 done
 assert_eq "" "$(bash "$CFG_SH" repo 2>/dev/null)" "(b) a dropped repo-only key falls back to the table default"

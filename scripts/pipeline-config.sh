@@ -318,6 +318,11 @@ import sys
 # parse error is not mistaken for "the key is absent" (#440).
 _LOAD_ERRORS = []
 
+def _is_note(leaf):
+    # Prose, never config: a leaf named _note or _note_<key> (#853) is skipped
+    # by the unknown-key warning and the --show listing.
+    return leaf == "_note" or leaf.startswith("_note_")
+
 def _warn(msg):
     sys.stderr.write("pipeline-config: [warn] %s\n" % msg)
 
@@ -997,7 +1002,7 @@ for _row in _rows:
         _seen.add(_key)
         _order.append((_key, _row))
 for _d in sorted(_present):
-    if _d not in _seen and _d.split(".")[-1] != "_note":
+    if _d not in _seen and not _is_note(_d.split(".")[-1]):
         _order.append((_d, None))
 
 def _walk(obj, path):
@@ -1165,7 +1170,7 @@ def _warn_unknown_keys(cfg_obj):
     _present_leaf_keys(cfg_obj, "", present)
     templates = [t.split(".") for t in _KNOWN_CONFIG_KEYS]
     for key in present:
-        if key.split(".")[-1] == "_note":
+        if _is_note(key.split(".")[-1]):
             continue
         parts = key.split(".")
         if any(_key_matches(parts, t) for t in templates):
