@@ -57,7 +57,10 @@ cp -R "$TREE" "$SANDBOX/tree-old"
 grep -v '^{{QA_TARGETED_LINE}}$' "$TREE/templates/prompts/qa.md" > "$SANDBOX/tree-old/templates/prompts/qa.md"
 for shape in pre-ci ci; do
   if [ "$shape" = ci ]; then
-    printf '{"verify": {"qa_mode": "ci"}, "merge": {"required_checks": ["ci / test"]}}' > "$SANDBOX/talos.pipeline.json"
+    # #859: with required_checks set the runner-present prompt carries the skip
+    # line (tests/test-qa-skip-targeted-859.sh); the empty list is the shape that
+    # has neither line.
+    printf '{"verify": {"qa_mode": "local"}, "merge": {"required_checks": []}}' > "$SANDBOX/talos.pipeline.json"
     export GATE_PRD_RC=1 GATE_PRD_OUT=ready
   fi
   TALOS="$TREE/scripts/talos.sh"
