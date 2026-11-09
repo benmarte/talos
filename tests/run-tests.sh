@@ -567,8 +567,11 @@ _map_changed_path() {
     tests/test-*.sh)
       _add_selected "$(basename "$p")"
       # A NEW test needs its tests/timings.txt line, which test-shard-weights.sh
-      # (W1) checks; an unresolvable base ref counts as new, never skipped (#860).
-      if ! git -C "$TALOS_ROOT" cat-file -e "${_changed_ref}:$p" 2>/dev/null; then
+      # (W1) checks (#860). Only a base ref that resolves can say a file is new:
+      # CI's shard checkout has no origin/main, and there every --for path would
+      # otherwise look new. (--changed with no base ref already runs everything.)
+      if git -C "$TALOS_ROOT" rev-parse --verify -q "${_changed_ref}^{commit}" >/dev/null 2>&1 \
+        && ! git -C "$TALOS_ROOT" cat-file -e "${_changed_ref}:$p" 2>/dev/null; then
         _add_selected "test-shard-weights.sh"
       fi
       ;;
