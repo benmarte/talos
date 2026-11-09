@@ -327,6 +327,13 @@
 #                                             the PR cannot be read (fail closed;
 #                                             file mode). `talos.sh post-merge`
 #                                             closes the issue only on `closes`.
+#   batch-members <lead>                      The open issues whose body has a line
+#                                             `Batched into: #<lead>` (#834): their
+#                                             numbers, ascending, one per line, read
+#                                             from list-issues. A lead with no member
+#                                             prints nothing (exit 0); an unreadable
+#                                             list exits 3, nothing on stdout (the
+#                                             callers fail closed on exactly that).
 #   rerun-ci <n>                             Re-run failed CI for the PR head SHA
 #   pr-head <n>                               Print the current head SHA for a PR
 #   pr-head-ref <n>                           Print the PR's head branch name (#607).
@@ -1265,6 +1272,28 @@ except Exception:
     sys.exit(0)
 print(json.dumps(d))
 " "$1"
+}
+
+# _azure_body_text: the list-issues array on stdin with each `body` (ADO's HTML
+# description, cut to _VCS_AZURE_SCAN_CAP) turned into text lines. Input that is
+# not a JSON array passes through unchanged.
+_azure_body_text() {
+  python3 -I -c '
+import html, json, re, sys
+raw = sys.stdin.read()
+cap = int(sys.argv[1])
+try:
+    d = json.loads(raw)
+    if isinstance(d, list):
+        for i in d:
+            if isinstance(i, dict) and isinstance(i.get("body"), str):
+                t = re.sub(r"<br\s*/?>|</(?:p|div|li|ul|ol|h[1-6]|tr|blockquote|pre)>", "\n", i["body"][:cap], flags=re.I)
+                i["body"] = html.unescape(re.sub(r"<[^<>]*>", "", t))
+except Exception:
+    sys.stdout.write(raw)
+    sys.exit(0)
+print(json.dumps(d))
+' "${_VCS_AZURE_SCAN_CAP:-65536}"
 }
 
 # _json_array_len: like _json_array_count, but exits non-zero when stdin is
@@ -8569,12 +8598,14 @@ print(len(d), min((p.get("creationDate") or "")[:10] for p in d) if d else "")
       fi
       local _azli_out
       _azli_out="$(az boards query $ORG_ARG $PROJ_ARG \
-        --wiql "SELECT [System.Id], [System.Title], [System.State], [System.Tags] FROM WorkItems WHERE [System.State] NOT IN ('Closed', 'Done', 'Removed') ORDER BY [System.ChangedDate] DESC" \
+        --wiql "SELECT [System.Id], [System.Title], [System.State], [System.Tags], [System.Description] FROM WorkItems WHERE [System.State] NOT IN ('Closed', 'Done', 'Removed') ORDER BY [System.ChangedDate] DESC" \
         --output json)" || exit 1
       local _azli_count
       _azli_count="$(printf '%s' "$_azli_out" | _json_array_count)"
       _list_cap_warn list-issues "$_azli_cap" "$_azli_count" "ADO flat-WIQL 20000-item server ceiling" "work items"
-      printf '%s\n' "$_azli_out" | _azure_normalise issues
+      # The body is the work item's HTML description (#834): block ends become
+      # newlines and the other tags go, so a `Batched into:` line is a line.
+      printf '%s\n' "$_azli_out" | _azure_normalise issues | _azure_body_text
       ;;
     view-issue)
       # The work item plus its comments (#696), each body turned back from the
@@ -11721,8 +11752,49 @@ _vcs_pr_checks_required_dispatch() {
   return "$_rc"
 }
 
+# batch-members <lead> (#834): the numbers of the open issues whose body has a
+# line `Batched into: #<lead>` (the number not followed by a digit) and that
+# carry an `epic:<n>` label (the planner sets it on every member; only a user
+# who can label can, so a stranger's issue cannot join a lead), ascending,
+# one per line. One read, `list-issues` of whichever provider is configured, so
+# every provider answers it the same way. Nothing on stdout and a non-zero exit
+# when the list cannot be read (exit 3: callers fail closed on it and on nothing
+# else, so a provider without the verb reads as unbatched); a lead with no member
+# is no output and exit 0.
+_vcs_batch_members() {
+  local _bm_lead="${ARGS[0]:-}" _bm_list
+  case "$_bm_lead" in
+    '' | *[!0-9]*) echo "pipeline-vcs: batch-members: usage: batch-members <lead>" >&2; exit 2 ;;
+  esac
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] list-issues, then the open issues with a line 'Batched into: #$_bm_lead'"
+    return 0
+  fi
+  _bm_list="$(VERB=list-issues; ARGS=(); _vcs_dispatch_provider)" \
+    || { echo "pipeline-vcs: batch-members: could not read the issue list" >&2; exit 3; }
+  printf '%s' "$_bm_list" | python3 -I -c '
+import json, re, sys
+lead = sys.argv[1]
+line = re.compile(r"^[ \t]*Batched into:[ \t]*#" + lead + r"(?![0-9])", re.M)
+def epic(i):
+    for l in i.get("labels") or []:
+        name = l.get("name") if isinstance(l, dict) else l
+        if isinstance(name, str) and name.startswith("epic:"):
+            return True
+    return False
+found = set()
+for i in json.load(sys.stdin):
+    n = i.get("number", i.get("id"))
+    if isinstance(n, int) and not isinstance(n, bool) and epic(i) and line.search(i.get("body") or ""):
+        found.add(n)
+out = "".join("%d\n" % n for n in sorted(found))
+sys.stdout.write(out)
+' "$_bm_lead" || { echo "pipeline-vcs: batch-members: could not read the issue list" >&2; exit 3; }
+}
+
 _DISPATCH_RC=0
 case "$VERB" in
+  batch-members) _vcs_batch_members ;;
   pr-checks-required) _vcs_pr_checks_required_dispatch ;;
   required-roles) _vcs_required_roles ;;
   pr-is-draft|pr-ci-runs|pr-closes-issue|ready-pr|draft-pr) _vcs_draft_gate_dispatch ;;
