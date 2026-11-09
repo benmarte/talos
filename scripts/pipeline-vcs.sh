@@ -398,6 +398,16 @@
 #                                             sha=<marker sha>"; a role stale
 #                                             through a marker fault has no sha=
 #                                             (match the line by its prefix).
+#   check-approval-sha <n> --require-roles    (#848) Opt-in last gate for a merge script:
+#                                             the verb above, and in addition exit 1
+#                                             with one stdout line `missing role=<role>
+#                                             label=<label>` (and a stderr MISSING line)
+#                                             per required role whose label is absent.
+#                                             Required = the enabled approval roles
+#                                             (roles.<role>), less the review roles
+#                                             `required-roles` skips. Without the flag
+#                                             a PR with no labels still exits 0. Takes
+#                                             --stale-list, not --evidence-list (exit 2).
 #   record-attempt <issue-n> <stage>          Record one attempt for the given blocking
 #     [--pr <pr-n> | --idempotency-key <token>]
 #                                             stage on the issue. Reads prior state,
@@ -11576,10 +11586,33 @@ if matched:
 say([r for r in enabled if r not in entries], [r for r in enabled if r in entries], "no-match")
 '
 
+# _vcs_enabled_roles <role>... -- the roles among the arguments that are enabled,
+# comma-joined (empty when none). roles.<role> decides; unset, the defaults table
+# does: enabled when not false (default true) / true (default false). Shared by
+# required-roles and check-approval-sha --require-roles.
+_vcs_enabled_roles() {
+  local _r _v _d _en=""
+  for _r in "$@"; do
+    # Literal keys, so the config-key guard sees each one.
+    case "$_r" in
+      qa) _v="$(cfg roles.qa)"; _d="$(_talos_default roles.qa)" ;;
+      reviewer) _v="$(cfg roles.reviewer)"; _d="$(_talos_default roles.reviewer)" ;;
+      security) _v="$(cfg roles.security)"; _d="$(_talos_default roles.security)" ;;
+      adversarial) _v="$(cfg roles.adversarial)"; _d="$(_talos_default roles.adversarial)" ;;
+      docs) _v="$(cfg roles.docs)"; _d="$(_talos_default roles.docs)" ;;
+      *) continue ;;
+    esac
+    _v="$(printf '%s' "$_v" | tr '[:upper:]' '[:lower:]')"
+    if [ "$_d" = "true" ]; then [ "$_v" != "false" ] || continue; else [ "$_v" = "true" ] || continue; fi
+    _en="${_en:+$_en,}$_r"
+  done
+  printf '%s' "$_en"
+}
+
 # required-roles <n>: see the usage header. Handled before the provider dispatch,
 # so gitlab, azure and file answer too (every role, reason unsupported-provider).
 _vcs_required_roles() {
-  local _n="${ARGS[0]-}" _rt _r _en="" _head="" _files="[]" _pok=0 _fok=0
+  local _n="${ARGS[0]-}" _rt _en="" _head="" _files="[]" _pok=0 _fok=0
   case "$_n" in
     '' | *[!0-9]*) echo "pipeline-vcs: required-roles: PR number must be numeric (got '$_n')" >&2; exit 1 ;;
   esac
@@ -11588,19 +11621,7 @@ _vcs_required_roles() {
     echo "[dry-run] required-roles $_n: read roles.required_when; GET ${_GH_API:-<repo>}/pulls/$_n (head sha) and ${_GH_API:-<repo>}/pulls/$_n/files?per_page=100 (paginated); print the decision"
     return 0
   fi
-  # Literal keys, so the config-key guard sees each one; the table default decides
-  # when the key is unset: enabled when not false (default true) / true (default false).
-  for _r in reviewer security adversarial; do
-    local _v _d
-    case "$_r" in
-      reviewer) _v="$(cfg roles.reviewer)"; _d="$(_talos_default roles.reviewer)" ;;
-      security) _v="$(cfg roles.security)"; _d="$(_talos_default roles.security)" ;;
-      adversarial) _v="$(cfg roles.adversarial)"; _d="$(_talos_default roles.adversarial)" ;;
-    esac
-    _v="$(printf '%s' "$_v" | tr '[:upper:]' '[:lower:]')"
-    if [ "$_d" = "true" ]; then [ "$_v" != "false" ] || continue; else [ "$_v" = "true" ] || continue; fi
-    _en="${_en:+$_en,}$_r"
-  done
+  _en="$(_vcs_enabled_roles reviewer security adversarial)"
   # An unreadable config is a decision too: a string is no map, so config-invalid.
   _rt="$(bash "$SCRIPT_DIR/pipeline-config.sh" roles.required_when 2>/dev/null)" || _rt='"unreadable"'
   case "$_rt" in '' | '{}' | null) ;; *)
@@ -11791,6 +11812,72 @@ out = "".join("%d\n" % n for n in sorted(found))
 sys.stdout.write(out)
 ' "$_bm_lead" || { echo "pipeline-vcs: batch-members: could not read the issue list" >&2; exit 3; }
 }
+
+# check-approval-sha <n> --require-roles (#848): opt-in, handled here for every
+# provider (the arms ignore unknown flags, which would fail open). Runs the normal
+# verb (a stale label or an unreadable PR exits as it does), then reads the
+# evidence and names every required role whose label is not on the PR. Required =
+# the enabled approval roles, less the review roles `required-roles` skips; an
+# unparsable decision requires every enabled role. `missing role=` is not
+# `stale role=`, so no caller strips a label for it. Exits; --dry-run and a
+# non-numeric PR number fall through to the provider's own handling.
+_vcs_require_roles() {
+  local _n="${ARGS[0]:-}" _a _out _rc _ev _en _rr _sk="" _line _role _label _state _seen=0 _miss=0
+  for _a in "${ARGS[@]}"; do
+    if [ "$_a" = "--evidence-list" ]; then
+      echo "pipeline-vcs: usage: check-approval-sha <n> --require-roles [--stale-list] (not with --evidence-list)" >&2
+      exit 2
+    fi
+  done
+  case "$_n" in '' | *[!0-9]*) return 0 ;; esac
+  [ "$DRY_RUN" != "true" ] || return 0
+  _out="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" check-approval-sha "${ARGS[@]}" ${REPO:+--repo "$REPO"})"; _rc=$?
+  if [ "$_rc" -ne 0 ]; then
+    [ -z "$_out" ] || printf '%s\n' "$_out"
+    exit "$_rc"
+  fi
+  _ev="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" check-approval-sha "$_n" --evidence-list ${REPO:+--repo "$REPO"})" || {
+    echo "pipeline-vcs: check-approval-sha: --require-roles: could not read the approval evidence" >&2
+    exit 1
+  }
+  _vcs_shared_contract_env
+  _en="$(_vcs_enabled_roles "${TALOS_APPROVAL_ROLES[@]}")"
+  _rr="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" required-roles "$_n" ${REPO:+--repo "$REPO"} 2>/dev/null | sed -n '/^required-roles head=/{p;q;}')" || _rr=""
+  if [ -n "$_rr" ]; then
+    _sk="$(printf '%s\n' "$_rr" | tr ' ' '\n' | sed -n 's/^skipped=//p' | head -n 1)"
+    case "$_sk" in -) _sk="" ;; *[!a-z,]*) _sk="" ;; esac
+  fi
+  while IFS= read -r _line; do
+    case "$_line" in "evidence role="*) ;; *) continue ;; esac
+    _seen=$((_seen + 1))
+    _role="${_line#evidence role=}"; _role="${_role%% *}"
+    _label="${_line#* label=}"; _label="${_label%% *}"
+    _state="${_line##* state=}"
+    case ",$_en," in *",$_role,"*) ;; *) continue ;; esac
+    case "$_role" in reviewer | security | adversarial) case ",$_sk," in *",$_role,"*) continue ;; esac ;; esac
+    [ "$_state" != present ] || continue
+    _miss=$((_miss + 1))
+    printf 'missing role=%s label=%s\n' "$_role" "$_label"
+    echo "pipeline-vcs: check-approval-sha: MISSING $_label ($_role)" >&2
+  done <<<"$_ev"
+  if [ "$_seen" -eq 0 ]; then
+    echo "pipeline-vcs: check-approval-sha: --require-roles: the approval evidence listed no role" >&2
+    exit 1
+  fi
+  [ "$_miss" -eq 0 ] || exit 1
+  echo "check-approval-sha: all approval labels are current"
+  exit 0
+}
+if [ "$VERB" = "check-approval-sha" ]; then
+  _rq_keep=() _rq_req=0
+  for _rq_a in ${ARGS[@]+"${ARGS[@]}"}; do
+    if [ "$_rq_a" = "--require-roles" ]; then _rq_req=1; else _rq_keep+=("$_rq_a"); fi
+  done
+  if [ "$_rq_req" -eq 1 ]; then
+    ARGS=(${_rq_keep[@]+"${_rq_keep[@]}"})
+    _vcs_require_roles
+  fi
+fi
 
 _DISPATCH_RC=0
 case "$VERB" in

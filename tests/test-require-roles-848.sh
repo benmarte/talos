@@ -9,6 +9,7 @@
 #   AC4 a disabled role is never required
 #   AC5 every required role fresh: exit 0, all current
 #   AC6 a stale label still exits 1 with its `stale role=` line
+#   AC7 without the flag the verb is unchanged
 #   AC8 --require-roles with --evidence-list: usage error, no pass line
 # Every test runs on stubs under make_sandbox: no GitHub write, no LLM call.
 set -u
@@ -58,15 +59,12 @@ rq "" "qa" --require-roles --stale-list
 assert_exit_code 1 "$RC" "AC2 one fresh label: exit 1"
 assert_eq "reviewer security docs" "$(missing)" "AC2 exactly the absent roles are named"
 
-# AC3: roles.required_when. The verb's own required-roles call reads the head, then
-# the changed files, from the REST queue.
+# AC3: roles.required_when. The verb's own required-roles call reads the head and
+# the changed files; the stub answers the files from STUB_PR_FILES.
 RT='"roles": {"required_when": {"security": ["internal/auth/**"]}}'
 rq3() {  # <changed file>: qa, reviewer and docs fresh, security absent
-  printf '%s\n%s\n' "{\"head\":{\"sha\":\"$SHA\"}}" "[{\"filename\":\"$1\",\"status\":\"modified\"}]" > "$CURL_QUEUE"
-  : > "$CURL_LINK_QUEUE"
-  rq "$RT" "qa reviewer docs" --require-roles --stale-list
+  STUB_PR_FILES="$1" rq "$RT" "qa reviewer docs" --require-roles --stale-list
 }
-# rq rewrites talos.pipeline.json and the queue is read after it, so fill it first.
 rq3 docs/guide.md
 assert_exit_code 0 "$RC" "AC3 no glob matched: the skipped security role is not required"
 assert_eq "" "$(missing)" "AC3 no glob matched: nothing named"
@@ -94,6 +92,11 @@ MARKER_SHA="$OLD" rq "" "qa reviewer security docs" --require-roles --stale-list
 assert_exit_code 1 "$RC" "AC6 stale labels: exit 1"
 assert_contains "$OUT" "stale role=qa label=qa:pass" "AC6 the stale line is printed"
 assert_eq "" "$(missing)" "AC6 a stale label is not reported as missing"
+
+# AC7: without the flag the verb is unchanged: no labels still passes.
+rq "" "" --stale-list
+assert_exit_code 0 "$RC" "AC7 no flag, no labels: exit 0"
+assert_contains "$OUT" "no approval labels present" "AC7 no flag: the verb's own line"
 
 # AC8: --require-roles reads evidence itself, so the two flags cannot combine.
 rq "" "qa reviewer security docs" --require-roles --evidence-list
