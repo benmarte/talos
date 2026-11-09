@@ -287,6 +287,9 @@
 #         not start with `BLOCKED:`, which is PR_OPENED <M> (#647). On `action=merge` it
 #         runs `gate merge`; verdict=merge runs `merge-pr` then `post-merge`
 #         (`merged=pr=<M>`). `run --issue <N>` ends there: `stop merged pr=<M>`.
+#         A gate `redispatch reason=merge-conflict` is the developer's merge-base
+#         round in the same run (`gate fix-round`, fix-round dispatch; a round that
+#         pushes nothing blocks, `stop reason=fix-round-unchanged-head`) (#850).
 #         An untargeted run drains the queue: once `post-merge` reports the
 #         checkout `returned`, `synced` or `kept`, it flushes its output, runs its
 #         exit hooks and execs `$SCRIPT_DIR/talos.sh run` for the next pass (same
@@ -4676,6 +4679,15 @@ _talos_run_loop() {
         _pr="$(sed -n 's/merge pr=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
         _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
         _r="$(bash "$SCRIPT_DIR"/talos.sh gate merge "$_pr" "$_n" 2>/dev/null)"
+        # A merge-conflict redispatch (#850) is the developer's merge-base round,
+        # not a stop; every other redispatch reason keeps the stop below.
+        case "$_r" in
+          verdict=redispatch*)
+            if grep -qx 'reason=merge-conflict' <<<"$_r"; then
+              _talos_run_merge_conflict "$_pr" "$_n"
+              continue
+            fi ;;
+        esac
         case "$_r" in
           "verdict=merge"*)
             _RUN_CI="$(sed -n 's/^ci_runs=//p' <<<"$_r" | head -n 1)"
@@ -5365,6 +5377,27 @@ _talos_run_review_round() {
     _talos_emit stop "reason=fix-round-unchanged-head pr=$_pr issue=$_n"
     _talos_flush; exit 0
   fi
+}
+
+# _talos_run_merge_conflict <pr> <issue> (#850): the merge gate answered
+# `redispatch reason=merge-conflict`. The developer's merge-base round goes
+# through `_talos_run_review_round` (gate fix-round, the fix-round dispatch, the
+# unchanged-head backstop); `next` leased the issue for the merge action, so the
+# round takes no second lease. Its prior stage summary says the PR
+# conflicts with the base and names the conflicting paths when conflict-files
+# can be read.
+_talos_run_merge_conflict() {
+  local _pr="$1" _n="$2" _sum="$_CFG_CACHE_DIR/merge-conflict.summary" _paths="" _l
+  _talos_cap _vcs conflict-files "$_pr"
+  [ "$_RC" -ne 0 ] || _paths="$_OUT"
+  {
+    printf 'PR #%s conflicts with the base branch. Merge the base branch into the PR branch, resolve the conflicts and push.\n' "$_pr"
+    if [ -n "$_paths" ]; then
+      printf '\nConflicting paths:\n'
+      while IFS= read -r _l; do [ -z "$_l" ] || printf -- '- %s\n' "$_l"; done <<<"$_paths"
+    fi
+  } > "$_sum" || _talos_stop scratch-unavailable
+  _talos_run_review_round "$_pr" "$_n" developer "$_sum" 0
 }
 
 # The line that makes a stage comment a review finding (#711), a Python regex

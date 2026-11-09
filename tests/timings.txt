@@ -260,6 +260,7 @@
 51 test-talos-prompt.sh
 144 test-talos-run-drain-docs.sh
 157 test-talos-run-fix-rounds.sh
+30 test-talos-run-merge-conflict-850.sh
 75 test-talos-run-state-reads.sh
 104 test-talos-run.sh
 16 test-talos-state-next.sh
