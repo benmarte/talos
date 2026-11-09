@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: `tests/run-tests.sh --changed` / `--for` also select `test-shard-weights.sh` when a `tests/test-*.sh` is added or `tests/timings.txt` changes, so a missing timings line fails in the developer's own `verify.dev_tests` run instead of in CI.
 
 - fix: `pipeline-vcs.sh view-issue --spec` and `--since-stage` (github, github-api, gitlab, azure) accept a `**PM spec:**` (and, for the delta, `**Agent:**`) comment only from a trusted author (`markers.trusted_authors` and the authenticated user, the set `read-attempt` uses), so a commenter outside it can neither replace the spec nor plant a `## Threat model` line; `markers.verify_authors=false` keeps the old behaviour.
 - fix: QA skips the targeted `run-tests.sh --changed` run when `merge.required_checks` is non-empty (CI is the full run at the head, and the repeat is what timed out QA under load): its prompt gets a `Targeted run skipped:` line and the verdict says `targeted run skipped: CI is the full run (merge.required_checks)`; `qa-run` and the required-checks gate are unchanged, and an empty list, the pre-CI gate shape and the no-runner line behave as before.
