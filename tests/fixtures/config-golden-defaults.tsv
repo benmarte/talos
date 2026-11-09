@@ -114,6 +114,7 @@ review.guide	REVIEW.md	table	talos.sh
 roles.adversarial	false	table	pipeline-status-file.sh:_sf_role_on
 roles.docs	true	table	pipeline-status-file.sh:_sf_role_on
 roles.docs_mode	auto	table	docs
+roles.fix_on_first_findings	false	table	pipeline-status-file.sh:_sf_role_on,talos.sh
 roles.planner	false	table	docs
 roles.pm	true	table	docs
 roles.pm_skip_when_spec_present	true	table	docs

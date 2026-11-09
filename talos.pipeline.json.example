@@ -78,7 +78,8 @@
     "security": true,
     "adversarial": false,
     "docs": true,
-    "planner": false
+    "planner": false,
+    "fix_on_first_findings": false
   },
 
   "docs": {

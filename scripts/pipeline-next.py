@@ -8,7 +8,10 @@ caller's cwd and environment off sys.path). The callers are thin wrappers:
                 owners, in-flight, the priority of the queued and in-flight
                 issues, and the claim filter of #560). Options as
                 `--name value` pairs: vcs roles me merge-auto required-checks
-                pr-draft ready-gate talos-labels base-branch. `ready-gate` is
+                pr-draft ready-gate fix-on-first-findings talos-labels
+                base-branch. `fix-on-first-findings` is `true`
+                (roles.fix_on_first_findings, #833: on a ready PR qa is routed
+                after the review roles too) or empty. `ready-gate` is
                 `qa-local` (pr.ready_gate, #535: on a draft PR qa is routed last,
                 after every other enabled approval) or empty/off.
     pr-side     talos.sh next: the PR-side answer from a state file: an
@@ -197,8 +200,12 @@ def next_stage(n, labels, issue_labels, enabled):
         if rc != 0:
             die('check-approval-sha --evidence-list failed for PR #%d (rc=%d)' % (n, rc))
         lost = set(m.group(1) for m in map(EVIDENCE_LOST_RE.match, out.splitlines()) if m)
+    # #833: with roles.fix_on_first_findings qa is walked after the review roles
+    # on a ready PR as it is on a draft one (below), so a review finding runs its
+    # fix round before qa has spent a run.
+    qa_last = opts.get('fix-on-first-findings') == 'true'
     for role, label in APPROVALS:
-        if draft and role == 'qa':
+        if role == 'qa' and (draft or qa_last):
             continue
         if role in enabled and ((label not in labels and role not in lost) or role in stale):
             return role
@@ -211,6 +218,8 @@ def next_stage(n, labels, issue_labels, enabled):
                 and (('qa:pass' not in labels and 'qa' not in lost) or 'qa' in stale):
             return 'qa'
         return 'ready'
+    if qa_last and 'qa' in enabled and (('qa:pass' not in labels and 'qa' not in lost) or 'qa' in stale):
+        return 'qa'
     if opts.get('required-checks') == 'yes':
         rc, _, _ = vcs('pr-checks-required', str(n))
         if rc != 0:
