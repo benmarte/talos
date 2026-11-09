@@ -70,7 +70,11 @@
 #                                                        grep -l over
 #                                                        tests/test-*.sh)
 #                         scripts/talos-status.sh    -> tests/test-talos-status-line.sh
-#                         tests/test-*.sh            -> itself
+#                         tests/test-*.sh            -> itself, plus
+#                                                        tests/test-shard-weights.sh
+#                                                        when the file is new
+#                                                        (absent at the base ref)
+#                         tests/timings.txt          -> tests/test-shard-weights.sh
 #                         agents/*.md, skills/**, templates/**
 #                                                     -> tests/test-agent-skill-refs.sh
 #                                                        plus any test file
@@ -480,9 +484,11 @@ fi
 TARGETED_ACTIVE=0
 FULL_SUITE=0
 SELECTED_SET=()
+# The base ref --changed diffs against; _map_changed_path also asks it whether
+# a tests/test-*.sh is new (#860), for --for as well.
+_changed_ref="${CHANGED_BASE_REF:-origin/main}"
 
 if [ "$CHANGED_MODE" -eq 1 ]; then
-  _changed_ref="${CHANGED_BASE_REF:-origin/main}"
   if ! git -C "$TALOS_ROOT" rev-parse --verify -q "${_changed_ref}^{commit}" >/dev/null 2>&1; then
     echo "run-tests.sh: --changed: base ref '$_changed_ref' not found; falling back to full suite" >&2
     FULL_SUITE=1
@@ -560,6 +566,14 @@ _map_changed_path() {
       ;;
     tests/test-*.sh)
       _add_selected "$(basename "$p")"
+      # A NEW test needs its tests/timings.txt line, which test-shard-weights.sh
+      # (W1) checks; an unresolvable base ref counts as new, never skipped (#860).
+      if ! git -C "$TALOS_ROOT" cat-file -e "${_changed_ref}:$p" 2>/dev/null; then
+        _add_selected "test-shard-weights.sh"
+      fi
+      ;;
+    tests/timings.txt)
+      _add_selected "test-shard-weights.sh"
       ;;
     scripts/pipeline-*.sh|scripts/pipeline-*.py)
       base="$(basename "$p")"

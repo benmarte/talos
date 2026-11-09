@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: `tests/run-tests.sh --changed` / `--for` also select `test-shard-weights.sh` when a `tests/test-*.sh` is added or `tests/timings.txt` changes, so a missing timings line fails in the developer's own `verify.dev_tests` run instead of in CI.
 
 - fix: QA skips the targeted `run-tests.sh --changed` run when `merge.required_checks` is non-empty (CI is the full run at the head, and the repeat is what timed out QA under load): its prompt gets a `Targeted run skipped:` line and the verdict says `targeted run skipped: CI is the full run (merge.required_checks)`; `qa-run` and the required-checks gate are unchanged, and an empty list, the pre-CI gate shape and the no-runner line behave as before.
 - fix: `pipeline-vcs.sh check-approval-sha <pr> --require-roles` is an opt-in last gate for a merge script: a PR with an absent approval label exits 1 and names each missing role (`missing role=<role> label=<label>`), where the verb alone passes a PR with no labels; the required roles are the enabled ones less those `required-roles` skips, a stale label still exits 1, and without the flag nothing changes; `docs/reference.md` documents it.

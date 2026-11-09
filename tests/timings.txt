@@ -220,6 +220,7 @@
 9 test-run-tests-parallel.sh
 17 test-run-tests-shard.sh
 6 test-run-tests-timings.sh
+3 test-run-tests-timings-select.sh
 27 test-run-verdict-stamp-708.sh
 6 test-runner-conformance.sh
 136 test-runner-failover.sh
