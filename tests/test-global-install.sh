@@ -275,7 +275,9 @@ mkdir -p "$T9_HOME" "$T9_CLAUDE"
 HOME="$T9_HOME" CLAUDE_CONFIG_DIR="$T9_CLAUDE" \
   bash "$TALOS_ROOT/install.sh" --global --no-agent-skills >/dev/null 2>&1
 
-scripts_diff="$(diff -rq "$TALOS_ROOT/scripts" "$T9_HOME/.talos/scripts" 2>&1 || true)"
+# test-approval-sha.sh writes .vcs-hypothetical-catchall.sh.tmp into scripts/ while it
+# runs; in a shard shared with this file it is not part of the install (#835).
+scripts_diff="$(diff -rq -x .vcs-hypothetical-catchall.sh.tmp "$TALOS_ROOT/scripts" "$T9_HOME/.talos/scripts" 2>&1 || true)"
 [ -z "$scripts_diff" ] && pass "--global scripts/ matches repo scripts/ structurally (#276)" \
   || fail "--global scripts/ matches repo scripts/ structurally (#276)" "$scripts_diff"
 

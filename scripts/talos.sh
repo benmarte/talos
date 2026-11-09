@@ -75,7 +75,8 @@
 #                                 | ci-failed | base-synced | conflict-check-unverified
 #                                 | awaiting-human-merge | closing-keyword-unverified
 #            verdict=block      reason=forbidden-files | closing-keyword | pr-body-checklist | siblings-capped
-# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge closing-keyword-unverified forbidden-files closing-keyword pr-body-checklist siblings-capped
+#                                 | roles-decision-mismatch
+# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge closing-keyword-unverified forbidden-files closing-keyword pr-body-checklist siblings-capped roles-decision-mismatch
 #   stop: usage unknown-verb scripts-missing python-missing scratch-unavailable config-unreadable
 #         draft-resolve-failed view-failed labels-unreadable approval-sha-failed
 #         unsupported-verb:<verb> draft-unverified ci-unverified head-unresolved
@@ -1052,6 +1053,108 @@ _talos_role_enabled() {
   esac
 }
 
+# ── roles.required_when (#835) ───────────────────────────────────────────────
+# The decision is made once, by `pipeline-vcs.sh required-roles <pr>`; these
+# helpers only read its line, record it on the PR and narrow what the gate and
+# the review batch wait for. Nothing here re-derives it: a verb that fails or
+# answers something unparsable leaves _RR_OK at 0, which means every enabled
+# role is required (the existing wait on a missing label).
+
+# _talos_rw_set: 0 when roles.required_when is set (a missing or empty map is not).
+# An unreadable config reads as set: the verb then answers config-invalid.
+_talos_rw_set() {
+  local _j
+  _j="$(bash "$SCRIPT_DIR/pipeline-config.sh" roles.required_when 2> /dev/null)" || return 0
+  case "$_j" in '' | '{}' | null) return 1 ;; esac
+  return 0
+}
+
+# _talos_roles_decide <pr>: ask the resolver. Sets _RR_OK (1 only for one parsable
+# line) and _RR_HEAD _RR_ROLES _RR_SKIPPED _RR_REASON _RR_MATCHED _RR_COUNT.
+_RR_OK=0
+_talos_roles_decide() {
+  _RR_OK=0; _RR_HEAD=""; _RR_ROLES=""; _RR_SKIPPED=""; _RR_REASON=""; _RR_MATCHED=""; _RR_COUNT=""
+  _talos_cap _vcs required-roles "$1"
+  [ "$_RC" -eq 0 ] || return 0
+  case "$_OUT" in *$'\n'*) return 0 ;; esac
+  [[ "$_OUT" =~ ^required-roles\ head=([0-9a-f]{40}|[0-9a-f]{64}|-)\ roles=([a-z,-]+)\ skipped=([a-z,-]+)\ reason=([a-z-]+)\ matched=(.*)\ matched_count=([0-9]+)$ ]] || return 0
+  # An unreadable head (`head=-`) cannot be bound to a record: fail closed like
+  # pipeline-next.py, so every enabled role is required.
+  [ "${BASH_REMATCH[1]}" != "-" ] || return 0
+  _RR_HEAD="${BASH_REMATCH[1]}"; _RR_ROLES="${BASH_REMATCH[2]}"; _RR_SKIPPED="${BASH_REMATCH[3]}"
+  _RR_REASON="${BASH_REMATCH[4]}"; _RR_MATCHED="${BASH_REMATCH[5]}"; _RR_COUNT="${BASH_REMATCH[6]}"
+  _RR_OK=1
+}
+
+# _talos_role_needed <role>: the role is enabled and the last decision (when there
+# is one) does not skip it. Only a review role the decision lists as skipped and
+# not as required is ever dropped.
+_talos_role_needed() {
+  [ "$(_talos_role_enabled "$1")" = "true" ] || return 1
+  [ "${_RR_OK:-0}" -eq 1 ] || return 0
+  case "$1" in reviewer | security | adversarial) ;; *) return 0 ;; esac
+  case ",$_RR_ROLES," in *",$1,"*) return 0 ;; esac
+  case ",$_RR_SKIPPED," in *",$1,"*) return 1 ;; esac
+  return 0
+}
+
+# The newest review-roles record of a trusted author in a read-comments object
+# (argv: 1 or 0 for "only trusted authors count", the trusted logins one per line).
+# A record is a whole line, so a path named like one cannot forge it. Prints
+# `<head> <required> <skipped> <reason>`, or nothing.
+_TALOS_RR_PY='
+import json, re, sys
+enforce, trusted = sys.argv[1] == "1", set(sys.argv[2].splitlines())
+rec = re.compile(r"^<!-- talos:review-roles head=([0-9a-f]{40}|[0-9a-f]{64}|-) required=([a-z,-]+) skipped=([a-z,-]+) reason=([a-z-]+) -->$", re.M)
+found = None
+for c in json.load(sys.stdin).get("comments", []):
+    a = c.get("author")
+    if enforce and (a.get("login") if isinstance(a, dict) else None) not in trusted:
+        continue
+    m = rec.findall(c.get("body") or "")
+    if m:
+        found = m[-1]
+if found:
+    print(" ".join(found))
+'
+
+# _talos_roles_record <pr>: decide, and post `**Review roles:**` with the machine
+# line `<!-- talos:review-roles head=.. required=.. skipped=.. reason=.. -->` and
+# the matched paths (at most 20 and a count), unless the newest record of a
+# trusted author already holds this head and decision. Sets _RR_MISMATCH to the
+# roles the PREVIOUS record for this head skips and the new decision requires. A
+# decision that was not made, or comments that cannot be read, record nothing.
+_talos_roles_record() {
+  local _pr="$1" _prev _ph _pq _ps _pre _r _was _body _p _list="" _bt='`' _sq="'"
+  _RR_MISMATCH=""
+  _talos_roles_decide "$_pr"
+  { [ "$_RR_OK" -eq 1 ] && [ "$_RR_HEAD" != "-" ]; } || return 0
+  _was="${_TALOS_TRUST_SOFT:-}"
+  _TALOS_TRUST_SOFT=1; _talos_trust; _TALOS_TRUST_SOFT="$_was"
+  _talos_cap _vcs read-comments "$_pr"
+  [ "$_RC" -eq 0 ] || return 0
+  _prev="$(python3 -I -c "$_TALOS_RR_PY" "$_TRUST_ON" "$_TRUST_SET" <<< "$_OUT" 2> /dev/null)" || return 0
+  if [ -n "$_prev" ]; then
+    read -r _ph _pq _ps _pre <<< "$_prev"
+    if [ "$_ph" = "$_RR_HEAD" ]; then
+      for _r in ${_ps//,/ }; do
+        case ",$_RR_ROLES," in *",$_r,"*) _RR_MISMATCH="${_RR_MISMATCH:+$_RR_MISMATCH,}$_r" ;; esac
+      done
+      [ "$_pq" = "$_RR_ROLES" ] && [ "$_ps" = "$_RR_SKIPPED" ] && [ "$_pre" = "$_RR_REASON" ] && return 0
+    fi
+  fi
+  if [ "$_RR_MATCHED" != "-" ]; then
+    # A path is data: in a code span, with no backtick to end it.
+    while IFS= read -r _p; do
+      _list="${_list}- ${_bt}${_p//$_bt/$_sq}${_bt}"$'\n'
+    done <<< "${_RR_MATCHED//,/$'\n'}"
+  fi
+  _body="**Review roles:** required ${_RR_ROLES}; skipped ${_RR_SKIPPED} (reason: ${_RR_REASON}) at head ${_bt}${_RR_HEAD}${_bt}"$'\n'
+  [ -z "$_list" ] || _body="${_body}"$'\n'"Matched paths (${_RR_COUNT}, at most 20 shown):"$'\n'"${_list}"
+  _body="${_body}"$'\n'"<!-- talos:review-roles head=$_RR_HEAD required=$_RR_ROLES skipped=$_RR_SKIPPED reason=$_RR_REASON -->"
+  _talos_post "$_pr" "$_body"
+}
+
 # The same-area check (#599): one review role blocking the same file in
 # limits.same_area_rounds rounds running needs an owner decision, not another
 # patch. Everything is read from one read-comments object, in list order, from
@@ -1271,7 +1374,7 @@ _talos_gate_missing() {
     _role="${TALOS_APPROVAL_ROLES[$_i]}"
     _label="${TALOS_APPROVAL_LABELS[$_i]%%|*}"
     _i=$((_i + 1))
-    [ "$(_talos_role_enabled "$_role")" = "true" ] || continue
+    _talos_role_needed "$_role" || continue
     _talos_has "$1" "$_label" || _m="${_m:+$_m,}$_label"
   done
   printf '%s' "$_m"
@@ -1377,6 +1480,20 @@ _talos_gate_merge() {
   if _talos_has "$_all" pipeline:blocked; then
     _talos_emit reason blocked-label
     _talos_verdict wait
+  fi
+  # 1b. roles.required_when (#835), only when the repo sets it: the gate asks the
+  # one resolver itself and never reads a recorded decision as input. A recorded
+  # decision for this head that skips a role the resolver now requires is a
+  # disagreement a human clears (the fresh decision is recorded first, so one
+  # clear is enough). A resolver that fails leaves every enabled role required.
+  _RR_OK=0
+  if _talos_rw_set; then
+    _talos_roles_record "$_pr"
+    if [ -n "${_RR_MISMATCH:-}" ]; then
+      _talos_gate_block roles-decision-mismatch "$_pr" "$_n" \
+        "Review roles decision mismatch: the decision recorded for head ${_RR_HEAD} skips ${_RR_MISMATCH}, but the merge gate's own check requires ${_RR_ROLES} (reason: ${_RR_REASON}). The current decision is recorded above; clear pipeline:blocked to continue, with the roles run if they are needed." \
+        "review roles decision mismatch for PR #$_pr"
+    fi
   fi
   if ! _talos_has "$_all" skip-qa; then
     _missing="$(_talos_gate_missing "$_prl")"
@@ -4660,6 +4777,11 @@ _talos_run_dispatch() {
     qa | reviewer | security | adversarial | docs) [ -n "$_pr" ] || _run_fail unknown-act ;;
   esac
 
+  # #835: the review-roles decision is on the PR before a review role runs.
+  case "$_role" in
+    reviewer | security | adversarial) ! _talos_rw_set || _talos_roles_record "$_pr" ;;
+  esac
+
   # 0. The docs stage is dispatched only when docs-relevant files changed: a
   # skip is stamped by the verb itself, so there is nothing left to run. After
   # a fix round the verb names the delta's file instead, and the stage is the
@@ -5192,11 +5314,14 @@ _talos_run_review_fail() {
   # agent.out holds the failing role's final message until the next dispatch.
   { printf '%s findings:\n' "$_role" && cat "$_CFG_CACHE_DIR/agent.out"; } > "$_sum" || _talos_stop scratch-unavailable
   if [ "$_mode" = batch ]; then
+    # #835: a review role the decision skips is not part of the batch.
+    _RR_OK=0
+    ! _talos_rw_set || _talos_roles_decide "$_pr"
     _talos_cap _vcs view-pr "$_pr"
     [ "$_RC" -ne 0 ] || _labels="$(_talos_labels "$_OUT" 2>/dev/null)"
     for _r in reviewer security adversarial; do
       if [ "$_r" = "$_role" ]; then _after=1; continue; fi
-      [ "$_after" -eq 1 ] && [ "$(_talos_role_enabled "$_r")" = "true" ] || continue
+      [ "$_after" -eq 1 ] && _talos_role_needed "$_r" || continue
       if _talos_has "$_labels" "$(_talos_label_of "$_r")"; then
         # The stale list, read once, for the first role that has its label.
         # Exit 1 is both "stale approvals" (the stale lines) and a failed read.

@@ -456,6 +456,7 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `roles.docs_mode` | enum | `auto` | - | any |
 | `roles.planner` | bool | `false` | - | any |
 | `roles.fix_on_first_findings` | bool | `false` | - | any |
+| `roles.required_when.*` | list | - | - | repo |
 
 #### docs.*
 
@@ -1025,7 +1026,7 @@ Identity, resolved once per run: `issues.assignee` when it names a login, else `
 
 | # | Gate | Fails as |
 |---|---|---|
-| 1 | No `pipeline:blocked`; every enabled role's approval label present (a human's `skip-qa` waives only this; a [lost stamp](#approvals-bound-to-the-head-sha) is put back first) | `wait` |
+| 1 | No `pipeline:blocked`; every enabled role's approval label present (a human's `skip-qa` waives only this; a [lost stamp](#approvals-bound-to-the-head-sha) is put back first). With [`roles.required_when`](#risk-based-review-rolesrequired_when) a review role the diff does not need is not waited for, and a recorded decision that skips a role the gate requires blocks (`roles-decision-mismatch`) | `wait` / `block` |
 | 2 | `check-approval-sha`: approvals match the head SHA | `redispatch` |
 | 3 | `check-pr-files`: forbidden files (`skip-qa` never waives) | `block` |
 | 4 | `check-closing-keyword`: closing keyword while sibling PRs are open (`block`); a check that could not look (`talos:closing-keyword-unverified`, `reason=closing-keyword-unverified`: a failed sibling or PR fetch, an unresolved repo, a failed keyword scan) waits and is re-checked next run, with no label and no comment; `siblings-capped` blocks | `block` / `wait` |
@@ -1131,6 +1132,23 @@ jobs:
 ```
 
 Only `!= true`, `== false` or `!draft` (alone or `&&`-combined) counts as a skip. `pipeline-draft-check.sh edit <file> [--write]` prints or applies the minimal diff and never edits an existing job `if:`. Example: `../templates/ci/github-tests.yml`.
+
+### Risk-based review (`roles.required_when`)
+
+By default every PR gets every enabled review role. `roles.required_when.<role>` (repo-only, empty by default) names the paths that make a review role mandatory, so a UI-only or docs-only diff skips the roles that would find nothing in it. Every gate stays: approvals are still bound to the head SHA, `check-approval-sha` and CI are unchanged, and a repo without the key behaves exactly as before.
+
+```json
+{"roles": {"adversarial": true, "required_when": {
+  "security": ["internal/auth/**", "**/migrations/**", "**/*secret*", "docker/**"],
+  "adversarial": ["internal/auth/**", "**/migrations/**", "**/*secret*", "docker/**"]}}}
+```
+
+- **Shape.** Each `roles.required_when.<role>` is a non-empty list of globs, and `<role>` is `reviewer`, `security` or `adversarial` only. `qa` and `docs` are refused (`config-invalid`): QA feeds the `ready-gate` and `ci-parallel` resolvers and always runs.
+- **Matching.** A glob is matched case-insensitively against the whole repo-relative path; `*` crosses `/`, and a `**/` segment matches zero or more directories, so `**/migrations/**` matches `migrations/001.sql` and `**/*secret*` matches `secret.go`.
+- **The rule.** A role with no entry is always required. A role with an entry is skipped only when no changed path matches any glob of any `required_when` entry; any match requires every enabled review role. A role disabled by `roles.<role>: false` stays off.
+- **Fail closed.** Every enabled review role is required when the changed-file list cannot be read or is empty (or has 3000 files, GitHub's cap), a path is absolute or has a `..` segment, a backslash or a control character, a renamed file's previous name cannot be read or matches a glob, the provider is not `github` or `github-api` (`unsupported-provider`), or the value is invalid (not a list, an empty list, an empty or absolute glob, a role other than the three).
+- **One resolver.** `pipeline-vcs.sh required-roles <pr>` prints `required-roles head=<sha> roles=<csv> skipped=<csv or -> reason=<config-absent|no-match|matched|unclassified|unsupported-provider|config-invalid|files-unreadable> matched=<up to 20 paths> matched_count=<n>` and exits 0 whenever it decided. `next` (only with the key set), the review batch and `gate merge` all read that line; a non-zero exit or an unparsable line means every enabled role is required, which is the existing wait on a missing label.
+- **The PR record.** Before a review role is dispatched and at the start of `gate merge`, Talos posts one `**Review roles:**` comment with the matched paths and a machine line `<!-- talos:review-roles head=<sha> required=<csv> skipped=<csv or -> reason=<reason> -->`, and posts again only when the head or the decision changes. The gate never trusts the comment: it recomputes with the verb, and when the newest record of a trusted author for the current head skips a role the recomputation requires, it blocks (`roles-decision-mismatch`) after recording the current decision.
 
 ### Approvals bound to the head SHA
 
