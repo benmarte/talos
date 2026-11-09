@@ -11557,14 +11557,21 @@ _vcs_required_roles() {
     echo "[dry-run] required-roles $_n: read roles.required_when; GET ${_GH_API:-<repo>}/pulls/$_n (head sha) and ${_GH_API:-<repo>}/pulls/$_n/files?per_page=100 (paginated); print the decision"
     return 0
   fi
+  # Literal keys, so the config-key guard sees each one; the table default decides
+  # when the key is unset: enabled when not false (default true) / true (default false).
   for _r in reviewer security adversarial; do
-    local _v
-    _v="$(cfg "roles.$_r" | tr '[:upper:]' '[:lower:]')"
-    if [ "$(_talos_default "roles.$_r")" = "true" ]; then [ "$_v" != "false" ] || continue; else [ "$_v" = "true" ] || continue; fi
+    local _v _d
+    case "$_r" in
+      reviewer) _v="$(cfg roles.reviewer)"; _d="$(_talos_default roles.reviewer)" ;;
+      security) _v="$(cfg roles.security)"; _d="$(_talos_default roles.security)" ;;
+      adversarial) _v="$(cfg roles.adversarial)"; _d="$(_talos_default roles.adversarial)" ;;
+    esac
+    _v="$(printf '%s' "$_v" | tr '[:upper:]' '[:lower:]')"
+    if [ "$_d" = "true" ]; then [ "$_v" != "false" ] || continue; else [ "$_v" = "true" ] || continue; fi
     _en="${_en:+$_en,}$_r"
   done
   # An unreadable config is a decision too: a string is no map, so config-invalid.
-  _rt="$(bash "$SCRIPT_DIR/pipeline-config.sh" roles.required_when "" 2>/dev/null)" || _rt='"unreadable"'
+  _rt="$(bash "$SCRIPT_DIR/pipeline-config.sh" roles.required_when 2>/dev/null)" || _rt='"unreadable"'
   case "$_rt" in '' | '{}' | null) ;; *)
     case "$PROVIDER" in
       github | github-api)

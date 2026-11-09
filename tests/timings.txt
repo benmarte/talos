@@ -198,6 +198,7 @@
 0 test-reference-reasons-documented.sh
 20 test-repo-guides-789.sh
 60 test-rereview-785.sh
+33 test-required-when-835.sh
 57 test-resolve-all.sh
 0 test-restamp-dispatch.sh
 48 test-role-profile-override.sh

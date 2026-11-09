@@ -144,7 +144,7 @@ _sf_role_on roles.fix_on_first_findings && fix_first="true"
 # resolver (`pipeline-vcs.sh required-roles`) per PR. An unreadable config
 # reads as set, so next asks and the verb answers config-invalid (every role).
 required_when="no"
-_sf_rw="$(bash "$SCRIPT_DIR/pipeline-config.sh" roles.required_when "" 2>/dev/null)" || _sf_rw='"unreadable"'
+_sf_rw="$(bash "$SCRIPT_DIR/pipeline-config.sh" roles.required_when 2>/dev/null)" || _sf_rw='"unreadable"'
 case "$_sf_rw" in '' | '{}' | null) ;; *) required_when="yes" ;; esac
 
 # A signal that reaches only this bash waits for the read phase to finish (bash

@@ -110,6 +110,7 @@ TALOS_MARKERS=(
   talos:reviewed
   talos:qa-verdict
   talos:ci-rerun
+  talos:review-roles
   talos:forbidden-files-active
   talos:forbidden-files-defaults-replaced
   talos:closing-keyword-unverified

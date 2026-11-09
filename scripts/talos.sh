@@ -1064,7 +1064,7 @@ _talos_role_enabled() {
 # An unreadable config reads as set: the verb then answers config-invalid.
 _talos_rw_set() {
   local _j
-  _j="$(bash "$SCRIPT_DIR/pipeline-config.sh" roles.required_when "" 2> /dev/null)" || return 0
+  _j="$(bash "$SCRIPT_DIR/pipeline-config.sh" roles.required_when 2> /dev/null)" || return 0
   case "$_j" in '' | '{}' | null) return 1 ;; esac
   return 0
 }
