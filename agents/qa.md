@@ -87,13 +87,9 @@ foreground ends QA: the final message's first line is
    must already be green, when configured). A prompt with a `Targeted run:` line
    means this repo has no `tests/run-tests.sh`: run nothing here, the targeted run
    is the one `qa-run` did through `verify.targeted_commands`, and the verdict
-   reports that. A prompt with a `Targeted run skipped:` line means
-   `merge.required_checks` is non-empty, so CI is the full run at the head: do
-   not run the `run-tests.sh --changed` command below, write
-   `targeted run skipped: CI is the full run (merge.required_checks)` in the
-   verdict, and still wait for the required checks as below; `qa-run` still
-   checks every criterion red/green. With `merge.required_checks` empty the
-   prompt has neither line. Without either line, run ONLY targeted tests, with
+   reports that. A `Targeted run skipped:` line means CI is the full run: skip the
+   `--changed` command below, put that line's wording in the verdict, and still
+   wait for the required checks. Without either line, run ONLY targeted tests, with
    `--strict` so an unmapped path is skipped instead of falling back to the
    full suite (`--for <each path from pr-files>` also works):
    `bash scripts/pipeline-verify.sh --issue <issue-n> --worktree <worktree-path> -- bash tests/run-tests.sh --changed origin/<base-branch> --strict --budget-s <budget-s>`
