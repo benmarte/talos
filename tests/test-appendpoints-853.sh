@@ -200,8 +200,8 @@ assert_eq "$(printf '# Per-file wall seconds\n1 test-alpha.sh\n7 test-base.sh\n3
 
 # ── AC5 docs/reference.md outside the table block, PR-changed generator, defaults conflict ──
 fx_new ac5a
-pr5a() { sed -i.bak 's/^Intro text\.$/Intro from the PR./' docs/reference.md; rm -f docs/reference.md.bak; }
-base5a() { sed -i.bak 's/^Intro text\.$/Intro from the base./' docs/reference.md; rm -f docs/reference.md.bak; }
+pr5a() { sed 's/^Intro text\.$/Intro from the PR./' docs/reference.md > docs/reference.md.new && mv docs/reference.md.new docs/reference.md; }
+base5a() { sed 's/^Intro text\.$/Intro from the base./' docs/reference.md > docs/reference.md.new && mv docs/reference.md.new docs/reference.md; }
 pr_branch pr-65 65 pr5a
 base_commit base5a
 before="$(git rev-parse origin/pr-65)"
@@ -217,7 +217,10 @@ pr5b() {
   regen
 }
 base5b() {
-  defaults_file scripts/pipeline-defaults.sh "mid.base_key${TAB}str${TAB}b${TAB}-${TAB}-${TAB}any"
+  # The base's row goes last in the defaults file (a different spot from the
+  # PR's, so no conflict there) but joins the PR's row in the alpha table, so
+  # only the docs table block conflicts and the generator guard stops the run.
+  defaults_file scripts/pipeline-defaults.sh "" "alpha.base_key${TAB}str${TAB}b${TAB}-${TAB}-${TAB}any"
   regen
 }
 pr_branch pr-66 66 pr5b
