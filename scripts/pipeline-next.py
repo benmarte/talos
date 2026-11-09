@@ -8,12 +8,15 @@ caller's cwd and environment off sys.path). The callers are thin wrappers:
                 owners, in-flight, the priority of the queued and in-flight
                 issues, and the claim filter of #560). Options as
                 `--name value` pairs: vcs roles me merge-auto required-checks
-                pr-draft ready-gate fix-on-first-findings talos-labels
-                base-branch. `fix-on-first-findings` is `true`
+                pr-draft ready-gate fix-on-first-findings required-when
+                talos-labels base-branch. `fix-on-first-findings` is `true`
                 (roles.fix_on_first_findings, #833: on a ready PR qa is routed
                 after the review roles too) or empty. `ready-gate` is
                 `qa-local` (pr.ready_gate, #535: on a draft PR qa is routed last,
-                after every other enabled approval) or empty/off.
+                after every other enabled approval) or empty/off. `required-when`
+                is `yes` when roles.required_when is set (#835): each PR's review
+                roles are then narrowed by `pipeline-vcs.sh required-roles`, the
+                one resolver; no key (`no`), no call.
     pr-side     talos.sh next: the PR-side answer from a state file: an
                 `action=...` line, or the sentinel `issue-side` when no PR answers.
     issue-side  talos.sh next: the issue-side answer (queue walk, routing,
@@ -56,6 +59,9 @@ UNSUPPORTED_RE = re.compile(r'not implemented for provider|unknown verb')
 THREAT_MODEL_RE = re.compile(r'^[ \t]*## Threat model[ \t]*$', re.M)
 APPROVALS = (('qa', 'qa:pass'), ('docs', 'docs:done'), ('reviewer', 'review:approved'),
              ('security', 'security:approved'), ('adversarial', 'adversarial:approved'))
+# The roles roles.required_when may skip (#835): qa and docs never are.
+REVIEW_ROLES = frozenset(('reviewer', 'security', 'adversarial'))
+REQUIRED_ROLES_RE = re.compile(r'^required-roles head=(\S+) roles=(\S+) skipped=(\S+) reason=[a-z-]+ matched=.* matched_count=[0-9]+\Z')
 ROLE_STAGES = tuple(role for role, _ in APPROVALS)
 PRIORITY = {'p0': 0, 'p1': 1, 'p2': 2}
 MAX_PR_LINES = 40    # bounds the per-PR reads: only the lowest-numbered PRs are looked up
@@ -164,6 +170,21 @@ def parse_array(text, what):
 
 
 # ── the stage of a PR, and the action a stage maps to ────────────────────────
+
+def required_enabled(n, head, enabled):
+    """The enabled roles PR `n` needs under roles.required_when (#835): the one
+    resolver is `pipeline-vcs.sh required-roles`. Only a review role the answer
+    skips is dropped; a failed or unparsable answer, or one for another head,
+    drops nothing (every enabled role is required)."""
+    rc, out, _ = vcs('required-roles', str(n))
+    lines = out.splitlines()
+    m = REQUIRED_ROLES_RE.match(lines[0]) if rc == 0 and len(lines) == 1 else None
+    if not m or m.group(1) != head:
+        return enabled
+    needed = set(m.group(2).split(','))
+    skipped = set(m.group(3).split(','))
+    return enabled - ((skipped - needed) & REVIEW_ROLES)
+
 
 def next_stage(n, labels, issue_labels, enabled):
     """First match wins: blocked, then the draft or default order, counting only
@@ -426,7 +447,10 @@ def collect():
     # carries the approval label of every enabled role (and no blocked or
     # needs-owner label) is looked up as well, at most as many as the cap shows (with
     # no role enabled every PR qualifies); only its line can be cut.
-    need = set(label for role, label in APPROVALS if role in enabled)
+    # With roles.required_when (#835) a review role may be skipped, so its label
+    # is no part of that test: a merge-ready PR past the cap is still looked up.
+    by_diff = opts.get('required-when') == 'yes'
+    need = set(label for role, label in APPROVALS if role in enabled and not (by_diff and role in REVIEW_ROLES))
     pending = [e for e in eligible[shown:]
                if need <= e[1] and not ((e[1] | issues.get(e[2], set())) & {BLOCKED_LABEL, NEEDS_OWNER_LABEL})][:shown]
     prs = []
@@ -436,9 +460,12 @@ def collect():
         if rc != 0 or not SHA_RE.match(head):
             die('pr-head failed for PR #%d' % n)
         issue_labels = issues.get(issue, set())
+        pr_enabled = enabled
+        if by_diff and enabled & REVIEW_ROLES and not ({BLOCKED_LABEL} & (labels | issue_labels)):
+            pr_enabled = required_enabled(n, head, enabled)
         prs.append({'n': n, 'issue': issue, 'head': head,
                     'owner': NEEDS_OWNER_LABEL in labels or NEEDS_OWNER_LABEL in issue_labels,
-                    'stage': next_stage(n, labels, issue_labels, enabled)})
+                    'stage': next_stage(n, labels, issue_labels, pr_enabled)})
     # The priority of each queued or in-flight issue that carries a p-label
     # (#601): what `next` and `where` need to put both lists in one order.
     priority = dict((str(n), min(PRIORITY[l] for l in issues[n] if l in PRIORITY))

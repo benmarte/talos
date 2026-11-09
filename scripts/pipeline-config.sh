@@ -1362,6 +1362,10 @@ def _lookup(key, default, no_default):
                 "security-relevant key\n" % key)
             sys.exit(3)
         print(default, end="")
+    elif key == "roles.required_when":
+        # The whole map as JSON (#835): `required-roles` judges its shape itself.
+        import json
+        print(json.dumps(value, separators=(",", ":")), end="")
     elif isinstance(value, bool):
         # Python True/False to "true"/"false", so callers can do
         # [ "$(pipeline-config.sh board.enabled true)" = "true" ]

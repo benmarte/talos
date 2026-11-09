@@ -28,6 +28,9 @@
 #             passed as --ready-gate, #535) a draft PR routes qa last. With
 #             roles.fix_on_first_findings (#833, --fix-on-first-findings true) a
 #             ready PR does too: docs, reviewer, security, adversarial, then qa.
+#             With roles.required_when (#835, --required-when yes) each PR's
+#             review roles are narrowed by `pipeline-vcs.sh required-roles`; --roles
+#             still lists every enabled role, qa and docs are never gated.
 #   ignored   open PRs with a pipeline-style branch and no Talos label, from a fork
 #   blocked   [["PR"|"issue", n], ...] carrying pipeline:blocked
 #   queued    open issues labelled pipeline:ready, p0 p1 p2 unlabelled, then number
@@ -137,6 +140,12 @@ _sf_role_on roles.adversarial && roles="${roles}adversarial,"
 [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ready-gate 2>/dev/null)" = "qa-local" ] && ready_gate="qa-local"
 # roles.fix_on_first_findings (#833, default false): qa is routed after the review roles.
 _sf_role_on roles.fix_on_first_findings && fix_first="true"
+# roles.required_when (#835): only whether the key is set; next asks the one
+# resolver (`pipeline-vcs.sh required-roles`) per PR. An unreadable config
+# reads as set, so next asks and the verb answers config-invalid (every role).
+required_when="no"
+_sf_rw="$(bash "$SCRIPT_DIR/pipeline-config.sh" roles.required_when "" 2>/dev/null)" || _sf_rw='"unreadable"'
+case "$_sf_rw" in '' | '{}' | null) ;; *) required_when="yes" ;; esac
 
 # A signal that reaches only this bash waits for the read phase to finish (bash
 # runs its trap after the foreground command), bounded by the read deadline; one
@@ -155,5 +164,5 @@ case "${TALOS_CLAIM_STATE:-}" in on:?*) me="${TALOS_CLAIM_STATE#on:}" ;; esac
 
 python3 -I "$SCRIPT_DIR/pipeline-next.py" collect \
   --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --roles "$roles" --me "$me" \
-  --merge-auto "$auto" --required-checks "$checks" --pr-draft "$draft" --ready-gate "$ready_gate" --fix-on-first-findings "$fix_first" \
+  --merge-auto "$auto" --required-checks "$checks" --pr-draft "$draft" --ready-gate "$ready_gate" --fix-on-first-findings "$fix_first" --required-when "$required_when" \
   --talos-labels "$talos_labels" --base-branch "$BASE_BRANCH" </dev/null

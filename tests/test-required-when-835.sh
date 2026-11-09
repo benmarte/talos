@@ -274,9 +274,10 @@ gate_reset; set_stub required-roles 0 "required-roles head=$OTHER roles=reviewer
 set_stub read-comments 0 "$(rec_comment "$SHA" reviewer security,adversarial no-match)"
 gm
 assert_eq "1" "$(called comment-pr)" "AC7 a new head posts a new comment"
-gate_reset; set_stub required-roles 0 "$DEC_YES"; set_stub read-comments 0 "$(rec_comment "$SHA" reviewer security,adversarial no-match)"
+gate_reset; set_stub required-roles 0 "$DEC_NO"; set_stub read-comments 0 "$(rec_comment "$SHA" reviewer,security,adversarial - matched)"
 gm
 assert_eq "1" "$(called comment-pr)" "AC7 a changed decision at the same head posts a new comment"
+assert_contains "$(cat "$STUB_DIR/bodies")" "reason=no-match -->" "AC7 the new comment carries the new decision"
 
 # AC8: the recorded decision skips a role the gate's own recomputation requires.
 gate_reset; set_stub required-roles 0 "$DEC_YES"

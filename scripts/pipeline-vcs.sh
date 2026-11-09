@@ -275,6 +275,28 @@
 #                                             API), azure (#304, last iteration's
 #                                             changes); a failed fetch exits 1.
 #                                             file mode fails open (empty stdout).
+#   required-roles <n>                        (#835) Which review roles (reviewer,
+#                                             security, adversarial) the PR needs,
+#                                             the one resolver of roles.required_when.
+#                                             One stdout line: `required-roles
+#                                             head=<sha> roles=<csv> skipped=<csv|->
+#                                             reason=<config-absent|no-match|matched|
+#                                             unclassified|unsupported-provider|
+#                                             config-invalid|files-unreadable>
+#                                             matched=<up to 20 paths|-> matched_count=<n>`.
+#                                             roles= is every enabled review role
+#                                             unless the key is set and no changed
+#                                             path matches any glob of any entry:
+#                                             then the roles that have an entry are
+#                                             skipped. Fails closed: an unreadable or
+#                                             empty file list, a path that is absolute
+#                                             or has `..`, a backslash or a control
+#                                             character, a rename whose previous name
+#                                             matches, a provider other than github /
+#                                             github-api, or an invalid value require
+#                                             every enabled role. Exit 0 whenever it
+#                                             decided; a caller that gets another exit
+#                                             or an unparsable line requires every role.
 #   check-pr-body <n>                         Exit 0 when the PR body has a `Positive
 #                                             controls:` section and an `AC to test
 #                                             map:` section, each with text; exit 1
@@ -11429,6 +11451,132 @@ if [ "$VERB" = "conflict-files" ]; then
   exit $?
 fi
 
+# ── required-roles (#835) ─────────────────────────────────────────────────────
+# The one resolver of roles.required_when: pipeline-next.py, talos.sh (the run
+# loop and the merge gate) and the PR record all read this line and none derives
+# it again. stdin: the PR's changed files as the REST JSON array (filename, status,
+# previous_filename); env: RR_ENABLED (the enabled review roles, comma-joined),
+# RR_HEAD, RR_CONFIG (roles.required_when as JSON, empty when unset), RR_PROVIDER_OK
+# and RR_FILES_OK (1 when the provider is github / the files were read).
+_VCS_REQUIRED_ROLES_PY='
+import fnmatch, itertools, json, os, re, sys, unicodedata
+
+REVIEW = ("reviewer", "security", "adversarial")
+enabled = [r for r in REVIEW if r in os.environ.get("RR_ENABLED", "").split(",")]
+head = os.environ.get("RR_HEAD", "")
+if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head):
+    head = "-"
+
+def say(roles, skipped, reason, matched=()):
+    m = list(matched)
+    print("required-roles head=%s roles=%s skipped=%s reason=%s matched=%s matched_count=%d" % (
+        head, ",".join(roles) or "-", ",".join(skipped) or "-", reason, ",".join(m[:20]) or "-", len(m)))
+    sys.exit(0)
+
+def every(reason, matched=()):
+    say(enabled, [], reason, matched)
+
+def clean(p):
+    if not isinstance(p, str) or not p or p.startswith("/") or "\\" in p:
+        return False
+    if any(unicodedata.category(c) in ("Cc", "Cf", "Cs", "Co", "Cn") for c in p):
+        return False
+    return ".." not in p.split("/")
+
+def config(text):
+    try:
+        cfg = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    for role, globs in cfg.items():
+        if role not in REVIEW or not isinstance(globs, list) or not globs:
+            return None
+        for g in globs:
+            if not clean(g) or g != g.strip() or g.count("**/") > 6:
+                return None
+    return cfg
+
+def variants(g):
+    # A `**` segment also matches zero directories: `**/x` matches `x`, `a/**/b` matches `a/b`.
+    segs = g.split("/")
+    opt = [i for i, s in enumerate(segs) if s == "**" and i < len(segs) - 1]
+    for keep in itertools.product((True, False), repeat=len(opt)):
+        drop = set(i for i, k in zip(opt, keep) if not k)
+        yield "/".join(s for i, s in enumerate(segs) if i not in drop)
+
+text = os.environ.get("RR_CONFIG", "").strip()
+if text in ("", "null", "{}"):
+    every("config-absent")
+if os.environ.get("RR_PROVIDER_OK") != "1":
+    every("unsupported-provider")
+entries = config(text)
+if entries is None:
+    every("config-invalid")
+globs = [v.lower() for gl in entries.values() for g in gl for v in variants(g)]
+
+def hits(path):
+    low = path.lower()
+    return any(fnmatch.fnmatchcase(low, g) for g in globs)
+
+if os.environ.get("RR_FILES_OK") != "1":
+    every("files-unreadable")
+try:
+    files = json.loads(sys.stdin.read())
+except ValueError:
+    files = None
+# GitHub lists at most 3000 files of a PR: a list that long may be cut short.
+if not isinstance(files, list) or not files or len(files) >= 3000:
+    every("files-unreadable")
+paths = []
+for f in files:
+    p = f.get("filename") if isinstance(f, dict) else None
+    if not clean(p):
+        every("unclassified")
+    prev = f.get("previous_filename")
+    if f.get("status") in ("renamed", "copied") or prev is not None:
+        if not clean(prev) or hits(prev):
+            every("unclassified")
+    paths.append(p)
+matched = [p for p in dict.fromkeys(paths) if hits(p)]
+if matched:
+    every("matched", matched)
+say([r for r in enabled if r not in entries], [r for r in enabled if r in entries], "no-match")
+'
+
+# required-roles <n>: see the usage header. Handled before the provider dispatch,
+# so gitlab, azure and file answer too (every role, reason unsupported-provider).
+_vcs_required_roles() {
+  local _n="${ARGS[0]-}" _rt _r _en="" _head="" _files="[]" _pok=0 _fok=0
+  case "$_n" in
+    '' | *[!0-9]*) echo "pipeline-vcs: required-roles: PR number must be numeric (got '$_n')" >&2; exit 1 ;;
+  esac
+  case "$PROVIDER" in github | github-api) _gh_init ;; esac
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] required-roles $_n: read roles.required_when; GET ${_GH_API:-<repo>}/pulls/$_n (head sha) and ${_GH_API:-<repo>}/pulls/$_n/files?per_page=100 (paginated); print the decision"
+    return 0
+  fi
+  for _r in reviewer security adversarial; do
+    local _v
+    _v="$(cfg "roles.$_r" | tr '[:upper:]' '[:lower:]')"
+    if [ "$(_talos_default "roles.$_r")" = "true" ]; then [ "$_v" != "false" ] || continue; else [ "$_v" = "true" ] || continue; fi
+    _en="${_en:+$_en,}$_r"
+  done
+  # An unreadable config is a decision too: a string is no map, so config-invalid.
+  _rt="$(bash "$SCRIPT_DIR/pipeline-config.sh" roles.required_when "" 2>/dev/null)" || _rt='"unreadable"'
+  case "$_rt" in '' | '{}' | null) ;; *)
+    case "$PROVIDER" in
+      github | github-api)
+        _pok=1
+        _head="$(_gh_pull_cached "$_n" 2>/dev/null | _gh_field head.sha 2>/dev/null)" || _head=""
+        if _files="$(_gh_pages "$_GH_API/pulls/$_n/files?per_page=100" 2>/dev/null)"; then _fok=1; else _files="[]"; fi ;;
+    esac ;;
+  esac
+  printf '%s' "$_files" | RR_ENABLED="$_en" RR_HEAD="$_head" RR_CONFIG="$_rt" RR_PROVIDER_OK="$_pok" RR_FILES_OK="$_fok" \
+    python3 -I -c "$_VCS_REQUIRED_ROLES_PY"
+}
+
 # ── Main dispatch ─────────────────────────────────────────────────────────────
 _vcs_dispatch_provider() {
   case "$PROVIDER" in
@@ -11569,6 +11717,7 @@ _vcs_pr_checks_required_dispatch() {
 _DISPATCH_RC=0
 case "$VERB" in
   pr-checks-required) _vcs_pr_checks_required_dispatch ;;
+  required-roles) _vcs_required_roles ;;
   pr-is-draft|pr-ci-runs|pr-closes-issue|ready-pr|draft-pr) _vcs_draft_gate_dispatch ;;
   create-pr) if [ "$_PR_DRAFT" = "true" ]; then _vcs_draft_gate_dispatch; else _vcs_dispatch_provider; fi ;;
   *) _vcs_dispatch_provider ;;
