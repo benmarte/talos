@@ -191,6 +191,7 @@
 15 test-qa-guard-693.sh
 5 test-qa-no-runner-824.sh
 5 test-qa-restore-stub-mode-821.sh
+5 test-qa-skip-rule-866.sh
 5 test-qa-skip-targeted-859.sh
 5 test-qa-run-merged-base-658.sh
 33 test-qa-run.sh
