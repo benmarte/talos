@@ -2891,7 +2891,7 @@ _talos_prompt() {
       fi
       _talos_pv QA_CI_STEP ""
       if [ "$_skip" = 1 ] && [ "$_v" != pre-ci ]; then
-        _talos_pv QA_TARGETED_LINE "Targeted run skipped: \`merge.required_checks\` is set, so CI is the full run at the head. Do not run the step 2 \`run-tests.sh --changed\` command; write \`targeted run skipped: CI is the full run (merge.required_checks)\` in the verdict. \`qa-run\` still checks every criterion red/green, and the required-checks gate is unchanged."
+        _talos_pv QA_TARGETED_LINE "Targeted run skipped: \`merge.required_checks\` is set, so CI is the full run at the head. Run no \`tests/run-tests.sh\` command of any form (not the step 2 \`run-tests.sh --changed\`, not \`--for\`, no pattern, no full suite, not through \`pipeline-verify.sh\`); write \`targeted run skipped: CI is the full run (merge.required_checks)\` in the verdict. \`qa-run\` still checks every criterion red/green, and the required-checks gate is unchanged."
       fi
       if [ "$_v" = pre-ci ]; then
         _talos_pv REQUIRED_CHECKS_LINE ""
