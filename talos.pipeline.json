@@ -14,7 +14,7 @@
       "pipeline:blocked",
       "wontfix"
     ],
-    "max_parallel": 4
+    "max_parallel": 2
   },
   "roles": {
     "validator": true,
@@ -22,7 +22,19 @@
     "qa": true,
     "reviewer": true,
     "security": true,
-    "docs": true
+    "docs": true,
+    "fix_on_first_findings": true,
+    "required_when": {
+      "security": [
+        "scripts/**",
+        "install.sh",
+        "agents/**",
+        "skills/**",
+        "templates/**",
+        ".github/**",
+        "talos.pipeline.json"
+      ]
+    }
   },
   "verify": {
     "commands": [
@@ -31,8 +43,11 @@
       "bash tests/run-tests.sh --quiet --shard 3/4",
       "bash tests/run-tests.sh --quiet --shard 4/4"
     ],
-    "qa_mode": "local",
-    "timeout_ms": 600000
+    "qa_mode": "ci",
+    "timeout_ms": 600000,
+    "dev_tests": [
+      "bash tests/run-tests.sh --changed origin/main --strict --quiet"
+    ]
   },
   "merge": {
     "method": "squash",
