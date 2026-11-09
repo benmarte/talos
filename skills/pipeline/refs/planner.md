@@ -36,6 +36,7 @@ Spawn `bash scripts/talos.sh prompt planner --issue <N> --title-file .talos/plan
      ```
      Non-zero: report, set `pipeline:blocked`, no sub-issue recorded.
    - **Dependent sub-task** (`Depends on: <j>`): NO `pipeline:ready` (the sweep unblocks it later via the body's `Depends on: #<PREV>` line); `--label epic:<N>` only.
+   - **Batch member** (`Batch into: <j>`, #834): create the lead `<j>` first, as above. The member's body is `<Context>`, `Batched into: #<LEAD>` and `Part of #<N>`; `--label epic:<N>` only, NO `pipeline:ready` (`next` answers `wait reason=batched` while the lead is open). The lead's one branch and PR close the lead and every member (`pipeline-vcs.sh batch-members <LEAD>` lists them).
    - Capture each `SUB_N`; record planner-index to issue-number (fills the next `Depends on:`).
 2. Label the epic: `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:epic-decomposed --remove pipeline:confirmed`.
 3. The epic is done for this run (skip 3b and 3c). Comment on it (`SUB_LIST` = the sub-issue numbers only): `bash scripts/pipeline-vcs.sh comment-issue <N> "**Planner:** decomposed into sub-issues: $SUB_LIST"` (non-zero: say so in the relay, never assert it was posted).

@@ -53,6 +53,8 @@ STALE_RE = re.compile(r'^stale role=([a-z]+) label=')
 EVIDENCE_LOST_RE = re.compile(r'^evidence role=([a-z]+) label=\S+ state=lost$')
 UNSUPPORTED_RE = re.compile(r'not implemented for provider|unknown verb')
 # The line that marks a spec the design-mode security pass has been through (#837).
+# A member of a batch (#834): one line naming its lead, the number not followed by a digit.
+BATCHED_RE = re.compile(r'^[ \t]*Batched into:[ \t]*#([0-9]+)(?![0-9])', re.M)
 THREAT_MODEL_RE = re.compile(r'^[ \t]*## Threat model[ \t]*$', re.M)
 APPROVALS = (('qa', 'qa:pass'), ('docs', 'docs:done'), ('reviewer', 'review:approved'),
              ('security', 'security:approved'), ('adversarial', 'adversarial:approved'))
@@ -745,20 +747,25 @@ def issue_side(data, o):
     # A `Depends on: #<N>` line whose issue is still open gates the candidate
     # (#471, AC2); only with roles.planner = true. An unreadable dependency is
     # treated as open (fail closed: the issue is not chosen on a failed read).
+    def is_open(num):
+        rc, out, err = run_vcs('view-issue', num)
+        if rc != 0:
+            if UNSUPPORTED_RE.search(err):
+                raise Stop('unsupported-verb:view-issue')
+            return True
+        try:
+            return json.loads(out).get('state') != 'closed'
+        except ValueError:
+            return True
+
     def dep_gated(body):
-        for d in re.findall(r'Depends on:\s*#([0-9]+)', body):
-            rc, out, err = run_vcs('view-issue', d)
-            if rc != 0:
-                if UNSUPPORTED_RE.search(err):
-                    raise Stop('unsupported-verb:view-issue')
-                return True
-            try:
-                st = json.loads(out).get('state')
-            except ValueError:
-                return True
-            if st != 'closed':
-                return True
-        return False
+        return any(is_open(d) for d in re.findall(r'Depends on:\s*#([0-9]+)', body))
+
+    # A member of a batch (#834) rides its lead's branch and PR: while the lead
+    # is open (an unreadable lead counts as open) no stage is dispatched onto it.
+    def batched(body):
+        m = BATCHED_RE.search(body)
+        return bool(m) and is_open(m.group(1))
 
     # Adoption (#471, AC9): a queued issue with an open pipeline PR is resumed
     # at the PR blocking stage (the stage the collect already computed for it).
@@ -786,6 +793,8 @@ def issue_side(data, o):
         if n in queued:
             adopt(n)
         labels, body = view_issue(n)
+        if batched(body):
+            say('wait', reason='batched')
         # The developer leaves its issue with no pipeline label once the PR is
         # open (agents/developer.md step 8): the PR owns the work. Only an
         # explicit developer label keeps the fix-round routing of route().
@@ -822,6 +831,7 @@ def issue_side(data, o):
     owner_wait = bool(blocked or owners or any(p.get('owner') for p in prs))
     cap = None
     dep_blocked = False
+    batched_wait = False
     ready_wait = ''  # the wait a ready candidate's own routing answered: it ends the ready walk
     # The ready issues whose expected files overlap an issue in flight (held or
     # leased) go behind the others of their priority (#830). Nothing is read
@@ -855,6 +865,9 @@ def issue_side(data, o):
                 continue
             if label_filter != READY_LABEL and label_filter not in labels:
                 continue
+            if batched(body):
+                batched_wait = True
+                continue
             if planner_on and dep_gated(body):
                 dep_blocked = True
                 continue
@@ -871,6 +884,8 @@ def issue_side(data, o):
         say('wait', reason='cap')
     if ready_wait:
         say_line(ready_wait)
+    if batched_wait:
+        say('wait', reason='batched')
     if dep_blocked:
         say('wait', reason='dependency')
     say('wait', reason='none')

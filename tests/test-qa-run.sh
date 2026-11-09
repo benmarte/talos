@@ -405,7 +405,8 @@ new_repo
 spec '**Tests:** `tests/test-greet.sh`'
 usable
 assert_eq "0:spec-usable: ok" "$URC:$UOUT" "AC7 spec-usable: a usable spec is ok, exit 0"
-assert_eq "view-issue 7 --spec" "$(cat "$QA_VCS_LOG" 2>/dev/null)" "AC7 spec-usable: the spec read is its one VCS call (no checkout)"
+assert_eq "view-issue 7 --spec
+batch-members 7" "$(cat "$QA_VCS_LOG" 2>/dev/null)" "AC7 spec-usable: the spec read and the batch-members read (#834) are its only VCS calls (no checkout)"
 assert_file_absent "$SHIM/git.log" "AC7 spec-usable: a usable spec runs no git command"
 assert_file_absent "$RAN_MARKER" "AC7 spec-usable: a usable spec runs no test"
 

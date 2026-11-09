@@ -733,7 +733,7 @@ for ident, text in items:
 # found (the `Tests:` line), suite_ids (#813) and spec_why: empty for a usable
 # spec, else the fixed text of the fault. No git command, no test.
 _spec_usable() {
-  local issue="$1" spec="$2" n
+  local issue="$1" spec="$2" n m members out rc
   table=""; paths=(); filters=(); refused=""; found=0; spec_why=""; suite_ids=""
   if ! bash "$SCRIPT_DIR/pipeline-vcs.sh" view-issue "$issue" --spec 2>/dev/null | python3 -I -c "$_QA_SPEC_PY" > "$spec" || [ ! -s "$spec" ]; then
     spec_why="unreadable for issue #$issue"; return 1
@@ -750,6 +750,18 @@ _spec_usable() {
     n="$(printf '%s\n' "$suite_ids" | wc -l | tr -d ' ')"
     spec_why="$n criteria describe the test suite or the diff, not behaviour"; return 1
   fi
+  # #834: a lead's batch members are checked by the lead's one criteria list, so
+  # each member needs a criterion naming it (#<m>). The verb exits 3 when it read
+  # and failed, which is not "no members"; any other failure (a provider without
+  # the verb) behaves as unbatched.
+  out="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" batch-members "$issue" 2>/dev/null)" && rc=0 || rc=$?
+  [ "$rc" -ne 3 ] || { spec_why="batch members unreadable for issue #$issue"; return 1; }
+  members=""
+  [ "$rc" -ne 0 ] || members="$(printf '%s\n' "$out" | grep -E '^[0-9]+$')" || members=""
+  for m in $members; do
+    grep -Eq "^[[:space:]]*[-*][[:space:]]+\[[ xX]\].*#$m([^0-9]|\$)" "$spec" \
+      || { spec_why="batch member #$m has no criterion"; return 1; }
+  done
 }
 
 # spec-usable ISSUE (#610): one line; exit 4 for an unusable spec.

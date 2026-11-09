@@ -34,6 +34,7 @@
 7 test-azure-write-verbs-quiet-783.sh
 27 test-bare-path-guard-721.sh
 1 test-bash3-lint.sh
+12 test-batching-834.sh
 0 test-blocked-label-ownership.sh
 20 test-blocked-template-resume.sh
 22 test-board-cache.sh
