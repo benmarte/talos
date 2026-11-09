@@ -71,7 +71,7 @@ case_run() {  # <name>: collect once, one assertion per case
 import json, sys
 print(" ".join("%d=%s" % (p["n"], p["stage"]) for p in json.load(sys.stdin)["prs"]))')"
   for w in "${CASE_WANT[@]}"; do
-    assert_eq "${w%%:*}" "$(printf '%s\n' "$stages" | tr ' ' '\n' | grep "^${w%%=*}=")" "$1: ${w#*:}"
+    assert_eq "${w%%:*}" "$(printf '%s\n' "$stages" | tr ' ' '\n' | grep "^${w%%=*}=")" "${w#*:} [$1]"
   done
   assert_eq "" "$(cat "$FX/writes.log" 2>/dev/null)" "$1: collect made no write"
 }
