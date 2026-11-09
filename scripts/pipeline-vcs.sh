@@ -3518,6 +3518,32 @@ if base_ref_name:
     except Exception:
         pr_own_files = None  # fail-open
 
+# A file both the PR and the base touched stays in pr_own_files, so a base merge
+# that only appended a line to it (tests/timings.txt, CHANGELOG.md) would stale
+# the approval. Skip it only when the file at the head is identical (mode and
+# blob) to the file in the clean merge of the marker with the base commit the
+# head already contains: then the base is the only thing that changed it. A
+# conflicting merge or any git failure keeps the file changed (fail-closed).
+def git_out(*args):
+    r = subprocess.run(['git'] + list(args), capture_output=True, text=True,
+                       cwd=_own_root, timeout=30)
+    if r.returncode != 0:
+        raise RuntimeError('git ' + args[0] + ' failed')
+    return r.stdout
+
+def changed_only_by_base(path, marker_sha, head):
+    try:
+        base_in_head = git_out('merge-base', 'origin/' + base_ref_name, head).strip()
+        if not base_in_head:
+            return False
+        merged_tree = git_out('merge-tree', '--write-tree', '--no-messages',
+                              marker_sha, base_in_head).splitlines()[0].strip()
+        want = git_out('ls-tree', '-z', merged_tree, '--', path)
+        got = git_out('ls-tree', '-z', head, '--', path)
+        return bool(want) and want == got
+    except Exception:
+        return False
+
 try:
     marker_data = json.loads(os.environ.get('MARKER_ENTRIES', '') or '{}')
 except Exception:
@@ -3576,6 +3602,7 @@ for entry in entries:
     # If pr_own_files is None (three-dot diff unavailable) the filter is skipped.
     if pr_own_files is not None:
         changed = [f for f in changed if f in pr_own_files]
+        changed = [f for f in changed if not changed_only_by_base(f, found_sha, head_sha)]
 
     # First check hard-coded non-waivable paths (checked before the config waiver -- config cannot override)
     blocked = [p for p in changed if is_hardcoded_nonwaivable(p)]

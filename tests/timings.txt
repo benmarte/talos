@@ -9,6 +9,7 @@
 39 test-appendpoints-853.sh
 15 test-assign-pr-775.sh
 28 test-approval-markers.sh
+4 test-approval-sha-base-merge-862.sh
 67 test-approval-sha.sh
 1 test-assert-sync-worktrees.sh
 3 test-assert-sync.sh
