@@ -15,6 +15,9 @@ CRIT="$TALOS_ROOT/scripts/pipeline-criteria.sh"
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "azure", "repo": "widget", "azure": {"org_url": "https://dev.azure.com/acme", "project": "proj"}}}
 EOF
+# The stage comments below are authored by a@acme.com: that is the signed-in user,
+# so they are accepted as stage comments (#847; the trust set read-attempt uses).
+export STUB_CURRENT_USER=a@acme.com
 git config user.email "test@talos.invalid"
 git config user.name "talos-test"
 

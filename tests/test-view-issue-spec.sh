@@ -22,6 +22,9 @@ make_sandbox
 use_stubs
 
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
+# The fixture comments are authored by `x`: that is the authenticated user, so a
+# stage comment is accepted from its author (#847; the trust set read-attempt uses).
+export STUB_CURRENT_USER=x
 
 PM_SPEC_BODY='**PM spec:**
 - **Goal** compact stage handoff
