@@ -167,6 +167,7 @@ roles.adversarial	bool	false	-	-	any
 roles.docs	bool	true	-	-	any
 roles.docs_mode	enum	auto	-	-	any
 roles.planner	bool	false	-	-	any
+roles.fix_on_first_findings	bool	false	-	-	any
 docs.paths	list	README.md\ndocs/*\nscripts/pipeline-defaults.sh	-	-	any
 comments.enabled	bool	true	-	-	any
 comments.header	str	**Agent:** {role} (talos)	-	-	any

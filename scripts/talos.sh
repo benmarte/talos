@@ -3454,7 +3454,13 @@ _talos_done() {
       validator | developer) _next=stop ;;
       reviewer | security | adversarial)
         # A draft review batch is one fix round for every finding, run by the caller.
-        if [ "$_draft" -eq 1 ]; then _next=batch; else _next="fix-round stage=$_role"; fi ;;
+        # So is a ready PR's with roles.fix_on_first_findings (#833): the other
+        # review roles finish on this head, QA is not part of the batch.
+        if [ "$_draft" -eq 1 ] || [ "$(cfg roles.fix_on_first_findings | tr '[:upper:]' '[:lower:]')" = true ]; then
+          _next=batch
+        else
+          _next="fix-round stage=$_role"
+        fi ;;
       # #590: a docs RESTAMP_FAIL is no developer round: docs:done is gone, so
       # the next pass finds no label and runs the full docs stage.
       docs) : ;;
