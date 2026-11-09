@@ -15,6 +15,9 @@ CRIT="$TALOS_ROOT/scripts/pipeline-criteria.sh"
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "azure", "repo": "widget", "azure": {"org_url": "https://dev.azure.com/acme", "project": "proj"}}}
 EOF
+# The stage comments below are authored by a@acme.com: that is the signed-in user,
+# so they are accepted as stage comments (#847; the trust set read-attempt uses).
+export STUB_CURRENT_USER=a@acme.com
 git config user.email "test@talos.invalid"
 git config user.name "talos-test"
 
@@ -144,6 +147,7 @@ unset STUB_AZURE_WI_COMMENTS
 # ── AC7: spec-usable / ids / qa-run see a spec that came through comment-issue
 export STUB_AZURE_STATE_DIR="$SANDBOX/state7"; mkdir -p "$STUB_AZURE_STATE_DIR"
 export STUB_AZURE_POST_AUTHOR="bot@acme.com"
+export STUB_CURRENT_USER="bot@acme.com"   # the signed-in user posted the spec (#847)
 export STUB_AZURE_WI_COMMENTS='{"comments":[]}'
 SPEC_MD='**PM spec:** posted through comment-issue.
 

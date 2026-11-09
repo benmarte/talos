@@ -79,7 +79,10 @@
 #                                             read-comments path -- no new fetches.
 #                                             Runs on github, github-api, gitlab and
 #                                             azure; file mode falls back to plain
-#                                             view-issue with a stderr note.
+#                                             view-issue with a stderr note. A stage
+#                                             comment counts only from a trusted author
+#                                             (markers.trusted_authors and the
+#                                             authenticated user, as read-attempt; #847).
 #             <n> --since-stage               Delta form for the PM and validator (#548):
 #                                             {title, body, labels, comments,
 #                                             earlier_comments}, where comments holds
@@ -91,7 +94,8 @@
 #                                             (read them with read-comments). With no
 #                                             stage comment yet, every human comment
 #                                             is new. Same read as --spec; same
-#                                             fallback on gitlab, azure and file mode.
+#                                             fallback on gitlab, azure and file mode;
+#                                             same trusted-authors-only stage comments.
 #   comment-issue <n> <body>                  Post comment on issue <n>
 #                 <n> --body-file <path|->    ...or read the body from a file, or from
 #                                             stdin with "-" (heredoc; #342)
@@ -1538,6 +1542,21 @@ _vi_pm_header() {
   _h="$(cfg comments.header 2>/dev/null)" || _h=""
   printf '%s' "${_h//\{role\}/pm}"
 }
+# _vi_trust_load <resolver-cmd> [args...] (#847)
+#   Resolves the trust inputs exactly as each adapter's read-attempt does
+#   (markers.trusted_authors, markers.verify_authors, _vcs_shared_reader_identity
+#   with the adapter's own login resolver) into the environment the filters'
+#   shared trust python reads: TRUSTED_AUTHORS, VERIFY_AUTHORS, CURRENT_USER,
+#   CURRENT_USER_REFUSED, TALOS_CFG. Used on the --spec / --since-stage path only.
+_vi_trust_load() {
+  TRUSTED_AUTHORS="$(cfg markers.trusted_authors)"
+  VERIFY_AUTHORS="$(cfg markers.verify_authors)"
+  _vcs_shared_reader_identity "$VERIFY_AUTHORS" "$@"
+  CURRENT_USER="$_RID_USER"
+  CURRENT_USER_REFUSED="$_RID_REFUSED"
+  TALOS_CFG="$_TALOS_CFG"
+  export TRUSTED_AUTHORS VERIFY_AUTHORS CURRENT_USER CURRENT_USER_REFUSED TALOS_CFG
+}
 _VI_PM_SPEC_PY='
 def is_pm_spec(c, hdr):
     lines = [l.strip() for l in (c.get("body") or "").splitlines() if l.strip()]
@@ -1546,6 +1565,28 @@ def is_pm_spec(c, hdr):
     if lines[0].startswith("**PM spec:**"):
         return True
     return bool(hdr) and lines[0] == hdr.strip() and len(lines) > 1 and lines[1].startswith("**PM spec:**")
+
+# Author trust (#847): a stage comment counts only from the shared trust set
+# (_vcs_shared_trust_py, the one read-attempt uses), so a commenter outside it
+# can neither replace the spec nor plant a line the stages read. The caller
+# runs _vcs_shared_trust_py first and passes TRUSTED_AUTHORS / VERIFY_AUTHORS /
+# CURRENT_USER / CURRENT_USER_REFUSED / TALOS_CFG in the environment.
+verify_authors, effective_trusted = load_trust()
+author_check_active = author_check_enforced(verify_authors, effective_trusted)
+warn_identity_refused("view-issue", verify_authors, effective_trusted)
+_fail_open_warned = False
+
+def author_trusted(c):
+    global _fail_open_warned
+    if author_check_active:
+        a = c.get("author")
+        return (a.get("login", "") if isinstance(a, dict) else "") in effective_trusted
+    if verify_authors and not _fail_open_warned:
+        # No list and no resolved identity: fail open once, as read-attempt does.
+        _fail_open_warned = True
+        print("pipeline-vcs: view-issue: [warn] markers.trusted_authors not configured -- author check skipped"
+              + (" (config file could not be parsed)" if config_parse_failed() else ""), file=sys.stderr)
+    return True
 '
 
 # ── Compact spec-only comment filter (shared by view-issue --spec, github and
@@ -1563,7 +1604,9 @@ def is_pm_spec(c, hdr):
 # since the spec comment is the contract each stage implements against, not
 # the discussion around it.
 _vi_spec_filter() {
-  python3 -I -c "$_VI_PM_SPEC_PY
+  local _vf_meta="$1" _vf_comments="$2"; shift 2
+  (_vi_trust_load "$@"; python3 -I -c "$(_vcs_shared_trust_py)
+$_VI_PM_SPEC_PY
 import json, sys
 
 meta = json.loads(sys.argv[1])
@@ -1571,7 +1614,7 @@ comments = json.loads(sys.argv[2]).get('comments', [])
 if not isinstance(comments, list):
     comments = []
 
-spec_comments = [c for c in comments if is_pm_spec(c, sys.argv[3])]
+spec_comments = [c for c in comments if is_pm_spec(c, sys.argv[3]) and author_trusted(c)]
 kept = [spec_comments[-1]] if spec_comments else []
 
 result = {
@@ -1581,7 +1624,7 @@ result = {
     'comments': kept,
 }
 print(json.dumps(result))
-" "$1" "$2" "$(_vi_pm_header)"
+" "$_vf_meta" "$_vf_comments" "$(_vi_pm_header)")
 }
 
 # ── Delta comment filter (view-issue --since-stage, #548) ─────────────────────
@@ -1595,7 +1638,9 @@ print(json.dumps(result))
 # last stage is always there. earlier_comments counts the human comments before
 # the boundary, which `read-comments` still returns.
 _vi_delta_filter() {
-  python3 -I -c "$_VI_PM_SPEC_PY
+  local _vf_meta="$1" _vf_comments="$2"; shift 2
+  (_vi_trust_load "$@"; python3 -I -c "$(_vcs_shared_trust_py)
+$_VI_PM_SPEC_PY
 import json, sys
 
 meta = json.loads(sys.argv[1])
@@ -1608,7 +1653,7 @@ def body_of(c):
 
 def is_stage(c):
     b = body_of(c)
-    return b.startswith('**Agent:**') or is_pm_spec(c, sys.argv[3])
+    return (b.startswith('**Agent:**') or is_pm_spec(c, sys.argv[3])) and author_trusted(c)
 
 def is_human(c):
     return not is_stage(c) and '<!-- talos:' not in body_of(c)
@@ -1625,7 +1670,7 @@ print(json.dumps({
     'comments': [c for i, c in enumerate(comments) if i >= cut and (i == cut or is_human(c))],
     'earlier_comments': sum(1 for c in comments[:cut + 1] if is_human(c)),
 }))
-" "$1" "$2" "$(_vi_pm_header)"
+" "$_vf_meta" "$_vf_comments" "$(_vi_pm_header)")
 }
 
 # ── diff --stat formatting (shared by diff-pr --stat, github and github-api,
@@ -5402,9 +5447,9 @@ print(json.dumps({'title': d.get('title', ''), 'body': d.get('body') or '',
                   'labels': [{'name': l['name']} for l in d.get('labels', [])]}))
 ")"
         if [ "$_vi_spec" = "true" ]; then
-          _vi_spec_filter "$_vi_meta" "$_vi_comments"
+          _vi_spec_filter "$_vi_meta" "$_vi_comments" _gh_user_login
         else
-          _vi_delta_filter "$_vi_meta" "$_vi_comments"
+          _vi_delta_filter "$_vi_meta" "$_vi_comments" _gh_user_login
         fi
         return
       fi
@@ -6665,9 +6710,9 @@ d = json.load(sys.stdin)
 print(json.dumps({'title': d.get('title') or '', 'body': d.get('body') or '', 'labels': d.get('labels') or []}))
 ")" || exit 1
         if [ "$_glvi_spec" = "true" ]; then
-          _vi_spec_filter "$_glvi_meta" "$_glvi_cm"
+          _vi_spec_filter "$_glvi_meta" "$_glvi_cm" _gl_current_user
         else
-          _vi_delta_filter "$_glvi_meta" "$_glvi_cm"
+          _vi_delta_filter "$_glvi_meta" "$_glvi_cm" _gl_current_user
         fi
         return
       fi
@@ -8646,9 +8691,9 @@ d = json.load(sys.stdin)
 print(json.dumps({'title': d.get('title') or '', 'body': d.get('body') or '', 'labels': d.get('labels') or []}))
 ")" || exit 1
         if [ "$_azvi_spec" = "true" ]; then
-          _vi_spec_filter "$_azvi_meta" "$_azvi_cm"
+          _vi_spec_filter "$_azvi_meta" "$_azvi_cm" az account show --query user.name --output tsv
         else
-          _vi_delta_filter "$_azvi_meta" "$_azvi_cm"
+          _vi_delta_filter "$_azvi_meta" "$_azvi_cm" az account show --query user.name --output tsv
         fi
         return
       fi

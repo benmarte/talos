@@ -13,6 +13,9 @@ make_sandbox
 use_stubs
 
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
+# The fixture comments are authored by `owner`: that is the authenticated user, so
+# a stage comment is accepted from its author (#847; the trust set read-attempt uses).
+export STUB_CURRENT_USER=owner
 
 # comments_json <body>...: a read-comments-shaped array, one comment per argument,
 # in order. Built from a quoted heredoc (bash 3.2 mis-expands a `{...}` literal
