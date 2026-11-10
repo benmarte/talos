@@ -70,6 +70,7 @@ board.stage_label
 board.status_field
 board.status_map.*
 board.statuses.*
+board.url
 ci.known_flakes
 developer.checklist
 issues.label_filter

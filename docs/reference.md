@@ -367,6 +367,7 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 |---|---|---|---|---|
 | `board.enabled` | bool | `true` | - | repo |
 | `board.stage_label` | bool | `false` | - | repo |
+| `board.url` | str | - | - | repo |
 | `board.project_number` | int | - | `PIPELINE_PROJECT_NUMBER` | repo |
 | `board.owner` | str | derived | `PIPELINE_BOARD_OWNER` | repo |
 | `board.status_field` | str | `Status` | `PIPELINE_STATUS_FIELD` | repo |
@@ -938,6 +939,7 @@ A Projects v2 board with a single-select `Status` field mirrors progress. Keys (
 | `board.status_field` | Field name (`PIPELINE_STATUS_FIELD`) |
 | `board.status_map.<status>` | Map a pipeline status to your column |
 | `board.stage_label` | `true` shows the issue's current Talos stage on its card as a `talos:stage:<role>` label; default `false` (see below) |
+| `board.url` | The board's web URL (`http://` or `https://`), shown as the `board` link of [the status line](#the-status-line); it replaces the URL derived for Azure DevOps and GitLab, and GitHub needs it (the owner's type, org or user, is not in the config). Nothing else reads it |
 
 **Stage label (`board.stage_label`).** The board's Status column has four values, so "In review" covers reviewer, security, docs and QA. With `board.stage_label: true`, `talos.sh prompt` (the point that writes `stage_start`) gives the issue exactly one of `talos:stage:validator`, `pm`, `developer`, `reviewer`, `security`, `adversarial`, `docs` or `qa`: it adds the new stage's label and removes the other seven, so a card shows where the run is. `planner` and `threat` get no marker. A BLOCKED, FAIL, CHANGES or FINDINGS verdict keeps the label, so a blocked card shows the stage it stopped in. A merge that closes the issue removes them all; a "Part of" merge leaves the label for the next stage start. The labels are display only: no routing code reads them, and they are not in the `pipeline:*` or approval label sets. `bootstrap-labels.sh` creates them. It is independent of `board.enabled` and works on every provider that has `label-issue`. It is off by default because each stage start adds label writes (on GitHub one POST plus seven DELETEs, a 404 ignored; cf. #554) and a closing merge adds the removals. A failed write is `warn reason=stage-label-failed issue=<n>` and never blocks the stage.
 
@@ -1567,13 +1569,24 @@ Exit 1 means exceeded (0 for ok, warn, unknown and guard off), so a `set -e` cal
 
 ### The status line
 
-`scripts/talos-status.sh --line` prints one line from the events log, offline and free of model tokens, always exit 0, nothing when no issue is active:
+`scripts/talos-status.sh --line` prints one line from the events log, offline and free of model tokens, always exit 0:
 
 ```
-talos #7 qa ●●●●◐○ 3.41M · cache read 48.20M
+talos #7 qa ●●●●◐○ 3.41M · cache read 48.20M · map · board
+talos idle · map · board
 ```
 
-Fields: issue, running (else first pending) stage, one dot each for validator, pm, developer, review (reviewer, security, adversarial), qa, merge (`●` done, `◐` running, `○` pending), the issue's token total, then the cache reads, which are not part of that total: the `cache_read_tokens` of the issue's events plus, while a stage runs, the transcript's cache reads since it started. With no such figure the ` · cache read` part is absent, never 0. A role turned off in `roles.*` has no dot, nor has a validator or pm that never ran once a later stage has. The issue is the current branch's (`fix|feat/issue-N-...`), else the newest event's; a merged issue prints nothing. A stage runs from its `stage_start` event until its finishing event (6 hours at most). While it runs, the total adds usage read from the harness transcript (`transcript_path` on stdin, plus subagent transcripts). Config read: `roles.*` and `events.path` from `talos.pipeline.json` over `${TALOS_HOME:-~/.talos}/talos.pipeline.json`. The run is cut off after `TALOS_STATUS_TIMEOUT_S` seconds (1 to 10, default 3). `TALOS_STATUS_DEBUG=1` says on stderr why nothing printed.
+With no active issue (no log, an empty log, a merged issue or an `events.path` that leaves the git common dir) it prints `talos idle` in a repo that has a Talos config (a `talos.pipeline.json` at the git toplevel or in `${TALOS_HOME:-~/.talos}`), and nothing in a repo without one or outside a git repo.
+
+**Links.** `map` and `board` are [OSC 8](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda) hyperlinks, offline like the rest of the line (no `gh` or `curl` call); each part is left out when it has no target:
+
+- `map` opens `file://<TALOS_HOME>/maps/<file>`, the project map page. `<file>` is the entry for this repo in `<TALOS_HOME>/maps/index.json` (the registry `talos-map.py` writes, [Project map](#project-map)), and the part shows only when that file exists.
+- `board` opens `board.url` when it is an `http(s)` URL (any provider). Without it, Azure DevOps builds `<vcs.azure.org_url>/<vcs.azure.project>/_boards/board/t/<board.azure_team>/<board.azure_board>` (each part percent-encoded; all four keys must be set) and GitLab builds `<repo web URL>/-/boards` from the origin remote (credentials and `.git` dropped, subgroups kept). A GitHub repo has no derived link: set `board.url`. `board.enabled: false` removes the part.
+- `TALOS_STATUSLINE_LINKS=0` prints the line without the link parts (and so without any escape byte); any other value or none shows them.
+
+OSC 8 links are clickable in iTerm2, Kitty, WezTerm and other OSC 8 terminals; Terminal.app shows the text with no link; tmux strips OSC 8 unless hyperlinks are allowed (`set -ga terminal-features "*:hyperlinks"`). A terminal that prints the escape codes literally needs `TALOS_STATUSLINE_LINKS=0`.
+
+Fields: issue, running (else first pending) stage, one dot each for validator, pm, developer, review (reviewer, security, adversarial), qa, merge (`●` done, `◐` running, `○` pending), the issue's token total, then the cache reads, which are not part of that total: the `cache_read_tokens` of the issue's events plus, while a stage runs, the transcript's cache reads since it started. With no such figure the ` · cache read` part is absent, never 0. A role turned off in `roles.*` has no dot, nor has a validator or pm that never ran once a later stage has. The issue is the current branch's (`fix|feat/issue-N-...`), else the newest event's; a merged issue is no longer active (the idle line). A stage runs from its `stage_start` event until its finishing event (6 hours at most). While it runs, the total adds usage read from the harness transcript (`transcript_path` on stdin, plus subagent transcripts). Config read: `roles.*`, `events.path`, `board.enabled`, `board.url`, `board.azure_team`, `board.azure_board`, `vcs.provider`, `vcs.repo` (else `repo`), `vcs.azure.org_url` and `vcs.azure.project` from `talos.pipeline.json` over `${TALOS_HOME:-~/.talos}/talos.pipeline.json`. The run is cut off after `TALOS_STATUS_TIMEOUT_S` seconds (1 to 10, default 3). `TALOS_STATUS_DEBUG=1` says on stderr why nothing printed.
 
 `install.sh --global` with the Claude adapter sets `statusLine` in `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json`) to `bash <TALOS_HOME>/scripts/talos-status.sh --line` (shell-quoted when the path needs it). `/talos:setup` runs the same `scripts/talos-statusline.sh wire`. By hand:
 

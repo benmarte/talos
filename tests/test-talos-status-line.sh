@@ -323,7 +323,7 @@ rm -f "$LOG"
 set_cfg '{"events": {"path": "../outside.jsonl"}}'
 printf '{"event":"developer","role":"developer","issue":7,"tokens":1,"ts":"%s"}\n' "$(ts_ago 5)" > "$SANDBOX/outside.jsonl"
 run_status --line
-assert_eq "" "$OUT" "an events.path that leaves the git common dir is refused"
+assert_eq "talos idle" "$OUT" "an events.path that leaves the git common dir is refused (the outside log is not read: idle line, #883)"
 set_cfg '{"events": {"path": "custom/ev.jsonl"}}'
 mkdir -p "$SANDBOX/.git/custom"
 printf '{"event":"developer","role":"developer","issue":7,"tokens":2000,"verdict":"PASS","ts":"%s"}\n' "$(ts_ago 5)" > "$SANDBOX/.git/custom/ev.jsonl"

@@ -257,6 +257,7 @@
 40 test-status-labels.sh
 19 test-statusline-chain.sh
 1 test-statusline-hardening.sh
+3 test-statusline-links-883.sh
 5 test-sweep-branch-safety.sh
 10 test-sweep-squash-head.sh
 9 test-talos-docs-gate.sh
