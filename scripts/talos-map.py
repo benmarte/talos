@@ -236,7 +236,9 @@ def title_of(titles_dir, slug, n):
     try:
         if os.path.isfile(path) and not os.path.islink(path):
             with open(path, errors="replace") as f:
-                return f.read(300).splitlines()[0] if os.path.getsize(path) else ""
+                first = f.read(300).splitlines()[0] if os.path.getsize(path) else ""
+            # A GitHub error body that an older reader cached is not a title (#886).
+            return "" if first.startswith("{") or '"documentation_url"' in first else first
     except (OSError, IndexError):
         pass
     return ""
