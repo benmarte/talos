@@ -3,6 +3,8 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+
+## [0.20.0] - 2026-11-10
 - fix: when QA's prompt carries the `Targeted run skipped:` line, QA runs no `tests/run-tests.sh` command of any form (`--changed`, `--for`, a pattern or the full suite, directly or through `pipeline-verify.sh`), and step 2 of `agents/qa.md` opens with that rule; QA had run `--for` instead and timed out again.
 - fix: `pipeline-vcs.sh check-approval-sha` no longer stales an approval when merging the base only appended a sibling PR's line to a shared file the PR also changed (`tests/timings.txt`, `CHANGELOG.md`): the file is skipped only when it at the head is identical to the clean `git merge-tree` of the marker with the base; any other change (an edit, a moved line, a swapped binary), a merge conflict or a git failure still stales it.
 - fix: `tests/run-tests.sh --changed` / `--for` also select `test-shard-weights.sh` when a `tests/test-*.sh` is added or `tests/timings.txt` changes, so a missing timings line fails in the developer's own `verify.dev_tests` run instead of in CI.
