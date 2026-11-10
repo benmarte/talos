@@ -155,11 +155,18 @@ python3 -I -c '
 import json, sys
 print(json.dumps({"event": "developer", "role": "developer", "issue": 12, "pr": 22, "verdict": "BLOCKED",
                   "tokens": 100, "summary": "BLOCKED: spec: no criteria", "ts": sys.argv[1]}))' "$NOW" >> "$LOG"
-card() {  # <issue>: the state class of the issue's card
+card() {  # <issue>: "stuck" when the issue sits in the Needs-you section, else the section it is in
   python3 -I -c '
 import re, sys
-m = re.search(r"<article class=\"card ([a-z]+)\"><h3><a href=\"https://github.com/acme/widget/issues/%s\">#%s</a>(.*?)</article>" % (sys.argv[2], sys.argv[2]), open(sys.argv[1]).read(), re.S)
-print(m.group(1) if m else "<none>")' "$MAP" "$1"
+html = open(sys.argv[1]).read()
+link = "https://github.com/acme/widget/issues/%s\">#%s</a>" % (sys.argv[2], sys.argv[2])
+for sid, name in (("needs", "stuck"), ("flight", "progress")):
+    m = re.search(r"<section[^>]*id=\"%s\".*?</section>" % sid, html, re.S)
+    if m and link in m.group(0):
+        print(name)
+        break
+else:
+    print("<none>")' "$MAP" "$1"
 }
 # The event is written by hand: this is the map's reading of the log, whatever wrote it.
 python3 -I -c '
