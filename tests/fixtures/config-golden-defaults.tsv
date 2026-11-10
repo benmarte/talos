@@ -50,6 +50,7 @@ board.azure_states.in_review	Committed	table	pipeline-status.sh
 board.azure_states.ready	New	table	pipeline-status.sh
 board.azure_team		empty	pipeline-status.sh
 board.enabled	true	table	bootstrap-board.sh,pipeline-status.sh
+board.stage_label	false	table	talos.sh:_talos_stage_label (#873, new)
 board.project_number		empty	bootstrap-board.sh,pipeline-status.sh
 board.status_field	Status	table	bootstrap-board.sh,pipeline-status.sh
 comments.enabled	true	table	docs

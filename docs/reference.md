@@ -239,7 +239,7 @@ Every change is listed in [CHANGELOG.md](../CHANGELOG.md).
 
 1. `bash talos/install.sh /path/to/repo`, then copy `talos.pipeline.json.example` to `talos.pipeline.json` and edit it, or run the wizard. Minimal: `{ "base_branch": "dev", "verify": ["npm test"] }`.
 2. Wizard: `/talos:setup` in Claude Code; elsewhere `Read ~/.talos/skills/setup/SKILL.md and follow it`. It detects provider, base branch and verify commands, asks about roles, board, notifications, runner and models, writes the config, and offers the `AGENTS.md` block, bootstrap and a test notification. Safe to re-run; a model choice goes to the user-level file after a diff and a yes.
-3. `bash ~/.talos/scripts/bootstrap-labels.sh [owner/repo]` creates or updates the `pipeline:*`, approval and control labels (`spec:ready`, `skip-qa`, `epic`, `p0`-`p2`). Idempotent; needs `gh` (GitHub only).
+3. `bash ~/.talos/scripts/bootstrap-labels.sh [owner/repo]` creates or updates the `pipeline:*`, approval and control labels (`spec:ready`, `skip-qa`, `epic`, `p0`-`p2`) and the display-only `talos:stage:<role>` labels (used only with `board.stage_label`). Idempotent; needs `gh` (GitHub only).
 4. `bash ~/.talos/scripts/bootstrap-board.sh [owner/project_number]` adds the missing Status options (In progress, In review, Done, Blocked, Ready) to `board.status_field` (it does not create the field). Azure: validates `board.azure_states.*`; GitLab: checks labels; file provider or `board.enabled: false`: no-op.
 5. Queue: `gh issue edit 42 --add-label pipeline:ready`, or a `- [ ] task` line in `plan.md` (file mode).
 6. Run: `/talos:pipeline` in Claude Code; any other agent: `Read ~/.talos/skills/pipeline/SKILL.md and follow it`. Without an orchestrator session: `bash ~/.talos/scripts/talos.sh run [--issue <N>] [--max-iterations <n>]` (default 20 passes; a long drain passes a larger number). It loops `talos.sh next`, dispatches stages through `pipeline-agent.sh` and runs the gates in code. Started without `--issue` it drains the queue in priority order: after each merge the checkout is back on the base branch and the next pass runs. Exit codes: 0 on a clean stop (ask-owner, a stage block, a wait, a requested stop, the iteration cap), 1 on an unreadable state and on the stops that need a person's fix (`provider-failed`, `merge-failed`, `worktree-unavailable`, `ready-pr-failed`, and the ones `next` passes through such as `max-fix-attempts` and `budget-exceeded`). Re-run to resume. `talos.sh run --stop` asks a running run to stop at the top of its next pass.
@@ -366,6 +366,7 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | Key | Type | Default | Env override | Scope |
 |---|---|---|---|---|
 | `board.enabled` | bool | `true` | - | repo |
+| `board.stage_label` | bool | `false` | - | repo |
 | `board.project_number` | int | - | `PIPELINE_PROJECT_NUMBER` | repo |
 | `board.owner` | str | derived | `PIPELINE_BOARD_OWNER` | repo |
 | `board.status_field` | str | `Status` | `PIPELINE_STATUS_FIELD` | repo |
@@ -936,6 +937,9 @@ A Projects v2 board with a single-select `Status` field mirrors progress. Keys (
 | `board.owner` | Project owner, default the repo owner (`PIPELINE_BOARD_OWNER`) |
 | `board.status_field` | Field name (`PIPELINE_STATUS_FIELD`) |
 | `board.status_map.<status>` | Map a pipeline status to your column |
+| `board.stage_label` | `true` shows the issue's current Talos stage on its card as a `talos:stage:<role>` label; default `false` (see below) |
+
+**Stage label (`board.stage_label`).** The board's Status column has four values, so "In review" covers reviewer, security, docs and QA. With `board.stage_label: true`, `talos.sh prompt` (the point that writes `stage_start`) gives the issue exactly one of `talos:stage:validator`, `pm`, `developer`, `reviewer`, `security`, `adversarial`, `docs` or `qa`: it adds the new stage's label and removes the other seven, so a card shows where the run is. `planner` and `threat` get no marker. A BLOCKED, FAIL, CHANGES or FINDINGS verdict keeps the label, so a blocked card shows the stage it stopped in. A merge that closes the issue removes them all; a "Part of" merge leaves the label for the next stage start. The labels are display only: no routing code reads them, and they are not in the `pipeline:*` or approval label sets. `bootstrap-labels.sh` creates them. It is independent of `board.enabled` and works on every provider that has `label-issue`. It is off by default because each stage start adds label writes (on GitHub one POST plus seven DELETEs, a 404 ignored; cf. #554) and a closing merge adds the removals. A failed write is `warn reason=stage-label-failed issue=<n>` and never blocks the stage.
 
 Talos sets `In progress` (validator confirmed), `In review` (PR opened), `Blocked` and `Done` (merged). `create-issue` also sets `Ready` for a `pipeline:ready` issue. `bootstrap-board.sh` creates all five options. The `gh` transport checks the four it sets (after `status_map`) on a run's first call; the token transport checks only the option it is about to set.
 

@@ -899,6 +899,26 @@ _talos_isnum() { case "${1:-}" in '' | *[!0-9]*) return 1 ;; esac; }
 
 _vcs() { bash "$SCRIPT_DIR/pipeline-vcs.sh" "$@"; }
 
+# _talos_stage_label <role|-> <issue> (board.stage_label, #873): the display-only
+# `talos:stage:<role>` marker on the issue, so the board card shows the stage.
+# A role adds its marker and removes every other one (the issue carries exactly
+# one); `-` removes them all (a closing merge). Display only: nothing that routes
+# reads it, and a failed write is `warn reason=stage-label-failed`, never a stop.
+# Off (the default) or a role without a marker: no call at all.
+_talos_stage_label() {
+  local _role="$1" _issue="$2" _e _m _hit=0 _args=()
+  _talos_cfg_is board.stage_label true || return 0
+  # The contract is the one list of markers; `prompt` does not source it otherwise.
+  [ -n "${TALOS_STAGE_MARKER_LABELS+x}" ] || [ ! -f "$SCRIPT_DIR/pipeline-contract.sh" ] || . "$SCRIPT_DIR/pipeline-contract.sh"
+  for _e in ${TALOS_STAGE_MARKER_LABELS[@]+"${TALOS_STAGE_MARKER_LABELS[@]}"}; do
+    _m="${_e%%|*}"
+    if [ "$_m" = "talos:stage:$_role" ]; then _hit=1; _args+=(--add "$_m"); else _args+=(--remove "$_m"); fi
+  done
+  [ "$_hit" -eq 1 ] || [ "$_role" = - ] || return 0
+  _talos_run_capture stage-label _vcs label-issue "$_issue" ${_args[@]+"${_args[@]}"}
+  [ "$_RC" -eq 0 ] || _talos_warn stage-label-failed "issue=$_issue"
+}
+
 # _talos_verdict <verdict>: print `verdict=<v>` first, then the pairs collected
 # so far, and leave with 0.
 _talos_verdict() {
@@ -2038,6 +2058,8 @@ _talos_post_merge_run() {
     *) _RC=0 ;;
   esac
   [ "$_RC" -eq 0 ] || _talos_warn board-failed "issue=$_n"
+  # #873: a closing merge ends the stage marker (a part-of merge leaves it for the next stage start).
+  [ "$_mode" != closes ] || _talos_stage_label - "$_n"
 
   # A checkout left on the merged issue's branch goes back to the base, fast-
   # forwarded, never forced (#601), before the issue's worktrees are removed.
@@ -3040,6 +3062,8 @@ Then post the verdict. The approval verb refuses unless the required CI is green
   # reads the event to show the stage as running. Best effort, silent.
   [ ! -f "$SCRIPT_DIR/pipeline-hooks.sh" ] \
     || bash "$SCRIPT_DIR/pipeline-hooks.sh" stage_start "$_role" "$_issue" ${_pr:+--pr "$_pr"} >/dev/null 2>&1 || :
+  # #873: the issue's display-only stage marker moves with the stage (opt-in).
+  _talos_stage_label "$_role" "$_issue"
   # #661: the stage start, so post-approval can refuse a review body older than it.
   case "$_role" in
     reviewer | security)

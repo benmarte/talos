@@ -66,6 +66,7 @@ board.azure_team
 board.enabled
 board.owner
 board.project_number
+board.stage_label
 board.status_field
 board.status_map.*
 board.statuses.*

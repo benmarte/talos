@@ -86,6 +86,21 @@ TALOS_APPROVAL_LABELS=(
   "docs:done|c2e0c6|Documentation updated"
 )
 
+# Display-only stage markers on an issue (board.stage_label, #873): the driver
+# moves one `talos:stage:<role>` label at each stage start so the board card
+# shows the stage. Deliberately NOT in TALOS_STAGE_LABELS/TALOS_APPROVAL_LABELS:
+# those feed routing-side lists, and no routing code reads a marker.
+TALOS_STAGE_MARKER_LABELS=(
+  "talos:stage:validator|ededed|Display only: the issue's current Talos stage is validator"
+  "talos:stage:pm|ededed|Display only: the issue's current Talos stage is pm"
+  "talos:stage:developer|ededed|Display only: the issue's current Talos stage is developer"
+  "talos:stage:reviewer|ededed|Display only: the issue's current Talos stage is reviewer"
+  "talos:stage:security|ededed|Display only: the issue's current Talos stage is security"
+  "talos:stage:adversarial|ededed|Display only: the issue's current Talos stage is adversarial"
+  "talos:stage:docs|ededed|Display only: the issue's current Talos stage is docs"
+  "talos:stage:qa|ededed|Display only: the issue's current Talos stage is qa"
+)
+
 # Everything else bootstrap-labels.sh creates: human-applied override
 # labels, the epic marker, and the priority ladder.
 TALOS_MISC_LABELS=(
@@ -163,13 +178,14 @@ talos_contract_check_label_length() {
 
 # ── talos_contract_json ──────────────────────────────────────────────────────
 # Prints the whole contract as JSON: {"roles", "stage_labels",
-# "approval_labels" (each entry carries its "role"), "misc_labels",
+# "approval_labels" (each entry carries its "role"), "stage_marker_labels", "misc_labels",
 # "markers"}. Each *_labels entry is {"name", "color", "description"}.
 talos_contract_json() {
   TALOS_ROLES_ENV="${TALOS_ROLES[*]}" \
   TALOS_APPROVAL_ROLES_ENV="${TALOS_APPROVAL_ROLES[*]}" \
   TALOS_STAGE_LABELS_ENV="$(printf '%s\n' "${TALOS_STAGE_LABELS[@]}")" \
   TALOS_APPROVAL_LABELS_ENV="$(printf '%s\n' "${TALOS_APPROVAL_LABELS[@]}")" \
+  TALOS_STAGE_MARKER_LABELS_ENV="$(printf '%s\n' "${TALOS_STAGE_MARKER_LABELS[@]}")" \
   TALOS_MISC_LABELS_ENV="$(printf '%s\n' "${TALOS_MISC_LABELS[@]}")" \
   TALOS_MARKERS_ENV="${TALOS_MARKERS[*]}" \
   python3 -I -c "
@@ -194,6 +210,7 @@ contract = {
     'roles':           os.environ.get('TALOS_ROLES_ENV', '').split(),
     'stage_labels':    parse_labels('TALOS_STAGE_LABELS_ENV'),
     'approval_labels': approval_labels,
+    'stage_marker_labels': parse_labels('TALOS_STAGE_MARKER_LABELS_ENV'),
     'misc_labels':     parse_labels('TALOS_MISC_LABELS_ENV'),
     'markers':         os.environ.get('TALOS_MARKERS_ENV', '').split(),
 }

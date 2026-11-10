@@ -19,6 +19,7 @@ echo "Bootstrapping pipeline labels in $REPO"
 labels=(
   "${TALOS_STAGE_LABELS[@]}"
   "${TALOS_APPROVAL_LABELS[@]}"
+  "${TALOS_STAGE_MARKER_LABELS[@]}"
   "${TALOS_MISC_LABELS[@]}"
 )
 
