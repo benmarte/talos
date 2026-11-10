@@ -40,7 +40,7 @@ if len(a) > 9:
 print(json.dumps(e))' "$@" >> "$STATE/events.jsonl"
 }
 start() { ev stage_start orchestrator "$1" "${3:-}" "" "" "" "$2" "$4"; }   # <issue> <seconds ago> [<pr>] <stage>
-snap() {  # <seconds since the run started | none (an ended run) | norun> <collect JSON> [<priority JSON>]
+snap() {  # <seconds since the run started | none (an ended run) | norun> <collect JSON> [<priority JSON> [<collect age s, 60>]]
   python3 -I -c '
 import datetime, json, sys
 now = datetime.datetime.now(datetime.timezone.utc)
@@ -48,19 +48,19 @@ f = lambda s: (now - datetime.timedelta(seconds=int(s))).strftime("%Y-%m-%dT%H:%
 run = {} if sys.argv[2] == "norun" else \
     {"active": False, "started": f(30000), "end": "stop at " + f(10) + " done"} if sys.argv[2] == "none" \
     else {"active": True, "started": f(sys.argv[2])}
-json.dump({"ts": f(0), "collect_ts": f(60), "priority": json.loads(sys.argv[4] or "{}"),
-           "run": run, "collect": json.loads(sys.argv[3])}, open(sys.argv[1], "w"))' "$STATE/state.json" "$1" "$2" "${3:-}"
+json.dump({"ts": f(0), "collect_ts": f(sys.argv[5]), "priority": json.loads(sys.argv[4] or "{}"),
+           "run": run, "collect": json.loads(sys.argv[3])}, open(sys.argv[1], "w"))' "$STATE/state.json" "$1" "$2" "${3:-}" "${4:-60}"
 }
 cache_title() { printf '%s\n' "$2" > "$META/acme_widget.issue.$1"; }
 
 # ── The busy run ─────────────────────────────────────────────────────────────
 : > "$STATE/events.jsonl"
-# 21: QA running 12 min, a PR at qa. 22: developer fix round 2. 23: qa running after a redone dev.
+# 21: QA running 7 min, a PR at qa. 22: developer fix round 2. 23: qa running after a redone dev.
 ev validator validator 21 "" CONFIRMED "" "" 3000
 ev pm pm 21 "" "" "" "" 2900
 ev developer developer 21 31 PR_OPENED 5000 "" 2000
 ev reviewer reviewer 21 31 APPROVED 800 "<b>reviewed</b> and fine" 1000
-start 21 750 31 qa
+start 21 420 31 qa
 ev validator validator 22 "" CONFIRMED "" "" 3000
 ev developer developer 22 32 PR_OPENED "" "" 2500
 ev qa qa 22 32 FAIL "" "QA FAIL: wrong" 2000
@@ -69,7 +69,7 @@ start 22 300 32 developer
 ev developer developer 23 33 PR_OPENED "" "" 6000
 ev qa qa 23 33 FAIL "" "QA FAIL" 5500
 ev developer developer 23 33 PR_OPENED "" "" 5000
-start 23 4500 33 qa
+start 23 450 33 qa
 # 30: an owner question. 25: the PM proposed a split. 26: every stage done, merge failed. 27: any other block.
 ev validator validator 30 "" CONFIRMED "" "" 3000
 ev validator validator 25 "" CONFIRMED "" "" 3000
@@ -97,7 +97,9 @@ BUSY='{"prs": [{"n": 31, "issue": 21, "head": "a", "owner": false, "stage": "qa"
        "queued": [53, 51, 52], "inflight": [], "held": [52], "capped": [53],
        "blocked": [["issue", 25], ["issue", 26], ["issue", 27]],
        "owners": [{"n": 30, "status": "unanswered", "question": "Pick <b>A</b> or B?\nSecond & line"}]}'
-snap 19800 "$BUSY" '{"51": 0, "52": 1, "60": 0, "61": 0}'
+# The collect was read before the busy stages started (a stage that began before
+# its collect, with no lane record, is not running: #881).
+snap 19800 "$BUSY" '{"51": 0, "52": 1, "60": 0, "61": 0}' 480
 
 mkdir -p "$SANDBOX/bin"
 printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
@@ -223,7 +225,7 @@ assert_eq "ok" "$(piece order '<section id="flight">|<div class="key">|</span></
 assert_not_contains "$PAGE" 'class="legend"' "AC5 no Legend section"
 assert_not_contains "$PAGE" '<h2>Legend</h2>' "AC5 and no Legend heading"
 assert_not_contains "$PAGE" 'class="step ' "AC5 no per-card text chips"
-assert_contains "$FLIGHT" '<span class="tag run">QA · running 12 min</span>' "AC5 an in-flight row's tag names the stage and its age"
+assert_contains "$FLIGHT" '<span class="tag run">QA · running 7 min</span>' "AC5 an in-flight row's tag names the stage and its age"
 assert_contains "$FLIGHT" 'PR <a href="https://github.com/acme/widget/pull/31">#31</a> · stage qa' "AC5 the row links its PR and gives the collect's stage"
 assert_contains "$(piece row 22)" 'fix round 2' "AC5 a fix round is in the row"
 assert_not_contains "$(piece row 21)" 'fix round' "AC5 a first-round row has none"

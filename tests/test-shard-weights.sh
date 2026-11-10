@@ -17,8 +17,8 @@ set -u
 . "$(dirname "$0")/helpers.sh"
 
 # Summed table seconds (per-file times, not shard wall time). About 10% over the
-# heaviest shard (1503) of the table with the #789 test added.
-SHARD_WEIGHT_BOUND=1650
+# heaviest shard (about 1650) of the table with the #881 test added.
+SHARD_WEIGHT_BOUND=1700
 
 TIMINGS="$TALOS_ROOT/tests/timings.txt"
 REAL_RUN_TESTS="$TALOS_ROOT/tests/run-tests.sh"
