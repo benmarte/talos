@@ -958,7 +958,8 @@ _talos_relay() {
 
 # The collect cache (#554). Inside one `run` the collected state is kept in a file
 # of the run's private dir (TALOS_COLLECT_CACHE, exported by `run`; unset
-# everywhere else, so a standalone `next` or `state` reads GitHub as before): the
+# everywhere else, so a standalone `next` or `state` reads GitHub as before; the
+# map's snapshot is not part of the cache and is written everywhere, #887): the
 # in-flight list read and the passes' `next` share one collect instead of paying
 # one each. Only a successful read that is a JSON object is kept; a copy older than
 # two minutes is not used; and every verb that writes (done, gate, docs-gate,
@@ -972,10 +973,12 @@ _talos_collect_get() {  # prints the cached state; non-zero on a miss
 }
 _talos_collect_put() {  # $1 = a successful collect's stdout
   local _c="${TALOS_COLLECT_CACHE:-}"
-  [ -n "$_c" ] || return 0
   case "$1" in '{'*'}') ;; *) return 0 ;; esac
-  printf '%s' "$1" > "$_c.$$" && mv "$_c.$$" "$_c" 2>/dev/null || rm -f "$_c.$$"
-  # The map's snapshot keeps it past the next write (#614).
+  if [ -n "$_c" ]; then
+    printf '%s' "$1" > "$_c.$$" && mv "$_c.$$" "$_c" 2>/dev/null || rm -f "$_c.$$"
+  fi
+  # The map's snapshot keeps it past the next write (#614); with or without the
+  # cache, so a skill-driven `next` feeds the map too (#887).
   printf '%s' "$1" | _talos_run_snapshot active
 }
 _talos_collect_drop() { [ -z "${TALOS_COLLECT_CACHE:-}" ] || rm -f "$TALOS_COLLECT_CACHE"; }
@@ -3709,6 +3712,9 @@ _talos_done() {
     _talos_emit spec_check "$_SPEC_SLUG"
     _next="$_SPEC_NEXT"
   fi
+  # Outside `run` (a skill-driven session, #887) the page is redrawn here; the
+  # `run` driver redraws after its own `done` (TALOS_RUN_PID is set there).
+  [ -n "${TALOS_RUN_PID:-}" ] || _talos_run_map stage
   _talos_emit next "$_next"
   _talos_flush
 }
@@ -3900,11 +3906,13 @@ _talos_state() {
     # `next`'s own program (no lease, nothing written); the lines are numbers
     # and fixed words, never a question or any other free text of the state.
     printf '%s' "$_json" > "$_CFG_CACHE_DIR/state.json"
+    printf '%s' "$_json" | _talos_run_snapshot active
     _where="$(python3 -I "$SCRIPT_DIR/pipeline-next.py" where "$_CFG_CACHE_DIR/state.json" 2>/dev/null)" || _talos_stop state-unavailable
     while IFS= read -r _l; do _talos_emit where "$_l"; done <<< "$_where"
     _talos_flush
     return 0
   fi
+  printf '%s' "$_json" | _talos_run_snapshot active
   _talos_emit state "$_json"
   _talos_flush
 }
@@ -4296,8 +4304,10 @@ _talos_map() {
 # issue is queued or in flight, and the map's track counts merged ones too, so
 # it accumulates across collects. _talos_collect_put
 # calls it, so the snapshot holds every collect the run fetches: `done` empties
-# the run's collect copy, and after a stage there is none to read back. Best
-# effort: never fails its caller.
+# the run's collect copy, and after a stage there is none to read back. `state`
+# calls it too. Outside `talos.sh run` (TALOS_RUN_PID unset: a skill-driven
+# session, #887) the stored `run` entry is left as it is (`{}` when none), so the
+# snapshot never claims a live run. Best effort: never fails its caller.
 _talos_run_snapshot() {
   local _sd
   _talos_run_map_on || return 0
@@ -4327,8 +4337,11 @@ if isinstance(col, dict) and col:
     prio.update(col.get("priority") if isinstance(col.get("priority"), dict) else {})
     snap["priority"] = prio
 snap.setdefault("collect", {})
-snap.update(ts=now, run={"active": mode != "end", "started": started, "end": end,
-                         "pid": int(pid) if pid.isdigit() else None})
+snap["ts"] = now
+if pid.isdigit():
+    snap["run"] = {"active": mode != "end", "started": started, "end": end, "pid": int(pid)}
+elif not isinstance(snap.get("run"), dict):
+    snap["run"] = {}
 tmp = "%s.%d.tmp" % (path, os.getpid())
 with open(tmp, "w") as f:
     json.dump(snap, f)

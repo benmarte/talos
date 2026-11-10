@@ -7,7 +7,9 @@
 #   AC4 `done` redraws the page
 #   AC5 map.enabled false: no snapshot, no page, no index
 #   AC6 a failing render in `done` is one warn; the next line and exit status hold
-# AC7 and AC8 are the run driver's (tests/test-project-map*.sh). AC9 is prose.
+#   AC7 `done` with TALOS_RUN_PID set (the run driver's call) draws nothing itself
+#   AC8 inside run the snapshot still records the run (the five tests/test-project-map*.sh
+#       run unmodified). AC9 is prose.
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
@@ -109,5 +111,18 @@ assert_eq "$GOOD_RC" "$RC" "AC6 a failing render leaves done's exit status"
 assert_eq "$(grep '^next' <<< "$GOOD_OUT")" "$(grep '^next' <<< "$OUT")" "AC6 a failing render leaves done's next line"
 assert_eq "1" "$(grep -c 'warn reason=map-failed' <<< "$OUT"$'\n'"$(cat "$SANDBOX/err")")" "AC6 a failing render is one warn"
 cp "$TALOS_ROOT/scripts/talos-map.py" "$GS/talos-map.py"
+
+# ── AC7: the run driver's done does not draw (TALOS_RUN_PID is set in run) ────
+reset
+TALOS_RUN_PID="$$" do_done
+assert_eq "0" "$RC" "AC7 done exits 0 with TALOS_RUN_PID set" "$OUT"
+assert_file_absent "$MAP" "AC7 done called by the run driver draws no page of its own"
+
+# ── AC8: inside run the snapshot still records the run (the full run map tests
+# are tests/test-project-map*.sh, which pass unmodified) ──────────────────────
+reset
+TALOS_RUN_PID="$$" bash "$TALOS" next >/dev/null 2>&1 </dev/null
+assert_eq "True" "$(snap_field 'snap["run"]["active"]')" "AC8 inside run the snapshot's run is active"
+assert_eq "$$" "$(snap_field 'snap["run"]["pid"]')" "AC8 inside run the snapshot's run carries the pid"
 
 finish
