@@ -29,8 +29,11 @@ import subprocess
 import sys
 import urllib.parse
 
-ROLES = ("validator", "pm", "developer", "review", "qa", "merge")
-REVIEW = ("reviewer", "security", "adversarial")
+STEPS = ("validator", "pm", "dev", "review", "qa", "docs", "merge")
+STEP_OF = {"validator": "validator", "pm": "pm", "developer": "dev", "reviewer": "review", "security": "review",
+           "adversarial": "review", "qa": "qa", "docs": "docs"}
+STATE_WORD = {"done": "done", "running": "running now", "failed": "failed", "redone": "redone", "notreached": "not reached"}
+ISO_TS = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 FAILING = {"FAIL", "CHANGES", "FINDINGS", "BLOCKED", "RESTAMP_FAIL"}
 RECENT_DAYS = 7
 # A run entry the snapshot has not touched for this long is an ended run: a live
@@ -196,27 +199,82 @@ def title_of(titles_dir, slug, n):
     return ""
 
 
-def dots(evs):
-    """The status line's six stages: done (●) or pending (○), from the issue's
-    finishing events in order. A stage is done unless its verdict is a failing
-    one (pm finishes with none). A failing review or QA verdict sends the work
-    back: developer and the gates after it are pending again."""
-    done = dict.fromkeys(ROLES, False)
+def fmt_ts(ts):
+    return ts.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def ago(ts, now):
+    s = int((now - ts).total_seconds())
+    if s < 60:
+        return "just now"
+    return "%d min ago" % (s // 60) if s < 3600 else ("%d h ago" % (s // 3600) if s < 86400 else "%d d ago" % (s // 86400))
+
+
+def dur(seconds):
+    m = max(0, int(seconds)) // 60
+    return "<1 min" if m < 1 else ("%d min" % m if m < 60 else "%d h %d min" % (m // 60, m % 60))
+
+
+def when(ts, now):
+    """A moment on the page: the one timestamp format, then its relative age."""
+    return "%s (%s)" % (fmt_ts(ts), ago(ts, now))
+
+
+def scrub(text):
+    """Any ISO timestamp left in a record's own text (an end line, a summary)
+    is shown in the page's one format."""
+    return ISO_TS.sub(lambda m: fmt_ts(parse_ts(m.group(0))) if parse_ts(m.group(0)) else m.group(0), text)
+
+
+def open_starts(evs):
+    """stage -> (index, ts) of the stage's latest `stage_start` that has no later
+    event of its own with `event` equal to that stage: the stage running now.
+    The rule talos-status.sh uses for its running stage."""
+    start, fin = {}, {}
+    for i, e in enumerate(evs):
+        ev, role = e.get("event"), e.get("role")
+        if ev == "stage_start" and isinstance(e.get("stage"), str):
+            start[e["stage"]] = (i, e.get("ts"))
+        elif ev and ev == role and role != "orchestrator":
+            fin[role] = i
+    return {s: v for s, v in start.items() if v[0] > fin.get(s, -1)}
+
+
+def steps(evs, opens):
+    """(step, state) for the seven stages, from the issue's finishing events in
+    order. A stage is done unless its verdict is a failing one (pm finishes with
+    none). A failing review or QA verdict sends the work back: developer and the
+    gates after it are no longer done. States: running (an open start), failed
+    (its latest finishing event fails), redone (done now, after an earlier
+    failure of its own or a reset by a gate), done, notreached."""
+    done, failed, had = (dict.fromkeys(STEPS, False) for _ in range(3))
     for e in evs:
         role, v, ev = e.get("role"), e.get("verdict"), e.get("event")
         if ev == "merged":
             done["merge"] = True
             continue
-        if ev != role or role is None:
-            continue
-        stage = "review" if role in REVIEW else role
-        if stage not in done:
+        stage = STEP_OF.get(role) if ev == role else None
+        if not stage:
             continue
         if v not in FAILING:
-            done[stage] = True
-        elif stage in ("review", "qa"):
-            done["developer"] = done["review"] = done["qa"] = False
-    return "".join("●" if done[r] else "○" for r in ROLES)
+            done[stage], failed[stage] = True, False
+            continue
+        failed[stage] = had[stage] = True
+        if stage in ("review", "qa"):
+            for s in ("dev", "review", "qa"):
+                had[s] = had[s] or done[s]
+                done[s] = False
+    running = {STEP_OF[r] for r in opens if r in STEP_OF}
+    out = []
+    for s in STEPS:
+        st = "running" if s in running else "failed" if failed[s] else (("redone" if had[s] else "done") if done[s] else "notreached")
+        out.append((s, st))
+    return out
+
+
+def steps_html(evs, opens):
+    return '<ol class="steps">%s</ol>' % "".join(
+        '<li class="step %s"><b>%s</b> %s</li>' % (st, s, STATE_WORD[st]) for s, st in steps(evs, opens))
 
 
 def main(argv):
@@ -314,7 +372,10 @@ def main(argv):
     shown = sorted(set(queued) | set(inflight) | set(pr_issues) | blocked | recent | moved | running)
 
     def tokens(n):
-        return sum(num(e.get("tokens")) or 0 for e in by_issue.get(n, []) if e.get("role") != "orchestrator")
+        """The issue's recorded tokens, or None when no stage event carried a number."""
+        vals = [num(e.get("tokens")) for e in by_issue.get(n, []) if e.get("role") != "orchestrator"]
+        vals = [v for v in vals if v is not None]
+        return sum(vals) if vals else None
 
     def stuck_reason(n):
         if n in asks:
@@ -332,21 +393,26 @@ def main(argv):
     counts = {"Done": 0, "In progress": 0, "Stuck": 0, "Not started": 0}
     for n in shown:
         counts[state(n)] += 1
+    n_fly, n_stuck = counts["In progress"], counts["Stuck"]
     if run_going(run, parse_ts(snap.get("ts")), now):
-        run_line = "a run is going" + (" (started %s)" % esc(run.get("started")) if run.get("started") else "")
-    elif run.get("end"):
-        run_line = "last run ended: <code>%s</code>" % esc(str(run.get("end"))[:300])
-    elif run.get("active"):
-        run_line = "last run ended (no end line: it stopped without one)"
+        began = parse_ts(run.get("started"))
+        run_line = "Run going%s, %d issue%s in flight, %d stuck" % (
+            " for " + dur((now - began).total_seconds()) if began else "", n_fly, "" if n_fly == 1 else "s", n_stuck)
     else:
-        run_line = "no run recorded"
+        if run.get("end"):
+            why = "last run ended: <code>%s</code>" % esc(str(run.get("end"))[:300])
+        elif run.get("active"):
+            why = "last run ended (no end line: it stopped without one)"
+        else:
+            why = "no run recorded"
+        run_line = "No run going · " + why
     if col_ts:
-        run_line += " · queue as of %s" % esc(col_ts.strftime("%Y-%m-%d %H:%M UTC"))
+        run_line += " · queue as of %s" % esc(when(col_ts, now))
     parts = []
-    parts.append('<header><h1>%s</h1><p class="sub">updated %s · %s</p>'
+    parts.append('<header><h1>%s</h1><p class="sub">updated %s</p><p class="runline">%s</p>'
                  '<p class="counts"><span class="c done">%d merged</span> <span class="c prog">%d in flight</span> '
                  '<span class="c stuck">%d stuck</span> <span class="c todo">%d not started</span></p></header>'
-                 % (esc(name), esc(now.strftime("%Y-%m-%d %H:%M UTC")), run_line,
+                 % (esc(name), esc(fmt_ts(now)), run_line,
                     counts["Done"], counts["In progress"], counts["Stuck"], counts["Not started"]))
     if not col:
         parts.append('<p class="note">No run state yet: the queue, the next step and the owner questions '
@@ -361,31 +427,99 @@ def main(argv):
         c = {s: sum(1 for n in ns if state(n) == s) for s in counts}
         tiers.append((label, c, len(ns)))
     current = next((t[0] for t in tiers if t[1]["In progress"] + t[1]["Not started"] + t[1]["Stuck"]), None)
-    parts.append('<section><h2>Track</h2><ol class="track">%s</ol></section>' % "".join(
+    track = ('<section><h2>Track</h2><ol class="track">%s</ol></section>' % "".join(
         '<li class="%s"><b>%s</b> %d merged · %d in flight · %d queued%s</li>'
         % ("here" if label == current else "", esc(label), c["Done"], c["In progress"] + c["Stuck"], c["Not started"],
            ' <span class="you">you are here</span>' if label == current else "")
         for label, c, total in tiers if total))
 
-    # Parts.
-    cards = []
-    for n in shown:
-        st = state(n)
-        t = title_of(a.titles, title_key, n)
+    # Parts: needs you, in flight, queued, done. Each issue is in one of them.
+    pr_stage = {p["issue"]: p.get("stage") for p in col.get("prs") or []
+                if isinstance(p, dict) and num(p.get("issue")) and isinstance(p.get("stage"), str)}
+
+    def title_html(n):
+        return esc(title_of(a.titles, title_key, n)) or "(title not cached)"
+
+    def head(n):
+        return "<h3>%s %s</h3>" % (link(links.issue(n), "#%d" % n), title_html(n))
+
+    def tok_text(n):
+        t = tokens(n)
+        return "tokens —" if t is None else "%s tokens" % fmt_tok(t)
+
+    def info(n, st):
         pr = pr_of.get(n)
-        line = ""
-        if st == "Stuck":
-            r = stuck_reason(n)
-            line = '<p class="why">%s</p>' % esc(r or "waiting on a person")
-        elif n in running and rounds.get(n):
-            line = '<p class="round">fix round %d</p>' % rounds[n]
-        cards.append('<article class="card %s"><h3>%s %s</h3><p class="dots" title="validator pm developer review qa merge">%s</p>'
-                     '<p>%s%s · %s tokens</p>%s</article>'
-                     % (re.sub(r"[^a-z]", "", st.lower()), link(links.issue(n), "#%d" % n), esc(t),
-                        dots(by_issue.get(n, [])), esc(st),
-                        (" · PR " + link(links.pr(pr), "#%d" % pr)) if pr else "", esc(fmt_tok(tokens(n))), line))
-    parts.append('<section><h2>Parts</h2><div class="grid">%s</div></section>'
-                 % ("".join(cards) or '<p class="note">Nothing in flight, queued or recently merged.</p>'))
+        bits = [esc(st)]
+        if pr:
+            bits.append("PR " + link(links.pr(pr), "#%d" % pr) + (" · stage " + esc(pr_stage[n]) if pr_stage.get(n) else ""))
+        bits.append(esc(tok_text(n)))
+        return "<p>%s</p>" % " · ".join(bits)
+
+    def stage_line(n):
+        op = open_starts(by_issue.get(n, []))
+        if not op:
+            return "no stage running"
+        stage, (_, ts) = max(op.items(), key=lambda kv: kv[1][0])
+        word = "QA" if stage == "qa" else stage
+        if stage == "developer" and rounds.get(n):
+            word += ", fix round %d" % rounds[n]
+        began = parse_ts(ts)
+        return esc(word) + (" · running " + dur((now - began).total_seconds()) if began else "")
+
+    def last_line(n):
+        for e in reversed(by_issue.get(n, [])):
+            s = str(e.get("summary") or "").strip()
+            if s:
+                s = s.splitlines()[0]
+                return s if len(s) <= 120 else s[:119] + "…"
+        return ""
+
+    def card(n, st):
+        evs = by_issue.get(n, [])
+        stuck = st == "Stuck"
+        tail = ('<p class="why">%s</p>' % esc(stuck_reason(n) or "waiting on a person")) if stuck else (
+            '<p class="last">%s</p>' % esc(last_line(n)) if last_line(n) else "")
+        return '<article class="card %s%s">%s%s%s%s%s</article>' % (
+            re.sub(r"[^a-z]", "", st.lower()), "" if stuck else " wide", head(n),
+            "" if stuck else '<p class="stage">%s</p>' % stage_line(n),
+            steps_html(evs, open_starts(evs)), info(n, st), tail)
+
+    by_state = {s: [n for n in shown if state(n) == s] for s in counts}
+    needs = "".join(card(n, "Stuck") for n in by_state["Stuck"])
+    qs = [o for o in col.get("owners") or [] if isinstance(o, dict) and num(o.get("n"))]
+    asked = "".join('<blockquote>%s<footer>%s</footer></blockquote>'
+                    % (esc(str(o.get("question") or "(question not readable)")[:1000]), link(links.issue(o["n"]), "#%d" % o["n"]))
+                    for o in qs)
+    if needs or asked:
+        parts.append('<section class="needs"><h2>Needs you</h2>%s%s</section>'
+                     % ('<div class="grid">%s</div>' % needs if needs else "", asked))
+    if by_state["In progress"]:
+        parts.append('<section class="inflight"><h2>In flight</h2><div class="rows">%s</div></section>'
+                     % "".join(card(n, "In progress") for n in by_state["In progress"]))
+    if by_state["Not started"]:
+        parts.append('<section class="queued"><h2>Queued</h2><ul class="queued">%s</ul></section>'
+                     % "".join("<li>%s %s</li>" % (link(links.issue(n), "#%d" % n), title_html(n)) for n in by_state["Not started"]))
+    if by_state["Done"]:
+        def merged_at(n):
+            return parse_ts(next((e.get("ts") for e in reversed(by_issue[n]) if e.get("event") == "merged"), ""))
+        rows = []
+        for n in sorted(by_state["Done"], key=lambda n: merged_at(n) or now, reverse=True):
+            pr, t, m = pr_of.get(n), tokens(n), merged_at(n)
+            rows.append('<tr class="done"><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>'
+                        % (link(links.issue(n), "#%d" % n), title_html(n), link(links.pr(pr), "#%d" % pr) if pr else "—",
+                           "—" if t is None else esc(fmt_tok(t)), esc(when(m, now)) if m else "—"))
+        parts.append('<section><h2>Done</h2><details class="done"><summary>%d merged in the last %d days</summary>'
+                     '<div class="scroll"><table><tr><th>issue</th><th>title</th><th>PR</th><th>tokens</th><th>merged</th></tr>%s</table></div>'
+                     '</details></section>' % (len(rows), RECENT_DAYS, "".join(rows)))
+    if not shown:
+        parts.append('<p class="note">Nothing in flight, queued or recently merged.</p>')
+    parts.append('<section class="legend"><h2>Legend</h2><p>Each card shows the stages in order: '
+                 + " › ".join("<b>%s</b>" % s for s in STEPS) + '.</p><ul>'
+                 '<li><b>done</b>: the stage finished.</li><li><b>running now</b>: the stage is running.</li>'
+                 '<li><b>failed</b>: its latest result was a failure.</li><li><b>redone</b>: done again after a failure.</li>'
+                 '<li><b>not reached</b>: it has not started, or a failing review or QA sent it back.</li></ul>'
+                 '<p>A failed or redone step means a gate sent the work back to the developer.</p></section>')
+    parts.append(track)
 
     # Next step.
     if col:
@@ -408,13 +542,6 @@ def main(argv):
                 pass
         parts.append('<section><h2>Next step</h2><p>%s</p></section>' % esc(nxt or "unknown"))
 
-        # Needs your call.
-        qs = [o for o in col.get("owners") or [] if isinstance(o, dict) and num(o.get("n"))]
-        parts.append('<section><h2>Needs your call</h2>%s</section>' % (
-            "".join('<blockquote>%s<footer>%s</footer></blockquote>'
-                    % (esc(str(o.get("question") or "(question not readable)")[:1000]), link(links.issue(o["n"]), "#%d" % o["n"]))
-                    for o in qs) or "<p>Nothing waits on you.</p>"))
-
     # Changed since the last run started.
     since = parse_ts(run.get("started") or "")
     changed = []
@@ -431,7 +558,7 @@ def main(argv):
             what = "%s %s" % (e.get("role"), v)
         else:
             continue
-        changed.append('<li><time>%s</time> %s %s</li>' % (esc(str(e.get("ts") or "")[:16].replace("T", " ")),
+        changed.append('<li><time>%s</time> %s %s</li>' % (esc(when(ts, now)) if ts else "unknown time",
                                                           link(links.issue(e["issue"]), "#%d" % e["issue"]), esc(what)))
     parts.append('<section><h2>Changed since the last run started</h2>%s</section>'
                  % ("<ol>%s</ol>" % "".join(changed[-60:]) if changed else "<p>Nothing yet.</p>"))
@@ -457,7 +584,7 @@ def main(argv):
         if any(isinstance(v, dict) and v.get("file") == fname for k, v in reg.items() if k != slug):
             fname = "%s-%s.html" % (fname[:-5], hashlib.sha1(slug.encode("utf-8")).hexdigest()[:8])
     page = os.path.join(maps, fname)
-    write(page, doc("Talos map: " + name, "".join(parts)))
+    write(page, doc("Talos map: " + name, scrub("".join(parts))))
     reg[slug] = {"file": fname, "updated": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
                  "line": "%d merged · %d in flight · %d stuck · %d not started"
                          % (counts["Done"], counts["In progress"], counts["Stuck"], counts["Not started"])}
@@ -486,12 +613,19 @@ CSS = """
 *{box-sizing:border-box}body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;max-width:1100px;margin:auto}
 h1{font-size:1.5em;margin:.2em 0}h2{font-size:1.1em;margin:1.6em 0 .5em;border-bottom:1px solid var(--line);padding-bottom:.2em}
 h3{font-size:1em;margin:0 0 .3em}a{color:var(--prog)}.sub,.note,time{color:var(--mut)}code{font-size:.9em;overflow-wrap:anywhere}
-.counts .c{margin-right:.8em;font-weight:600}.done{color:var(--done)}.prog{color:var(--prog)}.stuck{color:var(--stuck)}.todo{color:var(--todo)}
+.counts .c{margin-right:.8em;font-weight:600}.c.done,.step.done{color:var(--done)}.prog{color:var(--prog)}.stuck{color:var(--stuck)}.todo{color:var(--todo)}
 .track{padding-left:1.2em}.track .here{font-weight:600}.you{color:var(--prog);font-size:.85em}
 .grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}
 .card{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--todo);border-radius:6px;padding:10px;overflow-wrap:anywhere}
 .card.done{border-left-color:var(--done)}.card.inprogress{border-left-color:var(--prog)}.card.stuck{border-left-color:var(--stuck)}
-.card p{margin:.2em 0}.dots{letter-spacing:.15em}.why{color:var(--stuck)}
+.card p{margin:.2em 0}.why{color:var(--stuck)}
+.runline{font-size:1.05em;font-weight:600;margin:.3em 0;overflow-wrap:anywhere}
+.rows{display:grid;gap:10px;grid-template-columns:minmax(0,1fr)}.card.wide .stage{font-weight:600}.last{color:var(--mut);font-size:.9em}
+.steps{display:flex;flex-wrap:wrap;gap:4px;list-style:none;padding:0;margin:.4em 0}
+.step{margin:0;padding:1px 6px;border:1px solid var(--line);border-radius:4px;font-size:.8em}
+.step.running{border-color:var(--prog);color:var(--prog);font-weight:600}.step.failed{border-color:var(--stuck);color:var(--stuck);font-weight:600}
+.step.redone{border-style:double;border-color:var(--done)}.step.notreached{border-style:dashed;color:var(--mut)}
+.scroll{overflow-x:auto}summary{cursor:pointer}.legend li{margin:.1em 0}.queued{overflow-wrap:anywhere}
 blockquote{margin:.5em 0;padding:.5em .8em;border-left:3px solid var(--prog);background:var(--card);white-space:pre-wrap;overflow-wrap:anywhere}
 blockquote footer{color:var(--mut);margin-top:.3em}
 table{border-collapse:collapse}td,th{padding:.2em .8em .2em 0;text-align:left}tr.total td{font-weight:600;border-top:1px solid var(--line)}

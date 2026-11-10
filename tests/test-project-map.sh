@@ -79,11 +79,20 @@ assert_file_absent "$SANDBOX/provider.calls" "AC5 rendering made no gh, curl, gl
 assert_file_exists "$MAP" "AC5 the page is written with no pipeline-vcs.sh and every provider command failing"
 
 # AC2: the cards.
-card() {  # <issue> [<page>]: the state class of the issue's card
+card() {  # <issue> [<page>]: the state class of the issue's card, row or queued item (#875)
   python3 -I -c '
 import re, sys
-m = re.search(r"<article class=\"card ([a-z]+)\"><h3><a href=\"https://github.com/acme/widget/issues/%s\">#%s</a>(.*?)</article>" % (sys.argv[2], sys.argv[2]), open(sys.argv[1]).read(), re.S)
-print(m.group(1) if m else "<none>")' "${2:-$MAP}" "$1"
+p, n = open(sys.argv[1]).read(), sys.argv[2]
+url = "https://github.com/acme/widget/issues/" + n
+m = re.search(r"<article class=\"card ([a-z]+)(?: wide)?\"><h3><a href=\"%s\">#%s</a>" % (url, n), p)
+if m:
+    print(m.group(1))
+elif "<tr class=\"done\"><td><a href=\"%s\">" % url in p:
+    print("done")
+elif "<li><a href=\"%s\">#%s</a>" % (url, n) in p:
+    print("notstarted")
+else:
+    print("<none>")' "${2:-$MAP}" "$1"
 }
 assert_eq "done" "$(card 11)" "AC2 a merged issue is Done"
 assert_eq "stuck" "$(card 12)" "AC2 a blocked issue is Stuck"
@@ -92,8 +101,8 @@ assert_eq "notstarted" "$(card 14)" "AC2 a queued issue is Not started"
 assert_contains "$PAGE" '<a href="https://github.com/acme/widget/pull/23">#23</a>' "AC2 the in-flight card links its PR"
 assert_contains "$PAGE" '<p class="why">&lt;script&gt;alert(1)&lt;/script&gt; needs &quot;onload= work</p>' "AC2 the stuck card says why, escaped"
 assert_contains "$PAGE" 'Add a &lt;b&gt;bold&lt;/b&gt; title' "AC2 a cached title is shown, escaped"
-assert_contains "$PAGE" '#11</a> </h3><p class="dots" title="validator pm developer review qa merge">●●●○●●</p>' \
-  "AC2 a stage that finishes with no verdict fills its dot, as on the status line"
+assert_contains "$PAGE" '<li class="step done"><b>dev</b> done</li>' \
+  "AC2 a finished stage shows as done in the card's steps"
 # The track: each tier's merged / in flight / queued counts. A merged issue is
 # counted in the tier it had while it was queued.
 assert_contains "$PAGE" '<li class="here"><b>p0</b> 1 merged · 0 in flight · 1 queued <span class="you">you are here</span></li>' \
@@ -258,7 +267,7 @@ assert_eq "notstarted" "$(card 14 "$MID")" "AC9 after a stage the page still sho
 assert_contains "$PM" 'Ship it?' "AC9 after a stage the page still shows the owner question"
 assert_not_contains "$PM" 'No run state yet' "AC9 after a stage the page has its queue view"
 assert_eq "inprogress" "$(card 9 "$MID")" "AC9 the issue whose stage just ended is In progress, whatever the queue read before it said"
-assert_contains "$PM" 'a run is going' "AC9 during the run the page says a run is going"
+assert_contains "$PM" 'Run going for' "AC9 during the run the page says a run is going"
 SNAP="$(cat "$STATE/state.json" 2>/dev/null)"
 assert_contains "$SNAP" '"queued": [9, 14]' "AC9 the snapshot keeps the pass's collect after the stage and at the end"
 assert_contains "$SNAP" '"end": "stop reason=iterations-exhausted max=2"' "AC9 the end line of a run that stops after a stage is in the snapshot"
@@ -297,7 +306,8 @@ ENDED_RUN="{\"active\": false, \"started\": \"$EARLY\", \"end\": \"stop x\"}"
 ev developer developer 31 41 PR_OPENED 100 ""
 ev qa qa 31 41 FAIL 100 "QA FAIL: wrong"
 ev blocked orchestrator 31 41 "" "" "QA FAIL: wrong"
-ev stage_start orchestrator 31 41 "" "" ""
+evstart() { printf '{"event": "stage_start", "role": "orchestrator", "stage": "developer", "issue": %s, "pr": null, "ts": "%s"}\n' "$1" "$NOW" >> "$STATE/events.jsonl"; }
+evstart 31
 # AC2: an unanswered owner question is Stuck, the question its reason.
 ev developer developer 32 42 PR_OPENED 100 ""
 # AC3: a stage that ended BLOCKED:, and a gate's block, are Stuck.
@@ -314,7 +324,7 @@ assert_contains "$P" '<p class="why">Which API?</p>' "AC2 the card's reason is t
 assert_eq "stuck" "$(card 33)" "AC3 a stage that ended BLOCKED: is Stuck"
 assert_contains "$P" '<p class="why">BLOCKED: need credentials</p>' "AC3 the card says the BLOCKED: reason"
 assert_eq "stuck" "$(card 34)" "AC3 an issue the gate blocked is Stuck"
-ev stage_start orchestrator 33 "" "" "" ""
+evstart 33
 bash "$TALOS" map >/dev/null 2>&1
 assert_eq "inprogress" "$(card 33)" "AC3 a BLOCKED: stage followed by a new stage_start is In progress"
 cp "$SANDBOX/events.saved" "$STATE/events.jsonl"
@@ -366,10 +376,10 @@ snap "$EMPTY_COLLECT" "{\"active\": true, \"started\": \"$NOW\", \"end\": \"\", 
 bash "$TALOS" map >/dev/null 2>&1
 P="$(cat "$MAP" 2>/dev/null)"
 assert_contains "$P" 'last run ended' "AC7 an active run entry whose pid is dead renders as an ended run"
-assert_not_contains "$P" 'a run is going' "AC7 a dead pid is never a run going"
+assert_not_contains "$P" 'Run going for' "AC7 a dead pid is never a run going"
 snap "$EMPTY_COLLECT" "{\"active\": true, \"started\": \"$NOW\", \"end\": \"\", \"pid\": $$}"
 bash "$TALOS" map >/dev/null 2>&1
-assert_contains "$(cat "$MAP" 2>/dev/null)" 'a run is going' "AC7 an active run entry whose pid is alive is a run going"
+assert_contains "$(cat "$MAP" 2>/dev/null)" 'Run going for' "AC7 an active run entry whose pid is alive is a run going"
 snap "$EMPTY_COLLECT" "{\"active\": true, \"started\": \"2020-01-01T00:00:00Z\", \"end\": \"\", \"pid\": $$}" 2020-01-01T00:00:00Z
 bash "$TALOS" map >/dev/null 2>&1
 assert_contains "$(cat "$MAP" 2>/dev/null)" 'last run ended' "AC7 an active run entry older than a stage could take renders as ended"

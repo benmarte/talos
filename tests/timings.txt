@@ -181,6 +181,7 @@
 54 test-pr-draft.sh
 4 test-pr-mergeable.sh
 46 test-project-map.sh
+45 test-project-map-readable.sh
 22 test-prompt-cache-ttl.sh
 37 test-prompt-embed-change.sh
 0 test-prompt-rules.sh

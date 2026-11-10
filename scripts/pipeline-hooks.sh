@@ -61,6 +61,8 @@
 # `orchestrator` (the dispatched role is in `stage`), so no cost or spend report
 # counts it as a stage run. Same events.enabled / events.path rules and
 # never-block contract as post_stage; a malformed argument is the only exit 2.
+# It also caches the issue's title (`pipeline-meta.sh issue-title`, best effort)
+# so the project map shows it with no provider call (#875).
 #
 # Config (talos.pipeline.json via pipeline-config.sh, read through the cfg()
 # cache — see pipeline-cfg-cache.sh):
@@ -650,6 +652,12 @@ print(json.dumps({
     "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
 }))
 ')"
+  # #875: cache the issue's title for the project map, which makes no provider
+  # call. Best effort: pipeline-meta.sh always exits 0 and a failed read is not
+  # kept; nothing it prints reaches stdout.
+  if [ -f "$SCRIPT_DIR/pipeline-meta.sh" ]; then
+    bash "$SCRIPT_DIR/pipeline-meta.sh" --repo "$(cfg vcs.repo)" issue-title "$issue" >/dev/null 2>&1 || true
+  fi
 }
 
 # run_end STOP_LINE [--issue N]: see the header.
