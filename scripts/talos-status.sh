@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # talos-status.sh -- the harness status line (#385, simplified by #550).
 #
-#   talos #7 qa ●●●●◐○ 3.41M · cache read 48.20M
+#   talos #7 qa ●●●●◐○ 3.41M · cache read 48.20M · map · board
+#   talos idle · map · board
 #
 # Usage: talos-status.sh [--line]
 #
 # One offline command: it reads the local events log and, for a running stage,
 # the harness transcript. No network or VCS call, no model tokens, no resident
-# process. It prints ONE line and always exits 0; with no active issue, no log,
-# not a git repo or any bad input it prints nothing (a traceback never reaches
-# stdout; stderr is silent unless TALOS_STATUS_DEBUG=1).
+# process. It prints ONE line and always exits 0 (a traceback never reaches
+# stdout; stderr is silent unless TALOS_STATUS_DEBUG=1). With no active issue, no
+# log, a merged issue or an unusable events.path it prints `talos idle` (#883) in
+# a repo that has a Talos config (a talos.pipeline.json at the git toplevel or in
+# ${TALOS_HOME:-$HOME/.talos}), and nothing without one; outside a git repo, or
+# with no python3, always nothing.
 #
 # The dots: validator, pm, developer, review (reviewer + security + adversarial),
 # qa, merge. ● done, ◐ running, ○ pending. A role switched off in the config
@@ -43,9 +47,28 @@
 # an unknown figure is never printed as 0.
 #
 # Which issue: the current branch (^(fix|feat)/issue-<N>), else the newest event's.
-# An issue with a `merged` event is no longer active: nothing is printed.
+# An issue with a `merged` event is no longer active: the idle line.
 #
-# Config (data only, JSON): roles.* and events.path from the project's
+# Links (#883): the line ends with ` · map` and ` · board`, OSC 8 hyperlinks
+# (ESC ] 8 ; ; URL ESC \ text ESC ] 8 ; ; ESC \), on the issue line and the idle
+# line.
+#   map    file://<TALOS_HOME>/maps/<file>, the page talos-map.py renders for this
+#          repo: <file> is the entry talos-map.py's locate() names in
+#          <TALOS_HOME>/maps/index.json, shown only when that file exists.
+#   board  board.url when it is an http(s) URL; else Azure DevOps
+#          <vcs.azure.org_url>/<project>/_boards/board/t/<team>/<board> (the
+#          board.azure_team and board.azure_board keys, each part percent-encoded)
+#          and GitLab <repo web URL>/-/boards, built from the origin remote; a
+#          GitHub repo needs board.url. None with board.enabled: false. Built from
+#          config and the remote only: no network.
+# iTerm2, Kitty, WezTerm and other OSC 8 terminals make them clickable;
+# Terminal.app shows the text without a link; tmux strips OSC 8 unless hyperlinks
+# are allowed. TALOS_STATUSLINE_LINKS=0 prints the line without the link parts
+# (and so without any escape byte).
+#
+# Config (data only, JSON): roles.*, events.path, board.enabled, board.url,
+# board.azure_team, board.azure_board, vcs.provider, vcs.repo (else repo) and
+# vcs.azure.org_url / vcs.azure.project from the project's
 # talos.pipeline.json (git toplevel) over ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.json.
 # Log: <git common dir>/<events.path>, default talos/events.jsonl (#517). A path
 # that is absolute, leaves the common dir, or is a symlink means no log. The file
@@ -87,12 +110,18 @@ if [ -n "$_git" ]; then
   _branch="$(git symbolic-ref --short -q HEAD 2>/dev/null)" || _branch=""
 fi
 [ -n "$_common" ] || exit 0
+# The origin URL for the map and GitLab board links. It may carry a credential,
+# so everything between the scheme and the last @ of the authority is dropped here.
+_remote=""
+if [ "${TALOS_STATUSLINE_LINKS:-}" != 0 ]; then
+  _remote="$(git remote get-url origin 2>/dev/null | head -n 1 | sed 's#^\([A-Za-z][A-Za-z0-9+.-]*://\)[^/]*@#\1#')" || _remote=""
+fi
 
 exec 3<&0 || exec 3</dev/null
-python3 -I -B - "$SCRIPT_DIR" "$_common" "$_top" "$_branch" <<'PYEOF'
-import calendar, glob, importlib, json, os, re, select, signal, stat, sys, time
+python3 -I -B - "$SCRIPT_DIR" "$_common" "$_top" "$_branch" "$_remote" <<'PYEOF'
+import calendar, glob, importlib, json, os, re, select, signal, stat, sys, time, urllib.parse
 
-scripts_dir, common, top, branch = sys.argv[1:5]
+scripts_dir, common, top, branch, remote = sys.argv[1:6]
 DEBUG = os.environ.get("TALOS_STATUS_DEBUG") == "1"
 LOG_TAIL = 16 * 1024 * 1024
 LOG_MAX = 64 * 1024 * 1024
@@ -147,14 +176,30 @@ def read_json(path):
         return {}
 
 
-# ── config: roles and events.path, the project file over the global one ──────
-cfg = {}
-for path in (os.path.join(os.environ.get("TALOS_HOME") or os.path.expanduser("~/.talos"), "talos.pipeline.json"),
-             os.path.join(top, "talos.pipeline.json") if top else ""):
+# ── config: the sections read, the project file over the global one ────────────
+home = os.path.abspath(os.environ.get("TALOS_HOME") or os.path.expanduser("~/.talos"))
+cfg, has_config = {}, False
+
+
+def merge(dst, src):
+    for k, v in src.items():
+        if isinstance(v, dict):
+            if not isinstance(dst.get(k), dict):
+                dst[k] = {}
+            merge(dst[k], v)
+        else:
+            dst[k] = v
+
+
+for path in (os.path.join(home, "talos.pipeline.json"), os.path.join(top, "talos.pipeline.json") if top else ""):
+    if path and os.path.isfile(path):
+        has_config = True
     d = read_json(path) if path else {}
-    for key in ("roles", "events"):
+    for key in ("roles", "events", "board", "vcs"):
         if isinstance(d.get(key), dict):
-            cfg.setdefault(key, {}).update(d[key])
+            merge(cfg.setdefault(key, {}), d[key])
+    if isinstance(d.get("repo"), str):
+        cfg["repo"] = d["repo"]
 
 
 def role_on(role):
@@ -162,24 +207,98 @@ def role_on(role):
     return v if isinstance(v, bool) else DEFAULT_ON[role]
 
 
+# ── the links (#883): ` · map` and ` · board`, OSC 8, from local records only ─
+def osc(url, text):
+    return "\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\" % (url, text)
+
+
+def plain_url(u):
+    return isinstance(u, str) and re.fullmatch(r"https?://[^\x00-\x20\x7f-\x9f]+", u) is not None
+
+
+def section(name):
+    v = cfg.get(name)
+    return v if isinstance(v, dict) else {}
+
+
+def text(v):
+    return v if isinstance(v, str) else ""
+
+
+def map_url(provider, repo, az):
+    slug = importlib.import_module("talos-map").locate(provider, repo, remote, text(az.get("org_url")), text(az.get("project")))[0]
+    entry = read_json(os.path.join(home, "maps", "index.json")).get(slug)
+    name = entry.get("file") if isinstance(entry, dict) else None
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]+\.html", name):
+        return ""
+    page = os.path.join(home, "maps", name)
+    return "file://" + urllib.parse.quote(page, safe="/") if os.path.isfile(page) else ""
+
+
+def board_url(provider, repo, az):
+    board = section("board")
+    if board.get("enabled") is False:
+        return ""
+    if plain_url(board.get("url")):
+        return board["url"]
+    if provider == "azure":
+        org, project = text(az.get("org_url")).rstrip("/"), text(az.get("project"))
+        team, name = text(board.get("azure_team")), text(board.get("azure_board"))
+        if org and project and team and name:
+            url = "%s/%s/_boards/board/t/%s/%s" % (org, *(urllib.parse.quote(p, safe="") for p in (project, team, name)))
+            return url if plain_url(url) else ""
+    elif provider == "gitlab":
+        base = importlib.import_module("talos-map").locate(provider, repo, remote, "", "")[2].issues
+        return base + "/-/boards" if base else ""
+    return ""
+
+
+def link_parts():
+    """The link suffix, "" when links are off or none applies. Never raises."""
+    if os.environ.get("TALOS_STATUSLINE_LINKS") == "0":
+        return ""
+    vcs = section("vcs")
+    provider, repo = text(vcs.get("provider")), text(vcs.get("repo")) or text(cfg.get("repo"))
+    az = vcs.get("azure") if isinstance(vcs.get("azure"), dict) else {}
+    out = ""
+    for word, build in (("map", map_url), ("board", board_url)):
+        try:
+            url = build(provider, repo, az)
+        except Exception as e:
+            dbg("%s link: %s" % (word, type(e).__name__))
+            url = ""
+        if url:
+            out += " · " + osc(url, word)
+    return out
+
+
+def idle(msg):
+    """No active issue: `talos idle` and the links in a repo with a Talos config, else nothing."""
+    if not has_config:
+        bye(msg)
+    sys.stdout.reconfigure(encoding="utf-8")
+    print("talos idle" + link_parts())
+    bye(msg)
+
+
 # ── the events log ────────────────────────────────────────────────────────
 rel = cfg.get("events", {}).get("path")
 rel = rel if isinstance(rel, str) and rel else "talos/events.jsonl"
 if os.path.isabs(rel):
-    bye("events.path must be relative to the git common dir")
+    idle("events.path must be relative to the git common dir")
 log = os.path.normpath(os.path.join(common, rel))
 if log != common and not log.startswith(common.rstrip("/") + "/"):
-    bye("events.path leaves the git common dir")
+    idle("events.path leaves the git common dir")
 if not os.path.realpath(os.path.dirname(log)).startswith(os.path.realpath(common)):
-    bye("events.path resolves outside the git common dir")
+    idle("events.path resolves outside the git common dir")
 try:
     fd = os.open(log, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
 except OSError:
-    bye("no log")
+    idle("no log")
 with os.fdopen(fd, "rb") as f:
     st = os.fstat(f.fileno())
     if not stat.S_ISREG(st.st_mode) or st.st_size > LOG_MAX:
-        bye("log is not a regular file within the size cap")
+        idle("log is not a regular file within the size cap")
     if st.st_size > LOG_TAIL:
         f.seek(st.st_size - LOG_TAIL)
         f.readline()
@@ -204,10 +323,10 @@ def issue_of(rec):
 m = re.match(r"(?:fix|feat)/issue-([0-9]{1,9})(?:-|$)", branch)
 issue = int(m.group(1)) if m else next((issue_of(r) for r in reversed(recs) if issue_of(r)), None)
 if issue is None:
-    bye("no active issue")
+    idle("no active issue")
 evs = [r for r in recs if issue_of(r) == issue]
 if any(r.get("event") == "merged" for r in evs):
-    bye("issue is merged")
+    idle("issue is merged")
 
 
 # ── stage state ───────────────────────────────────────────────────────────
@@ -347,6 +466,7 @@ if total > 0:
     line += " " + fmt.fmt_num(total)
 if cache_read is not None:
     line += " · cache read " + fmt.fmt_num(cache_read)
+line += link_parts()
 sys.stdout.reconfigure(encoding="utf-8")
 print(line)
 PYEOF

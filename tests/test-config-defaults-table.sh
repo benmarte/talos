@@ -26,7 +26,7 @@ assert_eq "" "$_out" \
 # ── (d) the table's key set is the old known-keys list: no key lost ──────────
 OLD_KEYS="base_branch repo vcs.provider vcs.repo vcs.token_env vcs.azure.org_url
 vcs.azure.project vcs.azure.work_item_type vcs.azure.area_path vcs.file.source.path
-board.enabled board.stage_label board.project_number board.owner board.status_field board.statuses.*
+board.enabled board.stage_label board.url board.project_number board.owner board.status_field board.statuses.*
 board.status_map.* board.azure_team board.azure_board board.azure_columns.* board.azure_states.* board.azure_states.ready board.azure_states.in_progress
 board.azure_states.in_review board.azure_states.done verify verify.commands verify.qa_mode
 verify.targeted verify.targeted_commands verify.dev_tests verify.e2e verify.guide review.guide developer.checklist verify.e2e_artifacts.dir verify.e2e_artifacts.include verify.e2e_artifacts.max_files verify.e2e_artifacts.max_mb verify.walk.specs verify.walk.max_mb verify.walk.require_video verify.walk.ui_paths verify.ready verify.ci_wait_s verify.ci_requeue_stuck verify.timeout_ms merge.auto merge.method

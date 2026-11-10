@@ -32,7 +32,9 @@ BASE="talos #7 reviewer ●○○○ 2k"
 
 # osc URL TEXT -- the OSC 8 link, ST being ESC followed by a backslash.
 osc() { printf '%s]8;;%s%s\\%s%s]8;;%s\\' "$ESC" "$1" "$ESC" "$2" "$ESC" "$ESC"; }
-fileurl() { printf 'file://%s/maps/%s' "$TALOS_HOME" "$1"; }
+# norm PATH -- the path as the script prints it: a doubled slash (TMPDIR ending in /) collapsed.
+norm() { printf '%s' "${1//\/\///}"; }
+fileurl() { printf 'file://%s/maps/%s' "$(norm "$TALOS_HOME")" "$1"; }
 
 ts_ago() { python3 -I -c 'import datetime as d,sys; print((d.datetime.now(d.timezone.utc)-d.timedelta(seconds=int(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"; }
 active_issue() {
@@ -116,7 +118,7 @@ TALOS_HOME="$SANDBOX/th space"
 export TALOS_HOME
 set_map acme/widget acme-widget.html
 run_status --line
-assert_eq "$BASE · $(osc "file://${SANDBOX}/th%20space/maps/acme-widget.html" map)" "$OUT" "AC1 the file URL is percent-encoded"
+assert_eq "$BASE · $(osc "file://$(norm "$SANDBOX")/th%20space/maps/acme-widget.html" map)" "$OUT" "AC1 the file URL is percent-encoded"
 rm -rf "$TALOS_HOME"
 TALOS_HOME="$SAVE_TH"
 export TALOS_HOME
@@ -326,7 +328,7 @@ mkdir -p "$TH/maps"
 printf '%s\n' '{"acme/widget": {"file": "acme-widget.html"}}' > "$TH/maps/index.json"
 : > "$TH/maps/acme-widget.html"
 chain_vs_direct "links"
-assert_contains "$CHAIN_DIRECT" "${ESC}]8;;file://$TH/maps/acme-widget.html${ESC}\\map" "AC8 the line under test carries the map link"
+assert_contains "$CHAIN_DIRECT" "${ESC}]8;;file://$(norm "$TH")/maps/acme-widget.html${ESC}\\map" "AC8 the line under test carries the map link"
 assert_contains "$CHAIN_DIRECT" "${ESC}]8;;https://example.com/b/1${ESC}\\board" "AC8 the line under test carries the board link"
 
 # a malformed index, a malformed config, an unreadable remote: the rest of the line prints

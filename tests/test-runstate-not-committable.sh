@@ -130,12 +130,12 @@ printf '%s\n' "{\"events\": {\"path\": \"$ABS\"}}" > "$R3/talos.pipeline.json"
 ( cd "$R3" && bash "$HOOKS" post_stage qa qa 519 --verdict PASS --summary "AC3 absolute" >/dev/null 2>&1 )
 assert_file_exists "$ABS" "AC3: an absolute events.path is used as-is"
 out="$(cd "$R3" && TALOS_STATUS_DEBUG=1 bash "$STATUS" --line 2>"$SANDBOX/ac3-dbg.log" </dev/null)"
-assert_eq "" "$out" "AC3: talos-status.sh still refuses an absolute events.path"
+assert_eq "talos idle" "$out" "AC3: talos-status.sh still refuses an absolute events.path (idle line, #883)"
 assert_contains "$(cat "$SANDBOX/ac3-dbg.log")" "relative to the git common dir" "AC3: the refusal names the git common dir as the required root"
 # a `..` that leaves the common dir is refused by the status line
 printf '%s\n' '{"events": {"path": "../escape.jsonl"}}' > "$R3/talos.pipeline.json"
 out="$(cd "$R3" && TALOS_STATUS_DEBUG=1 bash "$STATUS" --line 2>"$SANDBOX/ac3-dbg2.log" </dev/null)"
-assert_eq "" "$out" "AC3: talos-status.sh refuses an events.path that leaves the common dir"
+assert_eq "talos idle" "$out" "AC3: talos-status.sh refuses an events.path that leaves the common dir (idle line, #883)"
 assert_contains "$(cat "$SANDBOX/ac3-dbg2.log")" "leaves the git common dir" "AC3: the containment refusal names the git common dir"
 # ...and the WRITER refuses it too (fix round, 2026-10-07 review: the
 # fail-open relative join in _events_log_path let "../escaped-events.jsonl"
