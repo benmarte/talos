@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: `pipeline-lock.sh` reclaims a dead holder's lock atomically (rename to `<lockdir>.reclaim.*`, delete only if the pid inside is the dead holder, else restore it), so a waiter can no longer delete a live holder's lock and let two processes into `with_lock` at once.
 
 ## [0.20.0] - 2026-11-10
 - fix: when QA's prompt carries the `Targeted run skipped:` line, QA runs no `tests/run-tests.sh` command of any form (`--changed`, `--for`, a pattern or the full suite, directly or through `pipeline-verify.sh`), and step 2 of `agents/qa.md` opens with that rule; QA had run `--for` instead and timed out again.
