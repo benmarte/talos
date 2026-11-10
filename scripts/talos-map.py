@@ -15,7 +15,7 @@ pipeline-meta.sh keeps. No network, no provider call, no LLM. Writes
 <home>/maps/index.html, and prints `map=<path>` and `index=<path>`.
 
 Every value from a record is HTML-escaped; the page has no script and no
-external asset. Stdlib only.
+external asset, and reloads itself with a meta refresh (#877). Stdlib only.
 """
 
 import argparse
@@ -32,9 +32,23 @@ import urllib.parse
 STEPS = ("validator", "pm", "dev", "review", "qa", "docs", "merge")
 STEP_OF = {"validator": "validator", "pm": "pm", "developer": "dev", "reviewer": "review", "security": "review",
            "adversarial": "review", "qa": "qa", "docs": "docs"}
-STATE_WORD = {"done": "done", "running": "running now", "failed": "failed", "redone": "redone", "notreached": "not reached"}
+# The stage bar's segment class per state, and its one-line colour key.
+STEP_CLASS = {"done": " d", "running": " r", "failed": " f", "redone": " x", "notreached": ""}
+KEY = (("done", "done"), ("run", "running now"), ("fail", "failed"), ("redo", "redone after a failure"), ("todo", "not reached"))
 ISO_TS = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 FAILING = {"FAIL", "CHANGES", "FINDINGS", "BLOCKED", "RESTAMP_FAIL"}
+PASSING = {"PASS", "APPROVED", "CLEAR", "CONFIRMED"}
+# Why an issue waits on a person: the tag, a fallback reason and the one step to take.
+STOP_TAG = {"owner": "owner question", "epic": "epic · split proposed", "merge": "merge failed", "blocked": "blocked"}
+STOP_WHY = {"merge": "every stage passed, but the merge did not complete"}
+STOP_DO = {"owner": "answer on the issue", "epic": "approve or edit the split",
+           "merge": "rerun the issue. Talos merges main in a fix round.",
+           "blocked": "read the issue's latest comment, resolve what it names, then run again."}
+RELOAD_S = 30
+MERGED_SHOWN = 8
+ACTIVITY_SHOWN = 7
+ACTIVITY_MAX = 60
+TOP_SPEND = 5
 RECENT_DAYS = 7
 # A run entry the snapshot has not touched for this long is an ended run: a live
 # run writes the snapshot at every pass and stage, and no stage takes this long.
@@ -272,9 +286,26 @@ def steps(evs, opens):
     return out
 
 
-def steps_html(evs, opens):
-    return '<ol class="steps">%s</ol>' % "".join(
-        '<li class="step %s"><b>%s</b> %s</li>' % (st, s, STATE_WORD[st]) for s, st in steps(evs, opens))
+def steps_html(evs, opens, merge_failed=False):
+    """The stage bar: seven segments, each with its state class and its name. A
+    merge that failed after every gate passed has no event of its own, so the
+    caller says so."""
+    sts = steps(evs, opens)
+    if merge_failed:
+        sts[-1] = ("merge", "failed")
+    return '<ol class="steps">%s</ol>' % "".join('<li class="s%s">%s</li>' % (STEP_CLASS[st], s) for s, st in sts)
+
+
+def bar(tok, widest, px):
+    """A token count with a small bar scaled to the widest count shown."""
+    if tok is None:
+        return "—"
+    return '<span class="tok"><i style="width:%dpx"></i>%s</span>' % (
+        max(1 if tok else 0, int(px * tok / widest)) if widest else 0, esc(fmt_tok(tok)))
+
+
+def fmt_tok(t):
+    return "%.2fM" % (t / 1e6) if t >= 1_000_000 else ("%dk" % round(t / 1000) if t >= 1000 else str(t))
 
 
 def main(argv):
@@ -385,19 +416,15 @@ def main(argv):
                 return str(e.get("summary") or e.get("verdict") or "").splitlines()[0][:200] if (e.get("summary") or e.get("verdict")) else ""
         return ""
 
-    def fmt_tok(t):
-        return "%.2fM" % (t / 1e6) if t >= 1_000_000 else ("%dk" % round(t / 1000) if t >= 1000 else str(t))
-
-    # Header.
+    # The run state: the pill and the page header.
     name = slug
     counts = {"Done": 0, "In progress": 0, "Stuck": 0, "Not started": 0}
     for n in shown:
         counts[state(n)] += 1
-    n_fly, n_stuck = counts["In progress"], counts["Stuck"]
     if run_going(run, parse_ts(snap.get("ts")), now):
         began = parse_ts(run.get("started"))
-        run_line = "Run going%s, %d issue%s in flight, %d stuck" % (
-            " for " + dur((now - began).total_seconds()) if began else "", n_fly, "" if n_fly == 1 else "s", n_stuck)
+        pill = '<span class="pill live"><span class="dot"></span>Run going%s</span>' % (
+            " · started %s ago" % dur((now - began).total_seconds()) if began else "")
     else:
         if run.get("end"):
             why = "last run ended: <code>%s</code>" % esc(str(run.get("end"))[:300])
@@ -405,66 +432,51 @@ def main(argv):
             why = "last run ended (no end line: it stopped without one)"
         else:
             why = "no run recorded"
-        run_line = "No run going · " + why
-    if col_ts:
-        run_line += " · queue as of %s" % esc(when(col_ts, now))
-    parts = []
-    parts.append('<header><h1>%s</h1><p class="sub">updated %s</p><p class="runline">%s</p>'
-                 '<p class="counts"><span class="c done">%d merged</span> <span class="c prog">%d in flight</span> '
-                 '<span class="c stuck">%d stuck</span> <span class="c todo">%d not started</span></p></header>'
-                 % (esc(name), esc(fmt_ts(now)), run_line,
-                    counts["Done"], counts["In progress"], counts["Stuck"], counts["Not started"]))
-    if not col:
-        parts.append('<p class="note">No run state yet: the queue, the next step and the owner questions '
-                     'appear after a <code>talos.sh run</code>. This page shows what the events log knows.</p>')
+        pill = '<span class="pill idle"><span class="dot"></span>Idle · %s</span>' % why
+    header = '<header><h1>%s</h1>%s<span class="meta">updated %s · reloads every %d s</span></header>' % (
+        esc(name), pill, esc(when(now, now)), RELOAD_S)
+    note = "" if col else ('<p class="note">No run state yet: the queue, the next step and the owner questions '
+                           'appear after a <code>talos.sh run</code>. This page shows what the events log knows.</p>')
 
-    # Track: priority tiers, from the snapshot's own map. The collect's covers
-    # the queued and in-flight issues only: a merged issue is no longer in it.
+    # Priority tiers, from the snapshot's own map. The collect's covers the
+    # queued and in-flight issues only: a merged issue is no longer in it.
     prio = snap.get("priority") if isinstance(snap.get("priority"), dict) else {}
     tiers = []
     for label, val in (("p0", 0), ("p1", 1), ("p2", 2), ("unlabelled", None)):
         ns = [n for n in shown if (prio.get(str(n)) == val if val is not None else str(n) not in prio)]
-        c = {s: sum(1 for n in ns if state(n) == s) for s in counts}
-        tiers.append((label, c, len(ns)))
-    current = next((t[0] for t in tiers if t[1]["In progress"] + t[1]["Not started"] + t[1]["Stuck"]), None)
-    track = ('<section><h2>Track</h2><ol class="track">%s</ol></section>' % "".join(
-        '<li class="%s"><b>%s</b> %d merged · %d in flight · %d queued%s</li>'
-        % ("here" if label == current else "", esc(label), c["Done"], c["In progress"] + c["Stuck"], c["Not started"],
-           ' <span class="you">you are here</span>' if label == current else "")
-        for label, c, total in tiers if total))
+        tiers.append((label, sum(1 for n in ns if state(n) == "Done"), len(ns)))
+    current = next((label for label, done, total in tiers if done < total), None)
 
-    # Parts: needs you, in flight, queued, done. Each issue is in one of them.
+    def tier_html(label, done, total):
+        here = label == current
+        return ('<div class="tier">%s<span class="muted">%d of %d merged</span></div><div class="meter"><i style="width:%d%%"></i></div>'
+                % ('<span><b>%s</b><span class="here">you are here</span></span>' % esc(label) if here else "<b>%s</b>" % esc(label),
+                   done, total, done * 100 // total))
+    track = "".join(tier_html(*t) for t in tiers if t[2])
+
+    # Parts: needs you, in flight, queued, merged. Each issue is in one of them.
     pr_stage = {p["issue"]: p.get("stage") for p in col.get("prs") or []
                 if isinstance(p, dict) and num(p.get("issue")) and isinstance(p.get("stage"), str)}
+    held = {n for n in col.get("held") or [] if num(n)}
 
     def title_html(n):
         return esc(title_of(a.titles, title_key, n)) or "(title not cached)"
 
     def head(n):
-        return "<h3>%s %s</h3>" % (link(links.issue(n), "#%d" % n), title_html(n))
+        return '<div class="t">%s %s</div>' % (link(links.issue(n), "#%d" % n), title_html(n))
 
     def tok_text(n):
         t = tokens(n)
         return "tokens —" if t is None else "%s tokens" % fmt_tok(t)
 
-    def info(n, st):
+    def pr_text(n):
         pr = pr_of.get(n)
-        bits = [esc(st)]
-        if pr:
-            bits.append("PR " + link(links.pr(pr), "#%d" % pr) + (" · stage " + esc(pr_stage[n]) if pr_stage.get(n) else ""))
-        bits.append(esc(tok_text(n)))
-        return "<p>%s</p>" % " · ".join(bits)
+        if not pr:
+            return ""
+        return "PR " + link(links.pr(pr), "#%d" % pr) + (" · stage " + esc(pr_stage[n]) if pr_stage.get(n) else "")
 
-    def stage_line(n):
-        op = open_starts(by_issue.get(n, []))
-        if not op:
-            return "no stage running"
-        stage, (_, ts) = max(op.items(), key=lambda kv: kv[1][0])
-        word = "QA" if stage == "qa" else stage
-        if stage == "developer" and rounds.get(n):
-            word += ", fix round %d" % rounds[n]
-        began = parse_ts(ts)
-        return esc(word) + (" · running " + dur((now - began).total_seconds()) if began else "")
+    def sub(n, tag, *bits):
+        return '<div class="sub">%s%s</div>' % (tag, " · ".join(b for b in bits if b))
 
     def last_line(n):
         for e in reversed(by_issue.get(n, [])):
@@ -474,54 +486,90 @@ def main(argv):
                 return s if len(s) <= 120 else s[:119] + "…"
         return ""
 
-    def card(n, st):
+    def stop_kind(n):
+        """Why a stuck issue waits, from what the map already reads. First match wins."""
         evs = by_issue.get(n, [])
-        stuck = st == "Stuck"
-        tail = ('<p class="why">%s</p>' % esc(stuck_reason(n) or "waiting on a person")) if stuck else (
-            '<p class="last">%s</p>' % esc(last_line(n)) if last_line(n) else "")
-        return '<article class="card %s%s">%s%s%s%s%s</article>' % (
-            re.sub(r"[^a-z]", "", st.lower()), "" if stuck else " wide", head(n),
-            "" if stuck else '<p class="stage">%s</p>' % stage_line(n),
-            steps_html(evs, open_starts(evs)), info(n, st), tail)
+        if n in asks:
+            return "owner"
+        stop = next((e for e in reversed(evs) if e.get("event") == "blocked" or e.get("verdict") == "BLOCKED"), None)
+        if stop and stop.get("role") in ("pm", "planner"):
+            return "epic"
+        sts = dict(steps(evs, open_starts(evs)))
+        if all(sts[s] in ("done", "redone") for s in STEPS[:-1]) and sts["merge"] == "notreached":
+            return "merge"
+        return "blocked"
+
+    def needs_row(n):
+        evs = by_issue.get(n, [])
+        kind = stop_kind(n)
+        at = (parse_ts(evs[-1].get("ts")) if evs else None) or col_ts
+        tag = '<span class="tag stuck">%s</span>' % esc(STOP_TAG[kind] + (" · " + ago(at, now) if at else ""))
+        body = head(n) + sub(n, tag, pr_text(n), esc(tok_text(n)))
+        if kind == "owner":
+            body += '<div class="ask"><b>Question:</b> %s</div>' % esc(asks[n])
+        else:
+            body += '<div class="why">%s</div>' % esc(stuck_reason(n) or STOP_WHY.get(kind) or "waiting on a person")
+        step = link(links.issue(n), STOP_DO[kind]) + "." if kind in ("owner", "epic") else STOP_DO[kind]
+        return '<div class="row"><div>%s<div class="do">To continue: %s</div></div>%s</div>' % (
+            body, step, steps_html(evs, open_starts(evs), kind == "merge"))
+
+    def flight_row(n):
+        evs = by_issue.get(n, [])
+        op = open_starts(evs)
+        tag = ""
+        if op:
+            stage, (_, ts) = max(op.items(), key=lambda kv: kv[1][0])
+            began = parse_ts(ts)
+            tag = '<span class="tag run">%s</span>' % esc(("QA" if stage == "qa" else stage)
+                                                          + (" · running " + dur((now - began).total_seconds()) if began else ""))
+        last = last_line(n)
+        return '<div class="row"><div>%s%s%s</div>%s</div>' % (
+            head(n), sub(n, tag, "fix round %d" % rounds[n] if rounds.get(n) else "", pr_text(n), esc(tok_text(n))),
+            '<div class="why">Last: %s</div>' % esc(last) if last else "", steps_html(evs, op))
 
     by_state = {s: [n for n in shown if state(n) == s] for s in counts}
-    needs = "".join(card(n, "Stuck") for n in by_state["Stuck"])
-    qs = [o for o in col.get("owners") or [] if isinstance(o, dict) and num(o.get("n"))]
-    asked = "".join('<blockquote>%s<footer>%s</footer></blockquote>'
-                    % (esc(str(o.get("question") or "(question not readable)")[:1000]), link(links.issue(o["n"]), "#%d" % o["n"]))
-                    for o in qs)
-    if needs or asked:
-        parts.append('<section class="needs"><h2>Needs you</h2>%s%s</section>'
-                     % ('<div class="grid">%s</div>' % needs if needs else "", asked))
-    if by_state["In progress"]:
-        parts.append('<section class="inflight"><h2>In flight</h2><div class="rows">%s</div></section>'
-                     % "".join(card(n, "In progress") for n in by_state["In progress"]))
-    if by_state["Not started"]:
-        parts.append('<section class="queued"><h2>Queued</h2><ul class="queued">%s</ul></section>'
-                     % "".join("<li>%s %s</li>" % (link(links.issue(n), "#%d" % n), title_html(n)) for n in by_state["Not started"]))
+    main = []
+    if by_state["Stuck"]:
+        main.append('<section class="needs" id="needs"><h2>Needs you <span class="n">%d</span></h2>%s</section>'
+                    % (len(by_state["Stuck"]), "".join(needs_row(n) for n in by_state["Stuck"])))
+    key = "".join('<span><i style="background:var(--%s)"></i>%s</span>' % (c, w) for c, w in KEY)
+    main.append('<section id="flight"><h2>In flight <span class="n">%d</span></h2><div class="key">%s</div>%s</section>'
+                % (len(by_state["In progress"]), key,
+                   "".join(flight_row(n) for n in by_state["In progress"]) or '<p class="muted">nothing in flight</p>'))
+    waiting = []
+    for n in queued:
+        if state(n) == "Not started" and n not in waiting:
+            waiting.append(n)
+    if waiting:
+        def queue_row(i, n):
+            p = prio.get(str(n))
+            chip = '<span class="pri p%d">p%d</span>' % (p, p) if num(p) is not None and p >= 0 else '<span class="pri">—</span>'
+            return ('<tr><td class="muted">%d</td><td>%s %s</td><td>%s</td><td class="hide-sm muted">%s</td></tr>'
+                    % (i, link(links.issue(n), "#%d" % n), title_html(n), chip,
+                       "waiting on you · pipeline:needs-owner" if n in held else "next free lane"))
+        main.append('<section id="queue"><h2>Queued <span class="n">%d</span></h2><table><tr><th>#</th><th>issue</th>'
+                    '<th>priority</th><th class="hide-sm">why it waits</th></tr>%s</table></section>'
+                    % (len(waiting), "".join(queue_row(i, n) for i, n in enumerate(waiting, 1))))
     if by_state["Done"]:
         def merged_at(n):
             return parse_ts(next((e.get("ts") for e in reversed(by_issue[n]) if e.get("event") == "merged"), ""))
-        rows = []
-        for n in sorted(by_state["Done"], key=lambda n: merged_at(n) or now, reverse=True):
+        done = sorted(by_state["Done"], key=lambda n: merged_at(n) or now, reverse=True)
+        widest = max([tokens(n) or 0 for n in done] + [1])
+
+        def merged_row(n):
             pr, t, m = pr_of.get(n), tokens(n), merged_at(n)
-            rows.append('<tr class="done"><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>'
-                        % (link(links.issue(n), "#%d" % n), title_html(n), link(links.pr(pr), "#%d" % pr) if pr else "—",
-                           "—" if t is None else esc(fmt_tok(t)), esc(when(m, now)) if m else "—"))
-        parts.append('<section><h2>Done</h2><details class="done"><summary>%d merged in the last %d days</summary>'
-                     '<div class="scroll"><table><tr><th>issue</th><th>title</th><th>PR</th><th>tokens</th><th>merged</th></tr>%s</table></div>'
-                     '</details></section>' % (len(rows), RECENT_DAYS, "".join(rows)))
-    if not shown:
-        parts.append('<p class="note">Nothing in flight, queued or recently merged.</p>')
-    parts.append('<section class="legend"><h2>Legend</h2><p>Each card shows the stages in order: '
-                 + " › ".join("<b>%s</b>" % s for s in STEPS) + '.</p><ul>'
-                 '<li><b>done</b>: the stage finished.</li><li><b>running now</b>: the stage is running.</li>'
-                 '<li><b>failed</b>: its latest result was a failure.</li><li><b>redone</b>: done again after a failure.</li>'
-                 '<li><b>not reached</b>: it has not started, or a failing review or QA sent it back.</li></ul>'
-                 '<p>A failed or redone step means a gate sent the work back to the developer.</p></section>')
-    parts.append(track)
+            return ('<tr><td>%s</td><td>%s</td><td class="hide-sm">%s</td><td class="hide-sm muted">%s</td><td class="num">%s</td></tr>'
+                    % (link(links.issue(n), "#%d" % n), title_html(n), link(links.pr(pr), "#%d" % pr) if pr else "—",
+                       esc(ago(m, now)) if m else "—", bar(t, widest, 60)))
+        rows = [merged_row(n) for n in done]
+        more = ('<details><summary>Show %d more</summary><table>%s</table></details>' % (len(rows) - MERGED_SHOWN, "".join(rows[MERGED_SHOWN:]))
+                if len(rows) > MERGED_SHOWN else "")
+        main.append('<section><h2>Merged · last %d days <span class="n">%d</span></h2><table><tr><th>issue</th><th>title</th>'
+                    '<th class="hide-sm">PR</th><th class="hide-sm">merged</th><th class="num">tokens</th></tr>%s</table>%s</section>'
+                    % (RECENT_DAYS, len(rows), "".join(rows[:MERGED_SHOWN]), more))
 
     # Next step.
+    nxt_bar = ""
     if col:
         nxt = ""
         tmp = "%s.collect.%d.json" % (a.state, os.getpid())
@@ -540,35 +588,55 @@ def main(argv):
                 os.unlink(tmp)
             except OSError:
                 pass
-        parts.append('<section><h2>Next step</h2><p>%s</p></section>' % esc(nxt or "unknown"))
+        nxt_bar = '<div class="next"><b>Next step</b> · %s%s</div>' % (
+            esc(nxt or "unknown"), ' <span class="muted">(queue as of %s)</span>' % esc(when(col_ts, now)) if col_ts else "")
 
-    # Changed since the last run started.
+    # Activity: what changed since the last run started, newest first.
     since = parse_ts(run.get("started") or "")
-    changed = []
+    feed = []
     for e in events:
         ts = parse_ts(e.get("ts"))
         if since and (not ts or ts < since):
             continue
         ev, v = e.get("event"), e.get("verdict")
         if ev == "merged":
-            what = "merged" + (" PR #%d" % e["pr"] if num(e.get("pr")) else "")
+            what = esc("merged" + (" PR #%d" % e["pr"] if num(e.get("pr")) else ""))
         elif ev == "blocked":
-            what = "blocked: " + str(e.get("summary") or "")[:160]
+            what = '<span class="v-bad">blocked</span>: ' + esc(str(e.get("summary") or "")[:160])
         elif ev == e.get("role") and v:
-            what = "%s %s" % (e.get("role"), v)
+            what = "%s %s" % (esc(e.get("role")), '<span class="%s">%s</span>' % (
+                "v-bad" if v in FAILING else "v-ok", esc(v)) if v in FAILING or v in PASSING else esc(v))
         else:
             continue
-        changed.append('<li><time>%s</time> %s %s</li>' % (esc(when(ts, now)) if ts else "unknown time",
-                                                          link(links.issue(e["issue"]), "#%d" % e["issue"]), esc(what)))
-    parts.append('<section><h2>Changed since the last run started</h2>%s</section>'
-                 % ("<ol>%s</ol>" % "".join(changed[-60:]) if changed else "<p>Nothing yet.</p>"))
+        feed.append('<li><time>%s</time><span>%s %s</span></li>' % (
+            ts.strftime("%H:%M") if ts else "—", link(links.issue(e["issue"]), "#%d" % e["issue"]), what))
+    feed = feed[-ACTIVITY_MAX:][::-1]
+    aside = []
+    if feed:
+        later = ('<details><summary>Show %d earlier</summary><ul class="feed">%s</ul></details>'
+                 % (len(feed) - ACTIVITY_SHOWN, "".join(feed[ACTIVITY_SHOWN:])) if len(feed) > ACTIVITY_SHOWN else "")
+        aside.append('<section><h2>Activity · this run</h2><ul class="feed">%s</ul>%s</section>' % ("".join(feed[:ACTIVITY_SHOWN]), later))
+    if track:
+        aside.append('<section><h2>Priority track</h2>%s</section>' % track)
 
-    # Spend.
-    rows = [(n, tokens(n)) for n in shown if tokens(n)]
-    parts.append('<section><h2>Spend</h2><table><tr><th>issue</th><th>tokens</th></tr>%s'
-                 '<tr class="total"><td>total</td><td>%s</td></tr></table></section>'
-                 % ("".join("<tr><td>%s</td><td>%s</td></tr>" % (link(links.issue(n), "#%d" % n), esc(fmt_tok(t))) for n, t in rows),
-                    esc(fmt_tok(sum(t for _, t in rows)))))
+    # Spend: every issue the page shows, the five with the most tokens listed.
+    spent = [(n, tokens(n)) for n in shown if tokens(n)]
+    total = sum(t for _, t in spent)
+    top = sorted(spent, key=lambda r: (-r[1], r[0]))[:TOP_SPEND]
+    if top:
+        aside.append('<section><h2>Top spend · %d days</h2><table>%s<tr class="total"><td class="muted">total</td>'
+                     '<td class="num"><b>%s</b></td></tr></table></section>' % (
+                         RECENT_DAYS, "".join('<tr><td>%s</td><td class="num">%s</td></tr>'
+                                              % (link(links.issue(n), "#%d" % n), bar(t, top[0][1], 120)) for n, t in top),
+                         esc(fmt_tok(total))))
+
+    tiles = '<div class="kpis">%s</div>' % "".join((
+        '<a class="kpi%s" href="#needs"><b>%d</b><span>needs you</span></a>' % (" alert" if by_state["Stuck"] else "", len(by_state["Stuck"])),
+        '<a class="kpi" href="#flight"><b>%d</b><span>in flight</span></a>' % len(by_state["In progress"]),
+        '<a class="kpi" href="#queue"><b>%d</b><span>queued</span></a>' % len(waiting),
+        '<div class="kpi"><b>%d</b><span>merged · %d days</span></div>' % (len(by_state["Done"]), RECENT_DAYS),
+        '<div class="kpi"><b>%s</b><span>tokens · %d days</span></div>' % (esc(fmt_tok(total)), RECENT_DAYS)))
+    parts = [header, note, tiles, nxt_bar, '<div class="grid"><main>', "".join(main), "</main><aside>", "".join(aside), "</aside></div>"]
 
     maps = os.path.join(a.home, "maps")
     os.makedirs(maps, exist_ok=True)
@@ -584,7 +652,7 @@ def main(argv):
         if any(isinstance(v, dict) and v.get("file") == fname for k, v in reg.items() if k != slug):
             fname = "%s-%s.html" % (fname[:-5], hashlib.sha1(slug.encode("utf-8")).hexdigest()[:8])
     page = os.path.join(maps, fname)
-    write(page, doc("Talos map: " + name, scrub("".join(parts))))
+    write(page, doc("Talos map: " + name, scrub("".join(parts)), refresh=True))
     reg[slug] = {"file": fname, "updated": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
                  "line": "%d merged · %d in flight · %d stuck · %d not started"
                          % (counts["Done"], counts["In progress"], counts["Stuck"], counts["Not started"])}
@@ -608,36 +676,87 @@ def write(path, text):
 
 
 CSS = """
-:root{--bg:#fbfaf7;--fg:#1d1d1b;--mut:#6b6a66;--card:#fff;--line:#e3e1db;--done:#2f7d4f;--prog:#2f5f9e;--stuck:#b23b2e;--todo:#8a877f}
-@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#ecebe6;--mut:#a3a19a;--card:#21211f;--line:#34332f;--done:#5cbf84;--prog:#78a6e6;--stuck:#ee7a6b;--todo:#a3a19a}}
-*{box-sizing:border-box}body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;max-width:1100px;margin:auto}
-h1{font-size:1.5em;margin:.2em 0}h2{font-size:1.1em;margin:1.6em 0 .5em;border-bottom:1px solid var(--line);padding-bottom:.2em}
-h3{font-size:1em;margin:0 0 .3em}a{color:var(--prog)}.sub,.note,time{color:var(--mut)}code{font-size:.9em;overflow-wrap:anywhere}
-.counts .c{margin-right:.8em;font-weight:600}.c.done,.step.done{color:var(--done)}.prog{color:var(--prog)}.stuck{color:var(--stuck)}.todo{color:var(--todo)}
-.track{padding-left:1.2em}.track .here{font-weight:600}.you{color:var(--prog);font-size:.85em}
-.grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}
-.card{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--todo);border-radius:6px;padding:10px;overflow-wrap:anywhere}
-.card.done{border-left-color:var(--done)}.card.inprogress{border-left-color:var(--prog)}.card.stuck{border-left-color:var(--stuck)}
-.card p{margin:.2em 0}.why{color:var(--stuck)}
-.runline{font-size:1.05em;font-weight:600;margin:.3em 0;overflow-wrap:anywhere}
-.rows{display:grid;gap:10px;grid-template-columns:minmax(0,1fr)}.card.wide .stage{font-weight:600}.last{color:var(--mut);font-size:.9em}
-.steps{display:flex;flex-wrap:wrap;gap:4px;list-style:none;padding:0;margin:.4em 0}
-.step{margin:0;padding:1px 6px;border:1px solid var(--line);border-radius:4px;font-size:.8em}
-.step.running{border-color:var(--prog);color:var(--prog);font-weight:600}.step.failed{border-color:var(--stuck);color:var(--stuck);font-weight:600}
-.step.redone{border-style:double;border-color:var(--done)}.step.notreached{border-style:dashed;color:var(--mut)}
-.scroll{overflow-x:auto}summary{cursor:pointer}.legend li{margin:.1em 0}.queued{overflow-wrap:anywhere}
-blockquote{margin:.5em 0;padding:.5em .8em;border-left:3px solid var(--prog);background:var(--card);white-space:pre-wrap;overflow-wrap:anywhere}
-blockquote footer{color:var(--mut);margin-top:.3em}
-table{border-collapse:collapse}td,th{padding:.2em .8em .2em 0;text-align:left}tr.total td{font-weight:600;border-top:1px solid var(--line)}
-ol,ul{padding-left:1.2em}li{margin:.15em 0;overflow-wrap:anywhere}
+:root{--bg:#f7f6f2;--panel:#fff;--ink:#1d1d1b;--muted:#6b6a65;--line:#e4e2db;
+--done:#2f7d4f;--done-bg:#e3f1e8;--run:#1f5fbf;--run-bg:#e2ecfb;--fail:#b3261e;--fail-bg:#fbe4e2;
+--redo:#9a6200;--redo-bg:#fbf0d9;--todo:#c9c6bd;--todo-bg:#f0eee8;--bar:#cfd8e6}
+@media (prefers-color-scheme:dark){:root{--bg:#151513;--panel:#1e1e1b;--ink:#ecebe6;--muted:#9c9a92;--line:#2f2e2a;
+--done:#6cc28f;--done-bg:#1d3326;--run:#7aa7ef;--run-bg:#1b2840;--fail:#f08a80;--fail-bg:#3a1d1a;
+--redo:#e2b252;--redo-bg:#3a2e14;--todo:#4a4842;--todo-bg:#262521;--bar:#33415a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+a{color:var(--run)}code{font-size:.9em;overflow-wrap:anywhere}
+.wrap{max-width:1360px;margin:0 auto;padding:20px 16px 48px}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin-bottom:16px}
+h1{font-size:20px;margin:0;overflow-wrap:anywhere}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12.5px;font-weight:600;max-width:100%;overflow-wrap:anywhere}
+.pill.live{background:var(--run-bg);color:var(--run)}.pill.idle{background:var(--todo-bg);color:var(--muted)}
+.dot{flex:none;width:8px;height:8px;border-radius:50%;background:currentColor}
+.meta{color:var(--muted);font-size:12.5px;margin-left:auto}.note{color:var(--muted)}
+.kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:16px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px;text-decoration:none;color:inherit}
+.kpi b{display:block;font-size:24px;line-height:1.2}.kpi span{color:var(--muted);font-size:12px}
+.kpi.alert{border-color:var(--fail);background:var(--fail-bg)}.kpi.alert b,.kpi.alert span{color:var(--fail)}
+.next{background:var(--run-bg);border:1px solid var(--line);border-left:4px solid var(--run);border-radius:10px;padding:10px 14px;margin-bottom:16px;overflow-wrap:anywhere}
+.next b{color:var(--run)}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
+main,aside{min-width:0}
+section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:16px}
+section.needs{border-color:var(--fail);border-left:4px solid var(--fail)}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 10px;display:flex;align-items:center;gap:8px}
+section.needs h2{color:var(--fail)}
+h2 .n{background:var(--todo-bg);color:var(--ink);border-radius:999px;padding:0 8px;font-size:12px;letter-spacing:0}
+section.needs h2 .n{background:var(--fail-bg);color:var(--fail)}
+.key{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11.5px;color:var(--muted);margin:-4px 0 10px}
+.key i{display:inline-block;width:14px;height:6px;border-radius:3px;margin-right:4px;vertical-align:middle}
+.row{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:6px 18px;padding:10px 0;border-top:1px solid var(--line)}
+h2+.row,.key+.row{border-top:0}
+.t,.sub,.why,.ask,.do{overflow-wrap:anywhere}
+.t{font-weight:600}.t a{font-weight:700;text-decoration:none}
+.sub{color:var(--muted);font-size:12.5px;margin-top:2px}
+.why{font-size:12.5px;margin-top:4px;opacity:.85}
+.ask{margin-top:6px;padding:8px 10px;background:var(--fail-bg);border-radius:6px;font-size:13px;white-space:pre-wrap}
+.ask b{color:var(--fail)}
+.do{margin-top:6px;font-size:12.5px}.do a{font-weight:600}
+.tag{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:4px;margin-right:6px;vertical-align:1px}
+.tag.run{background:var(--run-bg);color:var(--run)}.tag.stuck{background:var(--fail-bg);color:var(--fail)}
+.steps{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px;align-self:center;list-style:none;margin:0;padding:0}
+.s{margin:0;font-size:9.5px;text-align:center;color:var(--muted);overflow-wrap:anywhere}
+.s::before{content:"";display:block;height:7px;border-radius:4px;margin-bottom:3px;background:var(--todo)}
+.s.d::before{background:var(--done)}.s.r::before{background:var(--run)}.s.f::before{background:var(--fail)}.s.x::before{background:var(--redo)}
+.s.r{color:var(--run);font-weight:700}.s.f{color:var(--fail);font-weight:700}
+table{width:100%;border-collapse:collapse}
+td,th{text-align:left;padding:6px 8px;border-top:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
+th{font-size:11.5px;color:var(--muted);font-weight:600;border-top:0}
+td.num,th.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.tok{display:flex;align-items:center;gap:8px;justify-content:flex-end}
+.tok i{display:block;height:6px;border-radius:3px;background:var(--bar)}
+.muted{color:var(--muted)}
+.pri{display:inline-block;font-size:11px;font-weight:700;padding:0 6px;border-radius:4px;background:var(--todo-bg)}
+.pri.p0{background:var(--fail-bg);color:var(--fail)}.pri.p1{background:var(--redo-bg);color:var(--redo)}
+tr.total td{font-weight:600}
+details summary{cursor:pointer;color:var(--muted);font-size:12.5px;margin-top:8px}
+.feed{list-style:none;margin:0;padding:0}
+.feed li{display:grid;grid-template-columns:44px minmax(0,1fr);gap:8px;padding:5px 0;border-top:1px solid var(--line);font-size:12.5px;overflow-wrap:anywhere}
+.feed li:first-child{border-top:0}.feed time{color:var(--muted)}
+.v-ok{color:var(--done);font-weight:600}.v-bad{color:var(--fail);font-weight:600}
+.tier{display:flex;justify-content:space-between;gap:8px;font-size:12.5px;padding:4px 0}
+.tier .here{font-size:11px;color:var(--run);font-weight:700;margin-left:6px}
+.meter{height:6px;border-radius:3px;background:var(--todo-bg);overflow:hidden;margin-bottom:6px}
+.meter i{display:block;height:100%;background:var(--done)}
+.index{padding-left:1.2em}.index li{margin:.15em 0;overflow-wrap:anywhere}
+@media (max-width:980px){.grid{grid-template-columns:1fr}.row{grid-template-columns:1fr}}
+@media (max-width:640px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.meta{margin-left:0;width:100%}.hide-sm{display:none}.wrap{padding:12px 10px 32px}.s{font-size:8.5px}}
 """
 
 
-def doc(title, body):
+def doc(title, body, refresh=False):
+    """One page. A map page reloads itself: a meta refresh is no script, so the
+    policy below still holds."""
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            + ('<meta http-equiv="refresh" content="%d">' % RELOAD_S if refresh else "") +
             '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'">'
-            '<title>%s</title><style>%s</style></head><body>%s</body></html>\n' % (esc(title), CSS, body))
+            '<title>%s</title><style>%s</style></head><body><div class="wrap">%s</div></body></html>\n' % (esc(title), CSS, body))
 
 
 if __name__ == "__main__":

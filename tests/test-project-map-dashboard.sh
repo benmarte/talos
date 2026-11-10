@@ -125,21 +125,9 @@ elif mode == "key":
 elif mode == "head":
     m = re.search(r"<head>.*?</head>", p, re.S)
     print(m.group(0) if m else "<none>")
-elif mode == "tiles":
-    m = re.search(r"<div class=\"kpis\">.*?</div>\s*(?=<div class=\"next\"|<p class=\"note\"|<div class=\"grid\">)", p, re.S)
-    print(m.group(0) if m else "<none>")
-elif mode == "main":
-    m = re.search(r"<main>.*?</main>", p, re.S)
-    print(m.group(0) if m else "<none>")
-elif mode == "aside":
-    m = re.search(r"<aside>.*?</aside>", p, re.S)
-    print(m.group(0) if m else "<none>")
-elif mode == "order":      # 1 when every marker is on the page, in the given order
+elif mode == "order":      # ok when every marker is on the page, in the given order
     at = [p.find(x) for x in arg.split("|")]
     print("ok" if all(a >= 0 for a in at) and at == sorted(at) else "bad %s" % at)
-elif mode == "steps":      # name:class words of the seven segments in the text on stdin... of the file
-    print(" ".join("%s:%s" % (m.group(2), (m.group(1) or "").strip() or "-")
-          for m in re.finditer(r"<li class=\"s( [dfrx])?\">([a-z]+)</li>", p)))
 ' "$@"
 }
 piece() {  # <mode> [<arg>]: pick from the current page
@@ -231,7 +219,7 @@ assert_eq "1" "$(grep -o '<div class="key">' <<< "$PAGE" | wc -l | tr -d ' ')" "
 for w in done 'running now' failed redone 'not reached'; do
   assert_contains "$(piece key)" "$w" "AC5 the key names $w in words"
 done
-assert_eq "ok" "$(piece order '<section id="flight">|<div class="key">|<div class="row">')" "AC5 the key sits above the In flight rows"
+assert_eq "ok" "$(piece order '<section id="flight">|<div class="key">|</span></div><div class="row">')" "AC5 the key sits above the In flight rows"
 assert_not_contains "$PAGE" 'class="legend"' "AC5 no Legend section"
 assert_not_contains "$PAGE" '<h2>Legend</h2>' "AC5 and no Legend heading"
 assert_not_contains "$PAGE" 'class="step ' "AC5 no per-card text chips"
