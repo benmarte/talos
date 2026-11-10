@@ -30,7 +30,7 @@ err1="$( (
   kill() {
     if [ "$_hijacked" -eq 0 ] && [ "$1" = "-0" ]; then
       _hijacked=1
-      rm -rf "$LOCK1"
+      rm -rf "${LOCK1:?}"
       mkdir "$LOCK1"
       printf '%s\n' "$LIVE_PID:1" > "$LOCK1/pid"
     fi
