@@ -79,7 +79,8 @@ def run_going(run, snap_ts, now):
 
 
 def read_lanes(lanes_dir, now):
-    """(live lanes, whether any record was readable). Each `talos.sh run` keeps
+    """(live lanes, whether any record was readable, the issues with a record of
+    any kind, live or not). Each `talos.sh run` keeps
     one record in <state dir>/lanes/, keyed by its worktree (#878). A lane is
     live by the `run_going` rule: its pid is alive and the record is fresh. An
     unreadable record is ignored. Each live lane gains `n`: the digits ending
@@ -87,13 +88,14 @@ def read_lanes(lanes_dir, now):
     try:
         names = sorted(os.listdir(lanes_dir))
     except OSError:
-        return [], False
-    live, seen = [], False
+        return [], False, set()
+    live, seen, recorded = [], False, set()
     for name in names:
         rec = read_state(os.path.join(lanes_dir, name)) if name.endswith(".json") else None
         if not rec or not num(rec.get("issue")) or not isinstance(rec.get("worktree"), str):
             continue
         seen = True
+        recorded.add(rec["issue"])
         ts = parse_ts(rec.get("ts"))
         if ts and now - ts <= RUN_STALE_AFTER and pid_alive(rec.get("pid")):
             live.append(rec)
@@ -101,7 +103,7 @@ def read_lanes(lanes_dir, now):
     for i, rec in enumerate(live, 1):
         digits = re.search(r"(\d+)$", os.path.basename(rec["worktree"].rstrip("/")))
         rec["n"] = int(digits.group(1)) if digits else i
-    return live, seen
+    return live, seen, recorded
 
 
 def esc(v):
@@ -121,7 +123,8 @@ def read_events(path):
                     d = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(d, dict) and num(d.get("issue")):
+                # A run_end line may carry no issue: it is still the end of a run.
+                if isinstance(d, dict) and (num(d.get("issue")) or d.get("event") == "run_end"):
                     out.append(d)
     except OSError:
         pass
@@ -280,6 +283,15 @@ def open_starts(evs):
     return {s: v for s, v in start.items() if v[0] > fin.get(s, -1)}
 
 
+def is_blocked(e):
+    """A BLOCKED verdict, or a role's own event whose summary opens with
+    `BLOCKED:` or `**BLOCKED:` (the PM stage of an epic says so only there)."""
+    if e.get("verdict") == "BLOCKED":
+        return True
+    s = str(e.get("summary") or "").lstrip()
+    return bool(e.get("event") and e.get("event") == e.get("role") and s.startswith(("BLOCKED:", "**BLOCKED:")))
+
+
 def steps(evs, opens):
     """(step, state) for the seven stages, from the issue's finishing events in
     order. A stage is done unless its verdict is a failing one (pm finishes with
@@ -345,7 +357,9 @@ def main(argv):
         sys.stderr.write("talos-map: no repository slug\n")
         return 1
     now = datetime.datetime.now(datetime.timezone.utc)
-    events = read_events(a.events)
+    every = read_events(a.events)
+    events = [e for e in every if num(e.get("issue"))]
+    run_end = max((t for t in (parse_ts(e.get("ts")) for e in every if e.get("event") == "run_end") if t), default=None)
     snap = read_state(a.state) or {}
     # The queue view: the collect of the run's last state read. An empty one (no
     # snapshot, or a run that ended before it read the state) is no queue view,
@@ -353,7 +367,7 @@ def main(argv):
     col = snap.get("collect") if isinstance(snap.get("collect"), dict) else {}
     run = snap.get("run") if isinstance(snap.get("run"), dict) else {}
     col_ts = parse_ts(snap.get("collect_ts")) if col else None
-    lanes, lanes_seen = read_lanes(os.path.join(os.path.dirname(a.state), "lanes"), now)
+    lanes, lanes_seen, lane_issues = read_lanes(os.path.join(os.path.dirname(a.state), "lanes"), now)
 
     by_issue = {}
     for e in events:
@@ -383,19 +397,35 @@ def main(argv):
     # A failing review or QA verdict only sends the work back to the developer:
     # that is a fix round, In progress, and so is a stage that started after the
     # last failing verdict.
+    live_issues = {ln["issue"] for ln in lanes}
+
+    def stage_running(n, evs):
+        """A stage is going only while its latest `stage_start` is open (no
+        `stage_complete` and no role event of its own for that stage after it)
+        and something vouches for it: its lane record when it has one (live by
+        the `run_going` rule), else a start newer than the collect and than the
+        last run's end (no collect: the start counts)."""
+        start = next((i for i in range(len(evs) - 1, -1, -1) if evs[i].get("event") == "stage_start"), -1)
+        if start < 0:
+            return False
+        stage = evs[start].get("stage")
+        if open_starts(evs).get(stage, (-1,))[0] != start:
+            return False
+        if any(e.get("event") == "blocked" or (e.get("event") == "stage_complete" and e.get("role") == stage)
+               for e in evs[start + 1:]):
+            return False
+        if n in lane_issues:
+            return n in live_issues
+        began = parse_ts(evs[start].get("ts"))
+        return not began or not ((col_ts and began < col_ts) or (run_end and began < run_end))
+
     moved, running, rounds = set(), set(), {}
     for n, evs in by_issue.items():
-        last_fail = last_start = -1
-        for i, e in enumerate(evs):
-            if e.get("event") == "stage_start":
-                last_start = i
-            elif e.get("event") == "blocked" or e.get("verdict") in FAILING:
-                last_fail = i
         rounds[n] = sum(1 for e in evs if e.get("event") == e.get("role") and e.get("verdict") in FAILING
                         and e.get("verdict") != "BLOCKED")
         if n in merged:
             continue
-        if last_start > last_fail:
+        if stage_running(n, evs):
             running.add(n)
             blocked.discard(n)
         late = [e for e in evs if not col or (col_ts and (parse_ts(e.get("ts")) or col_ts) >= col_ts)]
@@ -405,7 +435,7 @@ def main(argv):
         said = [e for e in late if e.get("event") not in ("stage_start", "stage_complete", "run_end", "hand_note", "finding_outcome")]
         if n in running:
             continue
-        if said and said[-1].get("verdict") == "BLOCKED":
+        if said and is_blocked(said[-1]):
             blocked.add(n)
         elif said:
             blocked.discard(n)
@@ -446,7 +476,7 @@ def main(argv):
         if n in asks:
             return asks[n].strip().splitlines()[0][:200] if asks[n].strip() else ""
         for e in reversed(by_issue.get(n, [])):
-            if e.get("event") == "blocked" or e.get("verdict") in FAILING:
+            if e.get("event") == "blocked" or e.get("verdict") in FAILING or is_blocked(e):
                 return str(e.get("summary") or e.get("verdict") or "").splitlines()[0][:200] if (e.get("summary") or e.get("verdict")) else ""
         return ""
 
@@ -528,7 +558,7 @@ def main(argv):
         evs = by_issue.get(n, [])
         if n in asks:
             return "owner"
-        stop = next((e for e in reversed(evs) if e.get("event") == "blocked" or e.get("verdict") == "BLOCKED"), None)
+        stop = next((e for e in reversed(evs) if e.get("event") == "blocked" or is_blocked(e)), None)
         if stop and stop.get("role") in ("pm", "planner"):
             return "epic"
         sts = dict(steps(evs, open_starts(evs)))
