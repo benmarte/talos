@@ -151,6 +151,7 @@
 7 test-lean-stage-prompts.sh
 106 test-llm-profiles.sh
 33 test-lock.sh
+2 test-lock-reclaim.sh
 23 test-marker-author-trust.sh
 0 test-marker-contract.sh
 19 test-mergebase.sh
