@@ -61,10 +61,10 @@ Two optional files on your base branch tell the stages what you know about the r
 `install.sh --global` wires Claude Code's status line to `scripts/talos-status.sh` (an existing one is chained, shown above the Talos line, and `--statusline-undo` restores it), which reads the local events log (no network call, no model tokens):
 
 ```
-talos #7 qa ●●●●◐○ 3.41M · cache read 48.20M
+talos #7 qa ●●●●◐○ 3.41M · cache read 48.20M · map · board
 ```
 
-One dot per stage (validator, pm, developer, review, qa, merge): done, running, pending, then the tokens spent on the issue so far, then its cache reads, which are not part of that total (the part is absent when no run recorded them). Other harnesses can call `talos-status.sh --line` from their footer hook. After a cleared session or an LLM switch, run `/talos:pipeline` (or `talos.sh run`) again: the work is resumed from GitHub labels, the PR and the events log, with no extra file to maintain. See [Hooks, events, spend and the status line](docs/reference.md#hooks-events-spend-and-the-status-line).
+One dot per stage (validator, pm, developer, review, qa, merge): done, running, pending, then the tokens spent on the issue so far, then its cache reads, which are not part of that total (the part is absent when no run recorded them). The line ends with clickable [OSC 8](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda) `map` (the project map page) and `board` links, built offline; `board` needs the optional `board.url` on GitHub (Azure DevOps and GitLab derive it), and `TALOS_STATUSLINE_LINKS=0` turns the links off. In a repo with a Talos config and no active issue it prints `talos idle` plus the links. Other harnesses can call `talos-status.sh --line` from their footer hook. After a cleared session or an LLM switch, run `/talos:pipeline` (or `talos.sh run`) again: the work is resumed from GitHub labels, the PR and the events log, with no extra file to maintain. See [Hooks, events, spend and the status line](docs/reference.md#hooks-events-spend-and-the-status-line).
 
 `talos.sh map` renders a one-page [project map](docs/reference.md#project-map) of the queue, `talos.sh evidence prune` removes the QA evidence of finished PRs from the [`talos-evidence` branch](docs/reference.md#evidence-storage) in one commit, and `agents.claude_api_credits: true` lets claude stages on a Max or Team plan start on its [monthly API credits](docs/reference.md#monthly-api-credits).
 
