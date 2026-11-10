@@ -79,18 +79,17 @@ assert_file_absent "$SANDBOX/provider.calls" "AC5 rendering made no gh, curl, gl
 assert_file_exists "$MAP" "AC5 the page is written with no pipeline-vcs.sh and every provider command failing"
 
 # AC2: the cards.
-card() {  # <issue> [<page>]: the state class of the issue's card, row or queued item (#875)
+card() {  # <issue> [<page>]: the state of the issue, from the section its row is in (#877)
   python3 -I -c '
 import re, sys
 p, n = open(sys.argv[1]).read(), sys.argv[2]
-url = "https://github.com/acme/widget/issues/" + n
-m = re.search(r"<article class=\"card ([a-z]+)(?: wide)?\"><h3><a href=\"%s\">#%s</a>" % (url, n), p)
-if m:
-    print(m.group(1))
-elif "<tr class=\"done\"><td><a href=\"%s\">" % url in p:
-    print("done")
-elif "<li><a href=\"%s\">#%s</a>" % (url, n) in p:
-    print("notstarted")
+anchor = "<a href=\"https://github.com/acme/widget/issues/%s\">#%s</a>" % (n, n)
+for pat, st in ((r"<section[^>]*id=\"needs\"[^>]*>.*?</section>", "stuck"), (r"<section[^>]*id=\"flight\"[^>]*>.*?</section>", "inprogress"),
+                (r"<section[^>]*id=\"queue\"[^>]*>.*?</section>", "notstarted"), (r"<section><h2>Merged.*?</section>", "done")):
+    m = re.search(pat, p, re.S)
+    if m and anchor in m.group(0):
+        print(st)
+        break
 else:
     print("<none>")' "${2:-$MAP}" "$1"
 }
@@ -99,24 +98,24 @@ assert_eq "stuck" "$(card 12)" "AC2 a blocked issue is Stuck"
 assert_eq "inprogress" "$(card 13)" "AC2 an issue with an open PR is In progress"
 assert_eq "notstarted" "$(card 14)" "AC2 a queued issue is Not started"
 assert_contains "$PAGE" '<a href="https://github.com/acme/widget/pull/23">#23</a>' "AC2 the in-flight card links its PR"
-assert_contains "$PAGE" '<p class="why">&lt;script&gt;alert(1)&lt;/script&gt; needs &quot;onload= work</p>' "AC2 the stuck card says why, escaped"
+assert_contains "$PAGE" '<div class="why">&lt;script&gt;alert(1)&lt;/script&gt; needs &quot;onload= work</div>' "AC2 the stuck card says why, escaped"
 assert_contains "$PAGE" 'Add a &lt;b&gt;bold&lt;/b&gt; title' "AC2 a cached title is shown, escaped"
-assert_contains "$PAGE" '<li class="step done"><b>dev</b> done</li>' \
+assert_contains "$PAGE" '<li class="s d">dev</li>' \
   "AC2 a finished stage shows as done in the card's steps"
-# The track: each tier's merged / in flight / queued counts. A merged issue is
-# counted in the tier it had while it was queued.
-assert_contains "$PAGE" '<li class="here"><b>p0</b> 1 merged · 0 in flight · 1 queued <span class="you">you are here</span></li>' \
+# The priority track: each tier's merged of all. A merged issue is counted in
+# the tier it had while it was queued.
+assert_contains "$PAGE" '<div class="tier"><span><b>p0</b><span class="here">you are here</span></span><span class="muted">1 of 2 merged</span></div>' \
   "AC2 the track counts a merged issue in its own tier and marks the current one"
-assert_contains "$PAGE" '<li class=""><b>unlabelled</b> 0 merged · 3 in flight · 0 queued</li>' \
+assert_contains "$PAGE" '<div class="tier"><b>unlabelled</b><span class="muted">0 of 3 merged</span></div>' \
   "AC2 the track's unlabelled tier holds only the issues with no tier (the owner question's issue is Stuck)"
 
 # AC3: owner question, next step, changes, spend.
 assert_contains "$PAGE" 'Pick A or B? &lt;img src=x onerror=alert(1)&gt;' "AC3 the owner question is quoted, escaped"
-assert_contains "$PAGE" '<h2>Next step</h2><p>' "AC3 the next step section is there"
-assert_not_contains "$PAGE" '<h2>Next step</h2><p>unknown</p>' "AC3 the next step comes from the snapshot"
+assert_contains "$PAGE" '<div class="next"><b>Next step</b> · ' "AC3 the next step bar is there"
+assert_not_contains "$PAGE" '<div class="next"><b>Next step</b> · unknown' "AC3 the next step comes from the snapshot"
 assert_contains "$PAGE" 'merged PR #21' "AC3 the merge since the run started is listed"
-assert_contains "$PAGE" 'reviewer CHANGES' "AC3 the verdict since the run started is listed"
-assert_contains "$PAGE" '<tr class="total"><td>total</td><td>16k</td></tr>' "AC3 the spend total sums the issues shown"
+assert_contains "$PAGE" 'reviewer <span class="v-bad">CHANGES</span>' "AC3 the verdict since the run started is listed"
+assert_contains "$PAGE" '<tr class="total"><td class="muted">total</td><td class="num"><b>16k</b></td></tr>' "AC3 the spend total sums the issues shown"
 
 # AC4: escaping, no script, no foreign link.
 assert_contains "$PAGE" '&lt;script&gt;alert(1)&lt;/script&gt;' "AC4 a record's script tag appears escaped"
@@ -155,7 +154,7 @@ json.dump({"ts": sys.argv[2], "collect": {},
 bash "$TALOS" map >/dev/null 2>&1
 P="$(cat "$MAP" 2>/dev/null)"
 assert_eq "1" "$(grep -c 'No run state yet' "$MAP")" "AC6 a snapshot with an empty collect says the queue view needs a run, once"
-assert_not_contains "$P" '<h2>Next step</h2>' "AC6 an empty collect is never shown as an empty queue"
+assert_not_contains "$P" '<div class="next">' "AC6 an empty collect is never shown as an empty queue"
 assert_not_contains "$P" 'Nothing waits on you' "AC6 an empty collect is never shown as no owner question"
 assert_contains "$P" 'stop reason=state-unavailable' "AC6 the run's end line still shows without a collect"
 mv "$STATE/state.json.saved" "$STATE/state.json"
@@ -267,7 +266,7 @@ assert_eq "notstarted" "$(card 14 "$MID")" "AC9 after a stage the page still sho
 assert_contains "$PM" 'Ship it?' "AC9 after a stage the page still shows the owner question"
 assert_not_contains "$PM" 'No run state yet' "AC9 after a stage the page has its queue view"
 assert_eq "inprogress" "$(card 9 "$MID")" "AC9 the issue whose stage just ended is In progress, whatever the queue read before it said"
-assert_contains "$PM" 'Run going for' "AC9 during the run the page says a run is going"
+assert_contains "$PM" 'Run going · started' "AC9 during the run the page says a run is going"
 SNAP="$(cat "$STATE/state.json" 2>/dev/null)"
 assert_contains "$SNAP" '"queued": [9, 14]' "AC9 the snapshot keeps the pass's collect after the stage and at the end"
 assert_contains "$SNAP" '"end": "stop reason=iterations-exhausted max=2"' "AC9 the end line of a run that stops after a stage is in the snapshot"
@@ -320,9 +319,9 @@ P="$(cat "$MAP" 2>/dev/null)"
 assert_eq "inprogress" "$(card 31)" "AC1 a running stage newer than the last failing verdict is In progress, not Stuck"
 assert_contains "$P" 'fix round 1' "AC1 the card carries the fix round number"
 assert_eq "stuck" "$(card 32)" "AC2 an unanswered owner question is Stuck"
-assert_contains "$P" '<p class="why">Which API?</p>' "AC2 the card's reason is the question"
+assert_contains "$P" '<div class="ask"><b>Question:</b> Which API?</div>' "AC2 the card's reason is the question"
 assert_eq "stuck" "$(card 33)" "AC3 a stage that ended BLOCKED: is Stuck"
-assert_contains "$P" '<p class="why">BLOCKED: need credentials</p>' "AC3 the card says the BLOCKED: reason"
+assert_contains "$P" '<div class="why">BLOCKED: need credentials</div>' "AC3 the card says the BLOCKED: reason"
 assert_eq "stuck" "$(card 34)" "AC3 an issue the gate blocked is Stuck"
 evstart 33
 bash "$TALOS" map >/dev/null 2>&1
@@ -376,10 +375,10 @@ snap "$EMPTY_COLLECT" "{\"active\": true, \"started\": \"$NOW\", \"end\": \"\", 
 bash "$TALOS" map >/dev/null 2>&1
 P="$(cat "$MAP" 2>/dev/null)"
 assert_contains "$P" 'last run ended' "AC7 an active run entry whose pid is dead renders as an ended run"
-assert_not_contains "$P" 'Run going for' "AC7 a dead pid is never a run going"
+assert_not_contains "$P" 'Run going' "AC7 a dead pid is never a run going"
 snap "$EMPTY_COLLECT" "{\"active\": true, \"started\": \"$NOW\", \"end\": \"\", \"pid\": $$}"
 bash "$TALOS" map >/dev/null 2>&1
-assert_contains "$(cat "$MAP" 2>/dev/null)" 'Run going for' "AC7 an active run entry whose pid is alive is a run going"
+assert_contains "$(cat "$MAP" 2>/dev/null)" 'Run going' "AC7 an active run entry whose pid is alive is a run going"
 snap "$EMPTY_COLLECT" "{\"active\": true, \"started\": \"2020-01-01T00:00:00Z\", \"end\": \"\", \"pid\": $$}" 2020-01-01T00:00:00Z
 bash "$TALOS" map >/dev/null 2>&1
 assert_contains "$(cat "$MAP" 2>/dev/null)" 'last run ended' "AC7 an active run entry older than a stage could take renders as ended"
