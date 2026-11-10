@@ -199,6 +199,13 @@ run_status --line
 assert_eq "$BASE · $(osc https://gitlab.example.com/grp/proj/-/boards board)" "$OUT" "AC3 GitLab board URL from an ssh remote"
 
 reset
+BELL=$'\007'
+set_remote "https://gitlab.example.com/grp/pr${BELL}oj.git"
+set_cfg '{"vcs": {"provider": "gitlab"}}'
+run_status --line
+assert_eq "$BASE" "$OUT" "AC3 GitLab board URL with a control character in the origin: no board part, no escape injected"
+
+reset
 set_cfg '{"vcs": {"provider": "github", "repo": "acme/widget"}}'
 run_status --line
 assert_eq "$BASE" "$OUT" "AC3 GitHub with no board.url: no board part"
