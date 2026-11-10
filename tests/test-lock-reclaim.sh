@@ -59,9 +59,19 @@ out3="$( (
   [ -e "$LOCK3" ] && echo "lock-still-present"
   exit 0
 ) 2>&1 )" || rc3=$?
-assert_eq "0" "$rc3" "AC3 a dead-holder lock is reclaimed and acquired"
+assert_eq "0" "$rc3" "AC2 a dead-holder lock that is still unchanged is reclaimed and acquired"
 assert_eq "" "$out3" "AC3 no <lockdir>.reclaim.* left behind and the lock is absent after release"
 assert_eq "" "$(ls -d "$LOCK3".reclaim.* 2>/dev/null || true)" "AC3 no reclaim dir on disk afterwards"
 assert_file_absent "$LOCK3" "AC3 lock dir absent after release"
+
+# ── AC4: the timeout path still warns once and runs the command ──────────────
+RES4="$SANDBOX/ac4-target"
+LOCK4="$RES4.lock.d"
+mkdir -p "$LOCK4"
+printf '%s\n' "$$:1" > "$LOCK4/pid"   # held by this live process
+err4="$( ( . "$LOCK_SH"; with_lock "$RES4" 1 -- bash -c "echo ran > '$SANDBOX/ac4.out'" ) 2>&1 >/dev/null )"
+assert_eq "1" "$(printf '%s\n' "$err4" | grep -c 'timed out')" "AC4 the timeout path warns exactly once"
+assert_file_exists "$SANDBOX/ac4.out" "AC4 the timeout path still runs the command"
+assert_eq "$$:1" "$(cat "$LOCK4/pid" 2>/dev/null || true)" "AC4 the live holder lock is left untouched"
 
 finish
