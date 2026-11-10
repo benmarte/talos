@@ -102,6 +102,7 @@ vcs.azure.work_item_type	str	Product Backlog Item	-	-	repo
 vcs.azure.area_path	str		-	-	repo
 vcs.file.source.path	path	plan.md	-	-	repo
 board.enabled	bool	true	-	-	repo
+board.stage_label	bool	false	-	-	repo
 board.project_number	int		-	PIPELINE_PROJECT_NUMBER	repo
 board.owner	str		derived	PIPELINE_BOARD_OWNER	repo
 board.status_field	str	Status	-	PIPELINE_STATUS_FIELD	repo

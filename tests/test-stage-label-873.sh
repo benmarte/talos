@@ -144,9 +144,10 @@ export STUB_PR_BODY="Closes #$N"
 bash "$TALOS" post-merge "$PR" "$N" >"$SANDBOX/pm.out" 2>&1
 CLEARED="$(end_state "talos:stage:qa,talos:stage:docs")"
 assert_eq "" "$CLEARED" "AC7 post-merge (closes) removes every talos:stage:* label"
-export STUB_PR_BODY="Part of #$N"
+export STUB_PR_BODY="Part of #$N" STUB_ISSUE_LIST='[{"number":42,"title":"t","labels":[],"body":"b"}]'
 : > "$GH_LOG"
-bash "$TALOS" post-merge "$PR" "$N" >"$SANDBOX/pm.out" 2>&1
+bash "$TALOS" post-merge 10 "$N" >"$SANDBOX/pm.out" 2>&1
+assert_contains "$(grep -h 'issues/42/comments' "$GH_LOG")" "talos:part-of pr=10" "AC7 the merged PR is only part of the issue"
 assert_eq "talos:stage:qa" "$(end_state "talos:stage:qa")" "AC7 post-merge (part-of) leaves the marker"
 export STUB_PR_BODY="Closes #$N"
 : > "$GH_LOG"

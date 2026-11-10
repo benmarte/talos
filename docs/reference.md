@@ -366,6 +366,7 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | Key | Type | Default | Env override | Scope |
 |---|---|---|---|---|
 | `board.enabled` | bool | `true` | - | repo |
+| `board.stage_label` | bool | `false` | - | repo |
 | `board.project_number` | int | - | `PIPELINE_PROJECT_NUMBER` | repo |
 | `board.owner` | str | derived | `PIPELINE_BOARD_OWNER` | repo |
 | `board.status_field` | str | `Status` | `PIPELINE_STATUS_FIELD` | repo |
@@ -936,6 +937,9 @@ A Projects v2 board with a single-select `Status` field mirrors progress. Keys (
 | `board.owner` | Project owner, default the repo owner (`PIPELINE_BOARD_OWNER`) |
 | `board.status_field` | Field name (`PIPELINE_STATUS_FIELD`) |
 | `board.status_map.<status>` | Map a pipeline status to your column |
+| `board.stage_label` | `true` shows the issue's current Talos stage on its card as a `talos:stage:<role>` label; default `false` (see below) |
+
+**Stage label (`board.stage_label`).** The board's Status column has four values, so "In review" covers reviewer, security, docs and QA. With `board.stage_label: true`, `talos.sh prompt` (the point that writes `stage_start`) gives the issue exactly one of `talos:stage:validator`, `pm`, `developer`, `reviewer`, `security`, `adversarial`, `docs` or `qa`: it adds the new stage's label and removes the other seven, so a card shows where the run is. `planner` and `threat` get no marker. A BLOCKED, FAIL, CHANGES or FINDINGS verdict keeps the label, so a blocked card shows the stage it stopped in. A merge that closes the issue removes them all; a "Part of" merge leaves the label for the next stage start. The labels are display only: no routing code reads them, and they are not in the `pipeline:*` or approval label sets. `bootstrap-labels.sh` creates them. It is independent of `board.enabled` and works on every provider that has `label-issue`. It is off by default because each stage start adds label writes (on GitHub one POST plus seven DELETEs, a 404 ignored; cf. #554) and a closing merge adds the removals. A failed write is `warn reason=stage-label-failed issue=<n>` and never blocks the stage.
 
 Talos sets `In progress` (validator confirmed), `In review` (PR opened), `Blocked` and `Done` (merged). `create-issue` also sets `Ready` for a `pipeline:ready` issue. `bootstrap-board.sh` creates all five options. The `gh` transport checks the four it sets (after `status_map`) on a run's first call; the token transport checks only the option it is about to set.
 

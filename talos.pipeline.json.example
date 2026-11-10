@@ -81,6 +81,7 @@
 
   "board": {
     "enabled": true,
+    "stage_label": false,
     "project_number": 1,
     "owner": "myorg",
     "status_field": "Status",

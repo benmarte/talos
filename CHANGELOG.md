@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- feat: opt-in `board.stage_label` (default off) puts one display-only `talos:stage:<role>` label on the issue at each stage start (validator, pm, developer, reviewer, security, adversarial, docs, qa) and removes it when a merge closes the issue, so a board card shows the stage; `bootstrap-labels.sh` creates the labels, no routing reads them, and a failed write is a warning.
 - fix: `pipeline-lock.sh` reclaims a dead holder's lock atomically (rename to `<lockdir>.reclaim.*`, delete only if the pid inside is the dead holder, else restore it), so a waiter can no longer delete a live holder's lock and let two processes into `with_lock` at once.
 
 ## [0.20.0] - 2026-11-10

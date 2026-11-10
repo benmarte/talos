@@ -245,6 +245,7 @@
 9 test-spend-format.sh
 10 test-spend-wiring.sh
 0 test-stage-overhead.sh
+5 test-stage-label-873.sh
 5 test-stage-start.sh
 28 test-stage-timeout.sh
 4 test-stage-usage-rows.sh

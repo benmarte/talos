@@ -25,7 +25,7 @@ CONTRACT="$TALOS_ROOT/scripts/pipeline-contract.sh"
 . "$CONTRACT"
 
 for _arr in TALOS_ROLES TALOS_STAGE_LABELS TALOS_APPROVAL_LABELS TALOS_APPROVAL_ROLES \
-            TALOS_MISC_LABELS TALOS_MARKERS; do
+            TALOS_MISC_LABELS TALOS_STAGE_MARKER_LABELS TALOS_MARKERS; do
   declare -p "$_arr" >/dev/null 2>&1 || fail "setup: $_arr is defined" "missing after sourcing $CONTRACT"
 done
 declare -F talos_contract_json >/dev/null 2>&1 \
@@ -39,7 +39,7 @@ declare -F talos_contract_json >/dev/null 2>&1 \
 # TALOS_*_LABELS entry.
 _contract_label_names() {
   local entry
-  for entry in "${TALOS_STAGE_LABELS[@]}" "${TALOS_APPROVAL_LABELS[@]}" "${TALOS_MISC_LABELS[@]}"; do
+  for entry in "${TALOS_STAGE_LABELS[@]}" "${TALOS_APPROVAL_LABELS[@]}" "${TALOS_STAGE_MARKER_LABELS[@]}" "${TALOS_MISC_LABELS[@]}"; do
     printf '%s\n' "${entry%%|*}"
   done
 }
@@ -51,7 +51,9 @@ _contract_label_names() {
 # (see pipeline-contract.sh's TALOS_MARKERS comment).
 _contract_marker_names() {
   printf '%s\n' "${TALOS_MARKERS[@]}"
-  local role
+  # The display-only stage labels (#873) share one `talos:stage` prefix in prose.
+  local role _e _n
+  for _e in "${TALOS_STAGE_MARKER_LABELS[@]}"; do _n="${_e%%|*}"; printf '%s\n' "${_n%:*}"; done
   for role in "${TALOS_ROLES[@]}"; do
     printf 'talos:%s\n' "$role"
   done
@@ -174,7 +176,7 @@ declare -F talos_contract_check_label_length >/dev/null 2>&1 \
   || fail "setup: talos_contract_check_label_length is defined" "missing after sourcing $CONTRACT"
 
 _length_violation=false
-for entry in "${TALOS_STAGE_LABELS[@]}" "${TALOS_APPROVAL_LABELS[@]}" "${TALOS_MISC_LABELS[@]}"; do
+for entry in "${TALOS_STAGE_LABELS[@]}" "${TALOS_APPROVAL_LABELS[@]}" "${TALOS_STAGE_MARKER_LABELS[@]}" "${TALOS_MISC_LABELS[@]}"; do
   if ! talos_contract_check_label_length "$entry" >/dev/null 2>&1; then
     _length_violation=true
     fail "label length: '${entry%%|*}' is within GitHub's 50/100-char limits" \
