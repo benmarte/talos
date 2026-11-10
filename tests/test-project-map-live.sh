@@ -10,7 +10,8 @@
 #   AC5 the Lanes panel: one row per live lane, `lane <n> · #<issue>`, `<role> · <age>`
 #   AC6 a dead or stale lane record shows no row; the pill counts live lanes
 #   AC7 Merged and Queued cells but the title and why-it-waits carry a no-wrap class
-# AC8 is pinned by tests/test-project-map.sh (AC5, AC9); AC9 is prose.
+#   AC8 map.enabled false and no provider call still hold (also pinned by tests/test-project-map.sh)
+# AC9 is prose.
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
@@ -189,7 +190,8 @@ echo "CONFIRMED: real, reproducible, in scope"
 TALOS_stubagentWk5Rp9Ty
 export MAP STATE SANDBOX
 : > "$STATE/events.jsonl"
-rm -rf "${STATE:?}/lanes" "$STATE/state.json" "$MAP"
+rm -rf "${STATE:?}/lanes"
+rm -f "$STATE/state.json" "$MAP"
 OUT="$(CLAUDE_CONFIG_DIR="$SANDBOX/cc" TALOS_LEASE_TTL_S=1 TALOS_NOW=1000 bash "$DS/talos.sh" run --issue 9 --max-iterations 1 2>"$SANDBOX/err")"; RC=$?
 assert_eq "0" "$RC" "AC1 the run with a dispatched stage exits 0" "$OUT $(cat "$SANDBOX/err")"
 SEEN="$(cat "$SANDBOX/at-agent.$(basename "$SANDBOX").html" 2>/dev/null)"
@@ -204,7 +206,8 @@ git -C "$SANDBOX" config user.email t@example.com
 git -C "$SANDBOX" config user.name t
 git -C "$SANDBOX" worktree add -q "$SANDBOX/wt/lane-1" -b lane-one 2>/dev/null
 git -C "$SANDBOX" worktree add -q "$SANDBOX/wt/lane-2" -b lane-two 2>/dev/null
-rm -rf "${STATE:?}/lanes" "$STATE/state.json" "$SANDBOX/go" "$SANDBOX"/agent.started.* "$MAP"
+rm -rf "${STATE:?}/lanes"
+rm -f "$STATE/state.json" "$SANDBOX/go" "$SANDBOX"/agent.started.* "$MAP"
 : > "$STATE/events.jsonl"
 export WAIT_FOR_GO=1
 for L in 1 2; do
@@ -224,10 +227,30 @@ assert_contains "$(cat "$STATE/state.json" 2>/dev/null)" '"run": {"active": true
 PAGE="$(render)"
 assert_contains "$PAGE" 'lane 1 · <a href="https://github.com/acme/widget/issues/9">#9</a>' "AC5 the page lists lane 1 with its issue"
 assert_contains "$PAGE" 'lane 2 · <a href="https://github.com/acme/widget/issues/10">#10</a>' "AC5 the page lists lane 2 with its issue"
-assert_contains "$PAGE" 'validator · ' "AC5 each lane row names its role and age"
+assert_eq "2" "$(grep -o 'class="muted">validator · ' <<< "$PAGE" | wc -l | tr -d ' ')" "AC5 each lane row names its role and age"
 assert_contains "$PAGE" 'Run going · 2 lanes' "AC6 the pill counts the two running lanes"
 : > "$SANDBOX/go"
 wait
 assert_eq "0" "$(ls "$STATE/lanes" 2>/dev/null | wc -l | tr -d ' ')" "AC4 both runs removed their records at the end"
+
+# AC8: map.enabled false turns the stage-start redraw and the lane record off; a
+# render makes no provider or network call (the same rules tests/test-project-map.sh pins).
+printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "issues": {"max_parallel": 1}, "roles": {"validator": true}, "map": {"enabled": false}}\n' > "$PIPELINE_CONFIG"
+rm -rf "${STATE:?}/lanes" "${TH:?}/maps"
+rm -f "$STATE/state.json" "$SANDBOX/go" "$SANDBOX"/agent.started.* "$SANDBOX"/at-agent.*
+unset WAIT_FOR_GO
+OUT="$(CLAUDE_CONFIG_DIR="$SANDBOX/cc" TALOS_LEASE_TTL_S=1 TALOS_NOW=1000 bash "$DS/talos.sh" run --issue 9 --max-iterations 1 2>&1)"; RC=$?
+assert_eq "0" "$RC" "AC8 the run with the map off exits 0" "$OUT"
+assert_file_absent "$STATE/lanes" "AC8 with map.enabled false the run writes no lane record"
+assert_file_absent "$TH/maps" "AC8 with map.enabled false no page is drawn at stage start or end"
+assert_not_contains "$OUT" "map-failed" "AC8 with map.enabled false the run prints no map warn"
+printf '{"vcs": {"provider": "github", "repo": "acme/widget"}}\n' > "$PIPELINE_CONFIG"
+mkdir -p "$SANDBOX/bin"
+printf '#!/bin/sh\necho "$0" >> "%s/provider.calls"\nexit 1\n' "$SANDBOX" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+for c in curl glab az; do cp "$SANDBOX/bin/gh" "$SANDBOX/bin/$c"; done
+lane lane-1 9 qa 125 "$$" 125
+PATH="$SANDBOX/bin:$PATH" bash "$TALOS" map >/dev/null 2>&1
+assert_file_absent "$SANDBOX/provider.calls" "AC8 a render with a lane record makes no gh, curl, glab or az call"
+assert_file_exists "$MAP" "AC8 and still draws the page"
 
 finish

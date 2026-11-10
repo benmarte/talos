@@ -204,9 +204,9 @@ assert_eq "validator:d pm:d dev:d review:d qa:d docs:d merge:f" "$(steps_of "$RO
 # ── AC4: why it waits ────────────────────────────────────────────────────────
 QUEUE="$(piece section 'id="queue"')"
 assert_contains "$QUEUE" '<table>' "AC4 Queued is a table"
-assert_contains "$QUEUE" '<tr><td class="muted">1</td><td><a href="https://github.com/acme/widget/issues/53">#53</a> (title not cached)</td><td><span class="pri">—</span></td><td class="hide-sm muted">next free lane</td></tr>' "AC4 a capped issue waits for the next free lane (position 1, no priority)"
-assert_contains "$QUEUE" '<tr><td class="muted">2</td><td><a href="https://github.com/acme/widget/issues/51">#51</a> Queued &lt;b&gt;one&lt;/b&gt;</td><td><span class="pri p0">p0</span></td><td class="hide-sm muted">next free lane</td></tr>' "AC4 a queued issue waits for the next free lane; its priority is a chip"
-assert_contains "$QUEUE" '<td><span class="pri p1">p1</span></td><td class="hide-sm muted">waiting on you · pipeline:needs-owner</td></tr>' "AC4 a held issue is waiting on you"
+assert_contains "$QUEUE" '<tr><td class="nw muted">1</td><td class="nw"><a href="https://github.com/acme/widget/issues/53">#53</a></td><td>(title not cached)</td><td class="nw"><span class="pri">—</span></td><td class="hide-sm muted">next free lane</td></tr>' "AC4 a capped issue waits for the next free lane (position 1, no priority)"
+assert_contains "$QUEUE" '<tr><td class="nw muted">2</td><td class="nw"><a href="https://github.com/acme/widget/issues/51">#51</a></td><td>Queued &lt;b&gt;one&lt;/b&gt;</td><td class="nw"><span class="pri p0">p0</span></td><td class="hide-sm muted">next free lane</td></tr>' "AC4 a queued issue waits for the next free lane; its priority is a chip"
+assert_contains "$QUEUE" '<td class="nw"><span class="pri p1">p1</span></td><td class="hide-sm muted">waiting on you · pipeline:needs-owner</td></tr>' "AC4 a held issue is waiting on you"
 assert_eq "1" "$(grep -o 'waiting on you' <<< "$QUEUE" | wc -l | tr -d ' ')" "AC4 only the held issue is waiting on you"
 
 # ── AC5: the stage bar and its key ───────────────────────────────────────────
@@ -235,11 +235,11 @@ assert_eq "2" "$(grep -o '<table>' <<< "$MERGED" | wc -l | tr -d ' ')" "AC6 Merg
 assert_eq "8" "$(python3 -I -c '
 import sys
 s = sys.stdin.read().split("<details>")[0]
-print(s.count("<td><a href=\"https://github.com/acme/widget/issues/"))' <<< "$MERGED")" "AC6 eight Merged rows sit outside the <details>"
+print(s.count("<td class=\"nw\"><a href=\"https://github.com/acme/widget/issues/"))' <<< "$MERGED")" "AC6 eight Merged rows sit outside the <details>"
 assert_eq "2" "$(python3 -I -c '
 import sys
 s = sys.stdin.read().split("<details>")[-1]
-print(s.count("<td><a href=\"https://github.com/acme/widget/issues/"))' <<< "$MERGED")" "AC6 the rest are inside it"
+print(s.count("<td class=\"nw\"><a href=\"https://github.com/acme/widget/issues/"))' <<< "$MERGED")" "AC6 the rest are inside it"
 assert_contains "$MERGED" '<details><summary>Show 2 more</summary>' "AC6 the summary counts the rest"
 assert_contains "$MERGED" '<span class="tok"><i style="width:' "AC6 a Merged row's tokens come with a bar"
 assert_contains "$MERGED" '<a href="https://github.com/acme/widget/pull/160">#160</a>' "AC6 a Merged row links its PR"

@@ -4360,6 +4360,49 @@ _talos_run_map() {
   return 0
 }
 
+# _talos_lane <write <role> <issue>|clear> (#878): this run's lane record,
+# <state dir>/lanes/<key>.json, <key> the first 12 hex of the sha1 of the
+# worktree's top-level path. Each `talos.sh run` has a record of its own, so
+# runs in two lane worktrees never overwrite each other (state.json's one `run`
+# entry is the last writer's). `write` runs at each dispatch, before the map is
+# redrawn, and drops the records of dead pids; `clear` at the run's end. Best
+# effort: never fails its caller.
+_talos_lane() {
+  local _sd _wt
+  _sd="$(_talos_state_dir 2>/dev/null)" || return 0
+  _wt="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
+  python3 -I -c '
+import datetime, hashlib, json, os, sys
+mode, sd, wt, role, issue, pid = sys.argv[1:7]
+d = os.path.join(sd, "lanes")
+path = os.path.join(d, hashlib.sha1(wt.encode("utf-8")).hexdigest()[:12] + ".json")
+if mode == "clear":
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+    sys.exit(0)
+os.makedirs(d, exist_ok=True)
+for name in os.listdir(d):
+    p = os.path.join(d, name)
+    try:
+        with open(p) as f:
+            other = json.load(f).get("pid")
+        if p != path and isinstance(other, int) and other > 0:
+            os.kill(other, 0)
+    except ProcessLookupError:
+        os.unlink(p)
+    except (OSError, ValueError, AttributeError):
+        pass
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+rec = {"worktree": wt, "issue": int(issue), "role": role, "stage_start": now, "ts": now,
+       "pid": int(pid) if pid.isdigit() else None}
+tmp = "%s.%d.tmp" % (path, os.getpid())
+with open(tmp, "w") as f:
+    json.dump(rec, f)
+os.replace(tmp, path)' "$1" "$_sd" "$_wt" "${2:-}" "${3:-0}" "${TALOS_RUN_PID:-}" 2>/dev/null || true
+}
+
 # _talos_run_end_hook: the run's exit hook, first of them. It reads the run's
 # end line from the scratch directory (another hook removes it), releases the
 # run's leases, and only then renders the map: a slow render never holds a
@@ -4377,6 +4420,8 @@ for k, v in zip(parts[0::2], parts[1::2]):
 print(last)' "$_TALOS_OUT" 2>/dev/null)"
   fi
   _talos_lease_release_run_all
+  # This run's lane record goes before the render, unless the run goes on by exec (#878).
+  [ -n "${_TALOS_RUN_CONTINUES:-}" ] || _talos_lane clear
   # The run_end event, before the render so the map reads it. Best effort, silent.
   [ -z "$_end" ] || [ ! -f "$SCRIPT_DIR/pipeline-hooks.sh" ] \
     || bash "$SCRIPT_DIR/pipeline-hooks.sh" run_end "$_end" ${_TALOS_RUN_ISSUE:+--issue "$_TALOS_RUN_ISSUE"} >/dev/null 2>&1 || :
@@ -4903,6 +4948,13 @@ _talos_run_dispatch() {
   local _o0="" _o1="" _o0ok=0
   if [ "$_role" = developer ] && [ -z "$_pr" ]; then
     _o0="$(_run_open_prs "$_n")" && _o0ok=1
+  fi
+
+  # #878: `talos.sh prompt` logged the stage_start, so the map is redrawn now,
+  # while the stage runs, with this run's lane record (issue, role, start) first.
+  if _talos_run_map_on; then
+    _talos_lane write "$_role" "$_n"
+    _talos_run_map stage
   fi
 
   # 2. The dispatch: the prompt on stdin, the agent's own runner resolution.
