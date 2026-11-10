@@ -249,7 +249,8 @@ def board_url(provider, repo, az):
             return url if plain_url(url) else ""
     elif provider == "gitlab":
         base = importlib.import_module("talos-map").locate(provider, repo, remote, "", "")[2].issues
-        return base + "/-/boards" if base else ""
+        url = base + "/-/boards" if base else ""
+        return url if plain_url(url) else ""
     return ""
 
 
