@@ -130,8 +130,8 @@ assert_contains "$(art 41)" '#41</a> Hooked title</div>' "AC1 a dispatched issue
 # ── AC3: titles ────────────────────────────────────────────────────────────────
 assert_contains "$(art 21)" '#21</a> Add retry</div>' "AC3 a cached title follows the issue link"
 assert_contains "$(art 22)" '#22</a> (title not cached)</div>' "AC3 a card with no cached title says so, never a bare #N"
-assert_contains "$PAGE" '<td><a href="https://github.com/acme/widget/issues/27">#27</a> (title not cached)</td>' "AC3 a queued row with no title says so"
-assert_contains "$PAGE" '<td><a href="https://github.com/acme/widget/issues/26">#26</a> Queued one</td>' "AC3 a queued row shows the title"
+assert_contains "$PAGE" '<td class="nw"><a href="https://github.com/acme/widget/issues/27">#27</a></td><td>(title not cached)</td>' "AC3 a queued row with no title says so"
+assert_contains "$PAGE" '<td class="nw"><a href="https://github.com/acme/widget/issues/26">#26</a></td><td>Queued one</td>' "AC3 a queued row shows the title"
 printf '<b>x</b> & "q"\n' > "$META/acme_widget.issue.26"
 bash "$TALOS" map >/dev/null 2>&1
 assert_contains "$(cat "$MAP")" '&lt;b&gt;x&lt;/b&gt; &amp; &quot;q&quot;' "AC3 a title is escaped"
@@ -229,9 +229,9 @@ m = re.search(r"<section><h2>Merged.*?</section>", open(sys.argv[1]).read(), re.
 print(m.group(0) if m else "<none>")' "$MAP")"
 assert_not_contains "$DONE" '<details' "AC9 two Merged rows sit in the open, with no <details>"
 assert_contains "$DONE" '<table>' "AC9 as a table"
-assert_contains "$DONE" '<tr><td><a href="https://github.com/acme/widget/issues/28">#28</a></td><td>Done one</td><td class="hide-sm"><a href="https://github.com/acme/widget/pull/41">#41</a></td><td class="hide-sm muted">4 h ago</td><td class="num"><span class="tok"><i style="width:60px"></i>3k</span></td></tr>' "AC9 a Merged row: issue, title, PR, how long ago, tokens with a bar"
-assert_contains "$DONE" '<tr><td><a href="https://github.com/acme/widget/issues/29">#29</a></td><td>(title not cached)</td><td class="hide-sm"><a href="https://github.com/acme/widget/pull/42">#42</a></td><td class="hide-sm muted">4 h ago</td><td class="num">—</td></tr>' "AC9 a Merged row with no title and no tokens"
-assert_eq "2" "$(grep -o '<tr><td><a href=' <<< "$DONE" | wc -l | tr -d ' ')" "AC9 one row per merged issue"
+assert_contains "$DONE" '<tr><td class="nw"><a href="https://github.com/acme/widget/issues/28">#28</a></td><td>Done one</td><td class="nw hide-sm"><a href="https://github.com/acme/widget/pull/41">#41</a></td><td class="nw hide-sm muted">4 h ago</td><td class="nw num"><span class="tok"><i style="width:60px"></i>3k</span></td></tr>' "AC9 a Merged row: issue, title, PR, how long ago, tokens with a bar"
+assert_contains "$DONE" '<tr><td class="nw"><a href="https://github.com/acme/widget/issues/29">#29</a></td><td>(title not cached)</td><td class="nw hide-sm"><a href="https://github.com/acme/widget/pull/42">#42</a></td><td class="nw hide-sm muted">4 h ago</td><td class="nw num">—</td></tr>' "AC9 a Merged row with no title and no tokens"
+assert_eq "2" "$(grep -o '<tr><td class="nw"><a href=' <<< "$DONE" | wc -l | tr -d ' ')" "AC9 one row per merged issue"
 
 # ── AC10: one timestamp format ─────────────────────────────────────────────────
 assert_eq "" "$(grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' <<< "$PAGE$ENDED" | head -n 1)" "AC10 no ISO timestamp is on the page, an end line's included"

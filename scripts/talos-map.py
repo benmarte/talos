@@ -78,6 +78,32 @@ def run_going(run, snap_ts, now):
     return not (snap_ts and now - snap_ts > RUN_STALE_AFTER)
 
 
+def read_lanes(lanes_dir, now):
+    """(live lanes, whether any record was readable). Each `talos.sh run` keeps
+    one record in <state dir>/lanes/, keyed by its worktree (#878). A lane is
+    live by the `run_going` rule: its pid is alive and the record is fresh. An
+    unreadable record is ignored. Each live lane gains `n`: the digits ending
+    its worktree's directory name, else its 1-based place by worktree path."""
+    try:
+        names = sorted(os.listdir(lanes_dir))
+    except OSError:
+        return [], False
+    live, seen = [], False
+    for name in names:
+        rec = read_state(os.path.join(lanes_dir, name)) if name.endswith(".json") else None
+        if not rec or not num(rec.get("issue")) or not isinstance(rec.get("worktree"), str):
+            continue
+        seen = True
+        ts = parse_ts(rec.get("ts"))
+        if ts and now - ts <= RUN_STALE_AFTER and pid_alive(rec.get("pid")):
+            live.append(rec)
+    live.sort(key=lambda r: r["worktree"])
+    for i, rec in enumerate(live, 1):
+        digits = re.search(r"(\d+)$", os.path.basename(rec["worktree"].rstrip("/")))
+        rec["n"] = int(digits.group(1)) if digits else i
+    return live, seen
+
+
 def esc(v):
     return html.escape("" if v is None else str(v), quote=True)
 
@@ -327,6 +353,7 @@ def main(argv):
     col = snap.get("collect") if isinstance(snap.get("collect"), dict) else {}
     run = snap.get("run") if isinstance(snap.get("run"), dict) else {}
     col_ts = parse_ts(snap.get("collect_ts")) if col else None
+    lanes, lanes_seen = read_lanes(os.path.join(os.path.dirname(a.state), "lanes"), now)
 
     by_issue = {}
     for e in events:
@@ -385,6 +412,13 @@ def main(argv):
     asks = {o["n"]: str(o.get("question") or "(question not readable)") for o in col.get("owners") or []
             if isinstance(o, dict) and num(o.get("n")) and o.get("status") == "unanswered"}
     blocked |= set(asks) - merged
+    # With a collect, the log alone no longer keeps an issue in flight (#878): an
+    # issue a run closed or abandoned has events after an old collect and no
+    # live label. It stays only while the collect lists it (the lists that name
+    # an issue: `capped` names verbs), a live lane works it, or a stage runs.
+    if col:
+        listed = set(queued) | set(inflight) | set(pr_issues) | blocked | set(asks) | {n for n in col.get("held") or [] if num(n)}
+        moved &= listed | running | {ln["issue"] for ln in lanes}
 
     def state(n):
         if n in merged:
@@ -421,9 +455,12 @@ def main(argv):
     counts = {"Done": 0, "In progress": 0, "Stuck": 0, "Not started": 0}
     for n in shown:
         counts[state(n)] += 1
-    if run_going(run, parse_ts(snap.get("ts")), now):
+    # A lane record is the word of a `talos.sh run` (#878); with none at all (a
+    # session driven by `talos.sh next` writes none) the snapshot's run entry decides.
+    if bool(lanes) if lanes_seen else run_going(run, parse_ts(snap.get("ts")), now):
         began = parse_ts(run.get("started"))
-        pill = '<span class="pill live"><span class="dot"></span>Run going%s</span>' % (
+        pill = '<span class="pill live"><span class="dot"></span>Run going%s%s</span>' % (
+            " · %d lanes" % len(lanes) if len(lanes) >= 2 else "",
             " · started %s ago" % dur((now - began).total_seconds()) if began else "")
     else:
         if run.get("end"):
@@ -544,10 +581,10 @@ def main(argv):
         def queue_row(i, n):
             p = prio.get(str(n))
             chip = '<span class="pri p%d">p%d</span>' % (p, p) if num(p) is not None and p >= 0 else '<span class="pri">—</span>'
-            return ('<tr><td class="muted">%d</td><td>%s %s</td><td>%s</td><td class="hide-sm muted">%s</td></tr>'
+            return ('<tr><td class="nw muted">%d</td><td class="nw">%s</td><td>%s</td><td class="nw">%s</td><td class="hide-sm muted">%s</td></tr>'
                     % (i, link(links.issue(n), "#%d" % n), title_html(n), chip,
                        "waiting on you · pipeline:needs-owner" if n in held else "next free lane"))
-        main.append('<section id="queue"><h2>Queued <span class="n">%d</span></h2><table><tr><th>#</th><th>issue</th>'
+        main.append('<section id="queue"><h2>Queued <span class="n">%d</span></h2><table><tr><th>#</th><th>issue</th><th>title</th>'
                     '<th>priority</th><th class="hide-sm">why it waits</th></tr>%s</table></section>'
                     % (len(waiting), "".join(queue_row(i, n) for i, n in enumerate(waiting, 1))))
     if by_state["Done"]:
@@ -558,7 +595,7 @@ def main(argv):
 
         def merged_row(n):
             pr, t, m = pr_of.get(n), tokens(n), merged_at(n)
-            return ('<tr><td>%s</td><td>%s</td><td class="hide-sm">%s</td><td class="hide-sm muted">%s</td><td class="num">%s</td></tr>'
+            return ('<tr><td class="nw">%s</td><td>%s</td><td class="nw hide-sm">%s</td><td class="nw hide-sm muted">%s</td><td class="nw num">%s</td></tr>'
                     % (link(links.issue(n), "#%d" % n), title_html(n), link(links.pr(pr), "#%d" % pr) if pr else "—",
                        esc(ago(m, now)) if m else "—", bar(t, widest, 60)))
         rows = [merged_row(n) for n in done]
@@ -612,6 +649,14 @@ def main(argv):
             ts.strftime("%H:%M") if ts else "—", link(links.issue(e["issue"]), "#%d" % e["issue"]), what))
     feed = feed[-ACTIVITY_MAX:][::-1]
     aside = []
+    if lanes:
+        def lane_row(ln):
+            began = parse_ts(ln.get("stage_start"))
+            what = " · ".join(b for b in (esc(ln.get("role") or ""), dur((now - began).total_seconds()) if began else "") if b)
+            return '<li><span>lane %d · %s</span><span class="muted">%s</span></li>' % (
+                ln["n"], link(links.issue(ln["issue"]), "#%d" % ln["issue"]), what)
+        aside.append('<section id="lanes"><h2>Lanes <span class="n">%d</span></h2><ul class="lanes">%s</ul></section>'
+                     % (len(lanes), "".join(lane_row(ln) for ln in lanes)))
     if feed:
         later = ('<details><summary>Show %d earlier</summary><ul class="feed">%s</ul></details>'
                  % (len(feed) - ACTIVITY_SHOWN, "".join(feed[ACTIVITY_SHOWN:])) if len(feed) > ACTIVITY_SHOWN else "")
@@ -730,7 +775,10 @@ th{font-size:11.5px;color:var(--muted);font-weight:600;border-top:0}
 td.num,th.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
 .tok{display:flex;align-items:center;gap:8px;justify-content:flex-end}
 .tok i{display:block;height:6px;border-radius:3px;background:var(--bar)}
-.muted{color:var(--muted)}
+.muted{color:var(--muted)}.nw{white-space:nowrap}
+.lanes{list-style:none;margin:0;padding:0}
+.lanes li{display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-top:1px solid var(--line);font-size:12.5px}
+.lanes li:first-child{border-top:0}
 .pri{display:inline-block;font-size:11px;font-weight:700;padding:0 6px;border-radius:4px;background:var(--todo-bg)}
 .pri.p0{background:var(--fail-bg);color:var(--fail)}.pri.p1{background:var(--redo-bg);color:var(--redo)}
 tr.total td{font-weight:600}
