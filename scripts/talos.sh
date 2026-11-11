@@ -2088,11 +2088,9 @@ _talos_post_merge_run() {
   else
     _talos_notify orchestrator "#$_n" "all stages passed — merged PR #$_pr, part of #$_n, issue stays open" "$_n"
   fi
-  # The merged event goes first: a `merged` notice made outside a run (a hand
-  # `talos.sh merge`) writes a hand event only when the log has none for the PR.
-  _talos_post_stage merged orchestrator "$_n" --pr "$_pr" --summary "PR #$_pr merged" ${_ci:+--ci-runs "$_ci"}
   _talos_notify merged "#$_n" "PR #$_pr merged" "$_n"
   [ "$_mode" != closes ] || _talos_notify issue-closed "#$_n" "issue resolved" "$_n"
+  _talos_post_stage merged orchestrator "$_n" --pr "$_pr" --summary "PR #$_pr merged" ${_ci:+--ci-runs "$_ci"}
   [ "$_mode" != closes ] || _talos_post_stage issue-closed orchestrator "$_n" --pr "$_pr" --summary "issue resolved"
   _talos_spend "$_n" "$_pr"
 }

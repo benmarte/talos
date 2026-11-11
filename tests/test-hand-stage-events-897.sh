@@ -203,7 +203,7 @@ m = re.search(r"<ol class=\"steps\">(.*?)</ol>", html[i:], re.S) if i >= 0 else 
 print(" ".join("%s=%s" % (n, "d" if "d" in c.split() else "-") for c, n in re.findall(r"<li class=\"s([^\"]*)\">(\w+)</li>", m.group(1))) if m else "<none>")' "$MAP" "$1"
 }
 merge_step() {  # the merge step state for issue 7, from the map own steps() over the log
-  python3 -I -c '
+  python3 -I -B -c '
 import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("talos_map", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
