@@ -59,9 +59,9 @@ assert_eq "open" "$_got" "AC1 the file form says tests-line-open (fixture)"
 same_verdict AC1 "tests-line-open"
 
 spec '**Tests:** `tests/test-greet.sh`'
-same_verdict AC2 "ok"
+same_verdict "AC2" "ok"
 spec
-same_verdict AC2 "tests-line-missing"
+same_verdict "AC2" "tests-line-missing"
 
 # AC3: an empty stdin never says ok
 OUT="$(printf '' | bash "$CRIT" spec-check - 2>"$ERR")"; RC=$?
@@ -81,5 +81,11 @@ assert_contains "$(cat "$ERR")" "no such file: $SANDBOX/absent.md" "AC4 a missin
 OUT="$(bash "$CRIT" spec-check 2>"$ERR" < /dev/null)"; RC=$?
 assert_eq "2" "$RC" "AC4 no argument exits 2"
 assert_contains "$(cat "$ERR")" "Usage:" "AC4 no argument prints the usage text"
+
+# AC6: the pm byte budget (profile + prompt template) is not raised
+# (test-stage-overhead.sh holds the ceiling; this names the criterion)
+size=$(( $(wc -c < "$TALOS_ROOT/agents/pm.md") + $(wc -c < "$TALOS_ROOT/templates/prompts/pm.md") ))
+[ "$size" -le 6250 ] && _got=within || _got="$size bytes"
+assert_eq "within" "$_got" "AC6 the pm profile + prompt template stays within the 6250 byte budget"
 
 finish
