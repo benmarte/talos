@@ -183,6 +183,7 @@
 46 test-project-map.sh
 3 test-project-map-dashboard.sh
 10 test-project-map-live.sh
+3 test-project-map-skill.sh
 45 test-project-map-readable.sh
 5 test-project-map-running.sh
 22 test-prompt-cache-ttl.sh
