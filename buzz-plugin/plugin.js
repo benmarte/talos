@@ -666,7 +666,7 @@ const CSS = [
   "--tm-border:var(--border-standard,rgba(127,127,127,.28));--tm-panel:var(--bg-panel,transparent);--tm-raised:rgba(127,127,127,.07);",
   "display:flex;flex-direction:column;height:100%;min-height:0;box-sizing:border-box;padding:18px 20px;font-size:14px;line-height:1.45}",
   ".tmap-page *{box-sizing:border-box}",
-  ".tmap-projects{display:flex;flex-direction:column;gap:14px;width:100%;max-width:980px}",
+  ".tmap-projects{display:flex;flex-direction:column;gap:14px;width:100%}",
   ".tmap-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap}",
   ".tmap-head h2{margin:0;font-size:18px;font-weight:600}",
   ".tmap-sub{color:var(--tm-sub);font-size:12.5px}",
@@ -680,8 +680,9 @@ const CSS = [
   ".tmap-btn.tmap-linkbtn:hover{text-decoration:underline}",
   ".tmap-btn.tmap-danger{color:var(--tm-red)}",
   ".tmap-btn:focus-visible,.tmap-link:focus-visible,.tmap-pick:focus-visible{outline:2px solid var(--tm-blue);outline-offset:2px}",
-  ".tmap-cards{display:grid;gap:10px}",
-  ".tmap-card{border:1px solid var(--tm-border);border-radius:10px;background:var(--tm-raised);overflow:hidden}",
+  ".tmap-cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(min(100%,420px),1fr));align-items:stretch}",
+  ".tmap-card[data-wide=true]{grid-column:1/-1}",
+  ".tmap-card{border:1px solid var(--tm-border);border-radius:10px;background:var(--tm-raised);overflow:hidden;display:flex;flex-direction:column}",
   ".tmap-card:hover{border-color:var(--tm-blue)}",
   ".tmap-card[data-stale=true]{opacity:.55}",
   ".tmap-ctop{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;align-items:center;padding:12px 14px 10px}",
@@ -709,7 +710,7 @@ const CSS = [
   ".tmap-msg{font-size:12px;padding:6px 14px;border-top:1px solid var(--tm-border)}",
   ".tmap-msg.err{color:var(--tm-red)}",
   ".tmap-msg.warn{color:var(--tm-amber)}",
-  ".tmap-footer{border-top:1px solid var(--tm-border);padding:6px 14px;font-size:12px;color:var(--tm-sub);display:flex;gap:6px 10px;align-items:center;flex-wrap:wrap;background:var(--tm-panel)}",
+  ".tmap-footer{margin-top:auto;border-top:1px solid var(--tm-border);padding:6px 14px;font-size:12px;color:var(--tm-sub);display:flex;gap:6px 10px;align-items:center;flex-wrap:wrap;background:var(--tm-panel)}",
   ".tmap-footer .warn{color:var(--tm-amber)}",
   ".tmap-footer .busy{color:var(--tm-blue)}",
   ".tmap-confirm{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 14px;border-top:1px solid var(--tm-border);font-size:12px}",
@@ -850,7 +851,7 @@ function buildComponents(React, store) {
       }
     }
     parts.push(footer(slug, entry));
-    return h("div", { key: slug, className: "tmap-card", "data-slug": slug, "data-stale": days > 0 ? "true" : "false" }, parts);
+    return h("div", { key: slug, className: "tmap-card", "data-slug": slug, "data-stale": days > 0 ? "true" : "false", "data-wide": rows.length ? "true" : "false" }, parts);
   }
 
   function ProjectsView() {
