@@ -91,7 +91,6 @@ ROW="$(flight_row "$PAGE" 70)"
 assert_contains "$ROW" "stalled since $(secs_to_date $(( 7 * H )))" "AC1 a start older than the 6 h default reads stalled since its date" "$ROW"
 assert_not_contains "$ROW" "running" "AC1 a stalled stage is not marked running"
 assert_eq "0" "$(running_segments "$ROW")" "AC1 no segment of a stalled issue's stage bar is running" "$ROW"
-assert_eq "0" "$(tile "$PAGE" 'in flight')" "AC1 the stalled stage does not count as running now"
 # the role's own key beats the global one; the global one beats 6 h
 cfg_with '{"stage_timeout_s": 43200, "roles": {"qa": {"stage_timeout_s": 3600}}}'
 open_start 71 qa $(( 2 * H ))

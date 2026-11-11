@@ -4266,8 +4266,15 @@ _talos_emit_next_wait() { printf '%s\0%s\0' action "${1#action=}" >> "$_TALOS_OU
 # title cache pipeline-meta.sh keeps. Prints map=<path> and index=<path> on
 # success; non-zero on failure. No network, no provider call.
 _talos_map_render() {
-  local _sd _ep
+  local _sd _ep _st _r _v
   _sd="$(_talos_state_dir)" || return 1
+  # The stage timeouts (#888), role keys first: `<role>=<s>,...,default=<s>`.
+  # A stage open longer than its timeout is stalled, not running.
+  _st="default=$(cfg agents.stage_timeout_s)"
+  for _r in $_TALOS_ROLES; do
+    _v="$(cfg "agents.roles.$_r.stage_timeout_s")"
+    [ -z "$_v" ] || _st="$_st,$_r=$_v"
+  done
   # The events log by the writer's rule (pipeline-hooks.sh): a relative
   # events.path that leaves the git common dir is no log.
   _ep="$(cfg events.path)"
@@ -4282,7 +4289,8 @@ _talos_map_render() {
     --events "$_ep" --state "$_sd/state.json" --home "${TALOS_HOME:-$HOME/.talos}" \
     --provider "$(cfg vcs.provider)" --repo "$(cfg vcs.repo)" \
     --azure-org "$(cfg vcs.azure.org_url)" --azure-project "$(cfg vcs.azure.project)" \
-    --scripts "$SCRIPT_DIR" --titles "${XDG_RUNTIME_DIR:-${HOME:-/nonexistent}/.cache}/talos/meta"
+    --scripts "$SCRIPT_DIR" --titles "${XDG_RUNTIME_DIR:-${HOME:-/nonexistent}/.cache}/talos/meta" \
+    --stage-timeouts "$_st"
 }
 
 # map: render the project map and the index (#614).
