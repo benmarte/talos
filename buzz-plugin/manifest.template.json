@@ -1,0 +1,12 @@
+{
+  "id": "talos.map",
+  "name": "Talos",
+  "apiVersion": 1,
+  "description": "Every Talos project and its map inside Buzz: what needs you, what is running, and the live project map, refreshed with your own gh or az login.",
+  "host": {
+    "files": true,
+    "processes": [
+      { "id": "talos", "program": "bash", "args": ["__TALOS_HOME__/scripts/talos-buzz.sh"] }
+    ]
+  }
+}

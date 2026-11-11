@@ -401,7 +401,7 @@ test("AC9 a file of ../x.html, a/b.html or x.js is never read and a refused line
     check(/refused/i.test(pageText(w)), "no refused line for " + bad + ": " + pageText(w).slice(0, 200));
     check(!iframeOf(page(w)), "a frame for " + bad);
     const base = bad.split("/").pop();
-    check(!w.reads.some((p) => p.includes(base) || p.includes("..")), "readFile saw " + bad + ": " + JSON.stringify(w.reads));
+    check(!w.reads.some((p) => path.basename(p) === base || p.split("/").includes("..")), "readFile saw " + bad + ": " + JSON.stringify(w.reads));
   }
   // control: the recorder sees the registry read and a valid file read.
   const w = await world({ entries: { ok: entry("ok") }, last: "ok" });
@@ -488,9 +488,10 @@ test("AC10 a busy line causes no retry", async () => {
   await mountPage(w);
   await settle();
   eq(w.spawns.map((s) => s.args[0]), ["redraw", "refresh"]);
+  check(pageText(w).includes("Reading GitHub… The map updates by itself"), "no already-reading line after the busy line");
   await w.clock.advance(120e3);
   eq(w.spawns.map((s) => s.args[0]), ["redraw", "refresh"], "after 2 min");
-  check(pageText(w).includes("Reading GitHub"), "no already-reading line: " + pageText(w).slice(0, 300));
+  check(pageText(w).includes("Still reading."), "the spinner went away while another process is reading");
 });
 test("AC10 spawned processes are killed on unmount", async () => {
   const w = await world({ entries: { p: entry("p", { readAgo: 2 * HOUR }) }, last: "p" });

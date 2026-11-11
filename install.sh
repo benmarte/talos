@@ -38,7 +38,11 @@
 #   Pass --no-overwrite to skip.
 #   Stale files (#579): each run writes ~/.talos/.install-manifest, one path per
 #   line relative to ~/.talos, for every file it ships under scripts/,
-#   templates/ and skills/<command>/refs/. The next run removes each previous
+#   templates/, skills/<command>/refs/ and buzz-plugin/ (the Buzz plugin, #902:
+#   buzz-plugin/*.js and manifest.template.json from the source, written with
+#   __TALOS_HOME__ replaced by the absolute TALOS_HOME; the template becomes
+#   manifest.json; --global only, a per-repo install never copies it). The next
+#   run removes each previous
 #   entry the source no longer ships (a regular file only, never a symlink; an
 #   absolute entry, one with `..` or one outside those trees is ignored). A
 #   file the installer never listed -- a user's own -- is never deleted, and a
@@ -273,7 +277,7 @@ ship() { _SHIPPED+=("$1"); }
 _manifest_entry_ok() {
   case "$1" in
     /*|..|../*|*/..|*/../*) return 1 ;;
-    scripts/?*|templates/?*|skills/*/refs/?*) return 0 ;;
+    scripts/?*|templates/?*|skills/*/refs/?*|buzz-plugin/?*) return 0 ;;
   esac
   return 1
 }
@@ -694,6 +698,36 @@ if [ "$GLOBAL" = "true" ]; then
     install_file "$script_src" "$TALOS_HOME_DIR/scripts/$(basename "$script_src")"
     ship "scripts/$(basename "$script_src")"
   done
+
+  # Buzz plugin (#902) -> ~/.talos/buzz-plugin/, loaded by hand from Buzz's
+  # Settings. Every buzz-plugin/*.js is copied and manifest.template.json becomes
+  # manifest.json, both with __TALOS_HOME__ replaced by the absolute TALOS_HOME
+  # (JSON-escaped, so a path with a quote or a backslash still yields valid text).
+  echo ""
+  echo "Buzz plugin ($(printable "$TALOS_HOME_DIR")/buzz-plugin):"
+  _BUZZ_HOME="$TALOS_HOME_DIR"
+  case "$_BUZZ_HOME" in /*) ;; *) _BUZZ_HOME="$PWD/$_BUZZ_HOME" ;; esac
+  _BUZZ_TMP="$(mktemp -d "${TMPDIR:-/tmp}/talos-buzz-install.XXXXXX" 2>/dev/null)" || _BUZZ_TMP=""
+  for plugin_src in "$SRC"/buzz-plugin/*.js "$SRC"/buzz-plugin/manifest.template.json; do
+    [ -f "$plugin_src" ] || continue
+    plugin_name="$(basename "$plugin_src")"
+    [ "$plugin_name" = "manifest.template.json" ] && plugin_name="manifest.json"
+    plugin_dest="$TALOS_HOME_DIR/buzz-plugin/$plugin_name"
+    if [ -n "$_BUZZ_TMP" ] && [ -d "$_BUZZ_TMP" ] && command -v python3 >/dev/null 2>&1 \
+       && python3 -I -c '
+import json, sys
+home = json.dumps(sys.argv[2])[1:-1].encode("ascii")
+sys.stdout.buffer.write(open(sys.argv[1], "rb").read().replace(b"__TALOS_HOME__", home))
+' "$plugin_src" "$_BUZZ_HOME" > "$_BUZZ_TMP/$plugin_name"; then
+      install_file "$_BUZZ_TMP/$plugin_name" "$plugin_dest"
+      ship "buzz-plugin/$plugin_name"
+    else
+      echo "  notice: could not render $(printable "$plugin_name") (needs python3 and a temp dir); the Buzz plugin was not updated" >&2
+      # Keep what an earlier run installed: an unlisted file would be pruned.
+      [ -f "$plugin_dest" ] && ship "buzz-plugin/$plugin_name"
+    fi
+  done
+  if [ -n "$_BUZZ_TMP" ] && [ -d "$_BUZZ_TMP" ]; then rm -rf "${_BUZZ_TMP:?}"; fi
 
   # Agents -> ~/.talos/agents/ (read by pipeline-agent.sh for pi/codex/gemini/
   # antigravity). The Claude copy (~/.claude/agents/) is install_claude_adapter's.
