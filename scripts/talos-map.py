@@ -561,10 +561,16 @@ def main(argv):
     shown = sorted(set(queued) | set(inflight) | set(pr_issues) | blocked | recent | moved | running)
 
     def tokens(n):
-        """The issue's recorded tokens, or None when no stage event carried a number."""
+        """The issue's recorded tokens, or None when no event carried a number.
+
+        Two rules. An issue merged elsewhere (no local `merged` event) counts only
+        its `usage` events: they are the recorded cost of work done on this machine
+        (#911), while its stage events are partial, stale ones from a run finished
+        elsewhere. Any other issue counts every non-orchestrator event."""
+        evs = [e for e in by_issue.get(n, []) if e.get("role") != "orchestrator"]
         if n in elsewhere:
-            return None   # the work ran elsewhere: stale local events are not its cost
-        vals = [num(e.get("tokens")) for e in by_issue.get(n, []) if e.get("role") != "orchestrator"]
+            evs = [e for e in evs if e.get("event") == "usage"]
+        vals = [num(e.get("tokens")) for e in evs]
         vals = [v for v in vals if v is not None]
         return sum(vals) if vals else None
 
