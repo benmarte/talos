@@ -4364,6 +4364,10 @@ _talos_map_forget() {
 # offline; --forget drops a repository from the registry (_talos_map_forget).
 _talos_map() {
   local _refresh=""
+  # Drawing a map dispatches no stage, so it needs no runner CLI on PATH (#907):
+  # the config loads with the requested profile even when its runner is missing.
+  # Exported, so the children of --refresh (each loads config itself) inherit it.
+  export TALOS_PROFILE_RUNNER_OPTIONAL=1
   case "$#:${1:-}" in
     0:) ;;
     1:--refresh) _refresh=1 ;;
@@ -5815,6 +5819,10 @@ _talos_run_draft_complete() {
 
 verb="${1:-}"
 [ "$#" -eq 0 ] || shift
+
+# Only `map` may relax the runner check (#907); an inherited value never reaches
+# run, prompt, next or any stage.
+unset TALOS_PROFILE_RUNNER_OPTIONAL
 
 # A verb that writes makes the collected state stale (#554): empty the run's copy first.
 case "$verb" in done | gate | docs-gate | post-merge | sweep | claim) _talos_collect_drop ;; esac

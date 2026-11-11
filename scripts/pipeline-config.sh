@@ -658,6 +658,13 @@ def _apply_profile(merged):
     if not active and held:
         active = held[0]
         skipped = [s for s in skipped if cands.index(s[0]) < cands.index(active)]
+    # TALOS_PROFILE_RUNNER_OPTIONAL=1 (#907; only `talos.sh map` exports it): the
+    # verbs that draw the map dispatch nothing, so when the only thing wrong is a
+    # runner CLI missing from PATH they carry on with the requested profile. A
+    # harness-mode or custom-runner fault still fails.
+    if not active and os.environ.get("TALOS_PROFILE_RUNNER_OPTIONAL") == "1" and skipped \
+            and all(re.match(r"runner-.*-not-on-path$", s[1]) for s in skipped):
+        active = requested
     if not active:
         _profile_fail("reason=profile-unusable requested=%s harness=%s skipped=%s"
                       % (repr(requested)[:40], _HARNESS[0], ",".join("%s:%s" % s for s in skipped)))
