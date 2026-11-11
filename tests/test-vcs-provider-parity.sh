@@ -233,6 +233,7 @@ file comment-pr PARITY-EXCEPTION: local-only by design (no PRs)
 file conflict-files PARITY-EXCEPTION: local-only by design (no PRs)
 file edit-pr-body PARITY-EXCEPTION: local-only by design (no PRs)
 file evidence-prune PARITY-EXCEPTION: local-only by design (no PRs)
+file list-merged-prs PARITY-EXCEPTION: local-only by design (no PRs)
 file list-needs-owner PARITY-EXCEPTION: local-only by design
 file mark-needs-owner PARITY-EXCEPTION: local-only by design
 file pr-head PARITY-EXCEPTION: local-only by design (no PRs)
