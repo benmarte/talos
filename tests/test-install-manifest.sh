@@ -7,7 +7,7 @@
 #   AC1 a dropped scripts/*.sh and scripts/*.py are removed
 #   AC2 a dropped templates/<dir>/ file and skills/<cmd>/refs/*.md are removed
 #   AC3 user-added files in the same directories survive
-#   AC4 the manifest lists exactly the installed files of the three trees
+#   AC4 the manifest lists exactly the installed files of the managed trees (#902: and buzz-plugin/)
 #   AC5 no previous manifest: nothing is removed
 #   AC6 a manifest entry that is absolute, has `..` or is outside the trees is ignored
 set -u
@@ -72,9 +72,9 @@ mkdir -p "$H4"
 _install "$TALOS_ROOT" "$H4" >/dev/null
 M4="$H4/.talos/.install-manifest"
 assert_file_exists "$M4" "AC4 --global writes <talos home>/.install-manifest"
-want="$(cd "$H4/.talos" && { find scripts templates -type f; find skills -path 'skills/*/refs/*' -type f; } | LC_ALL=C sort)"
+want="$(cd "$H4/.talos" && { find scripts templates buzz-plugin -type f; find skills -path 'skills/*/refs/*' -type f; } | LC_ALL=C sort)"
 got="$(LC_ALL=C sort "$M4" 2>/dev/null)"
-assert_eq "$want" "$got" "AC4 the manifest lists every installed scripts/templates/skills-refs file and nothing else"
+assert_eq "$want" "$got" "AC4 the manifest lists every installed scripts/templates/skills-refs/buzz-plugin file and nothing else"
 assert_not_contains "$got" "agents/" "AC4 the manifest lists no agents file"
 H4B="$SANDBOX/home4b"
 mkdir -p "$H4B"
