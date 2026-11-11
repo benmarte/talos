@@ -5,6 +5,7 @@ repository, rendered by code from Talos's local records, plus an index.
         --state <state.json> --home <TALOS_HOME> --provider <vcs.provider>
         --repo <vcs.repo> --azure-org <vcs.azure.org_url>
         --azure-project <vcs.azure.project> --scripts <scripts dir> [--titles <dir>]
+        [--root <main checkout>] [--config <PIPELINE_CONFIG>]
 
 The origin URL is read from stdin, never argv: it may carry a credential.
 
@@ -12,14 +13,17 @@ Reads only local files: the events log, the state snapshot `talos.sh run`
 writes from the collect it already fetched, and the title cache
 pipeline-meta.sh keeps. No network, no provider call, no LLM. Writes
 <home>/maps/<owner>-<name>.html, <home>/maps/index.json (the registry) and
-<home>/maps/index.html, and prints `map=<path>` and `index=<path>`.
+<home>/maps/index.html, and prints `map=<path>` and `index=<path>`. The registry's
+read-modify-write runs under an exclusive flock on <home>/maps/index.json.lock.
 
 Every value from a record is HTML-escaped; the page has no script and no
 external asset, and reloads itself with a meta refresh (#877). Stdlib only.
 """
 
 import argparse
+import contextlib
 import datetime
+import fcntl
 import hashlib
 import html
 import json
@@ -27,6 +31,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.parse
 
 STEPS = ("validator", "pm", "dev", "review", "qa", "docs", "merge")
@@ -54,6 +59,10 @@ RECENT_DAYS = 7
 # run writes the snapshot at every pass and stage, and no stage takes this long.
 RUN_STALE_AFTER = datetime.timedelta(hours=6)
 STAGE_TIMEOUT_S = 6 * 3600  # a stage's timeout when the config sets none
+EARLIEST = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+LOCK_WAIT_S = 10            # how long a render waits for the registry's lock
+REG_TEXT_MAX = 200          # a registry text field (title, why, next) is cut here
+REG_NEEDS = 3               # the registry keeps this many Needs you rows
 
 
 def pid_alive(pid):
@@ -351,12 +360,14 @@ def fmt_tok(t):
 
 def main(argv):
     ap = argparse.ArgumentParser()
-    for k in ("events", "state", "home", "provider", "repo", "azure-org", "azure-project", "scripts", "titles", "stage-timeouts"):
+    for k in ("events", "state", "home", "provider", "repo", "azure-org", "azure-project", "scripts", "titles", "stage-timeouts",
+              "root", "config"):
         ap.add_argument("--" + k, default="")
     ap.add_argument("--missing-titles", action="store_true")
     a = ap.parse_args(argv)
     remote = "" if sys.stdin.isatty() else sys.stdin.readline()
-    slug, title_key, links = locate((a.provider or "github").lower(), a.repo, remote, a.azure_org, a.azure_project)
+    provider = (a.provider or "github").lower()
+    slug, title_key, links = locate(provider, a.repo, remote, a.azure_org, a.azure_project)
     if not re.fullmatch(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+", slug):
         sys.stderr.write("talos-map: no repository slug\n")
         return 1
@@ -565,7 +576,8 @@ def main(argv):
     counts["Done"] += len(orphans)
     # A lane record is the word of a `talos.sh run` (#878); with none at all (a
     # session driven by `talos.sh next` writes none) the snapshot's run entry decides.
-    if bool(lanes) if lanes_seen else run_going(run, parse_ts(snap.get("ts")), now):
+    going = bool(lanes) if lanes_seen else run_going(run, parse_ts(snap.get("ts")), now)
+    if going:
         began = parse_ts(run.get("started"))
         pill = '<span class="pill live"><span class="dot"></span>Run going%s%s</span>' % (
             " · %d lanes" % len(lanes) if len(lanes) >= 2 else "",
@@ -604,8 +616,11 @@ def main(argv):
                 if isinstance(p, dict) and num(p.get("issue")) and isinstance(p.get("stage"), str)}
     held = {n for n in col.get("held") or [] if num(n)}
 
+    def title_text(n):
+        return title_of(a.titles, title_key, n) or elsewhere.get(n, {}).get("title") or "(title not cached)"
+
     def title_html(n):
-        return esc(title_of(a.titles, title_key, n) or elsewhere.get(n, {}).get("title") or "") or "(title not cached)"
+        return esc(title_text(n))
 
     def head(n):
         return '<div class="t">%s %s</div>' % (link(links.issue(n), "#%d" % n), title_html(n))
@@ -644,10 +659,25 @@ def main(argv):
             return "merge"
         return "blocked"
 
+    def stuck_at(n):
+        """When the issue stopped: its latest event, else the state read."""
+        evs = by_issue.get(n, [])
+        return (parse_ts(evs[-1].get("ts")) if evs else None) or col_ts
+
+    def needs_entry(n):
+        """A Needs you row for the registry: the text the page shows, not HTML."""
+        kind = stop_kind(n)
+        at = stuck_at(n)
+        why = " ".join(asks[n].split()) if kind == "owner" else stuck_reason(n) or STOP_WHY.get(kind) or "waiting on a person"
+        step = STOP_DO[kind] + ("." if kind in ("owner", "epic") else "")
+        return {"issue": n, "title": title_text(n)[:REG_TEXT_MAX], "kind": STOP_TAG[kind],
+                "since": at.strftime("%Y-%m-%dT%H:%M:%SZ") if at else "", "why": why[:REG_TEXT_MAX],
+                "next": step[:REG_TEXT_MAX], "url": links.issue(n)}
+
     def needs_row(n):
         evs = by_issue.get(n, [])
         kind = stop_kind(n)
-        at = (parse_ts(evs[-1].get("ts")) if evs else None) or col_ts
+        at = stuck_at(n)
         tag = '<span class="tag stuck">%s</span>' % esc(STOP_TAG[kind] + (" · " + ago(at, now) if at else ""))
         body = head(n) + sub(n, tag, pr_text(n), esc(tok_text(n)))
         if kind == "owner":
@@ -804,30 +834,54 @@ def main(argv):
         '<div class="kpi"><b>%s</b><span>tokens · %d days</span></div>' % (esc(fmt_tok(total)), RECENT_DAYS)))
     parts = [header, note, tiles, nxt_bar, '<div class="grid"><main>', "".join(main), "</main><aside>", "".join(aside), "</aside></div>"]
 
+    # What a card, or a redraw from outside the checkout, needs (#903): the
+    # page's own numbers and rows as data, the same facts the run pill and the
+    # Lanes panel read.
+    newest = max(lanes, key=lambda ln: parse_ts(ln.get("stage_start")) or EARLIEST, default=None)
+    facts = {"provider": "github" if provider == "github-api" else provider,
+             "tiles": {"needs": len(by_state["Stuck"]), "in_flight": len(by_state["In progress"]), "queued": len(waiting),
+                       "merged_7d": counts["Done"], "tokens_7d": total},
+             "needs": [needs_entry(n) for n in by_state["Stuck"][:REG_NEEDS]],
+             "run": {"going": bool(going), "lanes": len(lanes)},
+             "state_read": col_ts.strftime("%Y-%m-%dT%H:%M:%SZ") if col_ts else None}
+    if newest:
+        facts["run"].update({"issue": newest["issue"], "role": str(newest.get("role") or ""),
+                             "stage_since": newest.get("stage_start")})
+    if a.root:
+        facts["root"] = a.root
+    if a.config and os.path.isfile(a.config):
+        facts["config"] = a.config if os.path.isabs(a.config) else os.path.abspath(a.config)
+
     maps = os.path.join(a.home, "maps")
     os.makedirs(maps, exist_ok=True)
-    # The index: a registry of every repository rendered under this home.
+    # The index: a registry of every repository rendered under this home. Two
+    # renders, or a render and `map --forget`, each read it, change it and write
+    # it back: the lock makes that one step, so neither loses the other's entry.
     reg_path = os.path.join(maps, "index.json")
-    reg = read_state(reg_path) or {}
-    # A page keeps the name it has. A new one is named by the slug with "/" as
-    # "-", plus a hash of the slug when another repository already has that
-    # name (a-b/c and a/b-c).
-    fname = (reg.get(slug) or {}).get("file") if isinstance(reg.get(slug), dict) else None
-    if not isinstance(fname, str) or not re.fullmatch(r"[A-Za-z0-9._-]+\.html", fname):
-        fname = slug.replace("/", "-") + ".html"
-        if any(isinstance(v, dict) and v.get("file") == fname for k, v in reg.items() if k != slug):
-            fname = "%s-%s.html" % (fname[:-5], hashlib.sha1(slug.encode("utf-8")).hexdigest()[:8])
-    page = os.path.join(maps, fname)
-    write(page, doc("Talos map: " + name, scrub("".join(parts)), refresh=True))
-    reg[slug] = {"file": fname, "updated": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                 "line": "%d merged · %d in flight · %d stuck · %d not started"
-                         % (counts["Done"], counts["In progress"], counts["Stuck"], counts["Not started"])}
-    write(reg_path, json.dumps(reg, indent=1, sort_keys=True))
-    items = "".join('<li><a href="%s">%s</a> <span class="sub">%s · updated %s</span></li>'
-                    % (esc(v.get("file", "")), esc(k), esc(v.get("line", "")), esc(v.get("updated", "")))
-                    for k, v in sorted(reg.items()) if isinstance(v, dict))
-    index = os.path.join(maps, "index.html")
-    write(index, doc("Talos projects", "<header><h1>Talos projects</h1></header><ul class=\"index\">%s</ul>" % items))
+    with registry_lock(os.path.join(maps, "index.json.lock")) as locked:
+        reg = read_state(reg_path) or {}
+        # A page keeps the name it has. A new one is named by the slug with "/" as
+        # "-", plus a hash of the slug when another repository already has that
+        # name (a-b/c and a/b-c).
+        fname = (reg.get(slug) or {}).get("file") if isinstance(reg.get(slug), dict) else None
+        if not isinstance(fname, str) or not re.fullmatch(r"[A-Za-z0-9._-]+\.html", fname):
+            fname = slug.replace("/", "-") + ".html"
+            if any(isinstance(v, dict) and v.get("file") == fname for k, v in reg.items() if k != slug):
+                fname = "%s-%s.html" % (fname[:-5], hashlib.sha1(slug.encode("utf-8")).hexdigest()[:8])
+        page = os.path.join(maps, fname)
+        write(page, doc("Talos map: " + name, scrub("".join(parts)), refresh=True))
+        index = os.path.join(maps, "index.html")
+        if locked:
+            reg[slug] = dict(facts, file=fname, updated=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                             line="%d merged · %d in flight · %d stuck · %d not started"
+                                  % (counts["Done"], counts["In progress"], counts["Stuck"], counts["Not started"]))
+            write(reg_path, json.dumps(reg, indent=1, sort_keys=True))
+            items = "".join('<li><a href="%s">%s</a> <span class="sub">%s · updated %s</span></li>'
+                            % (esc(v.get("file", "")), esc(k), esc(v.get("line", "")), esc(v.get("updated", "")))
+                            for k, v in sorted(reg.items()) if isinstance(v, dict))
+            write(index, doc("Talos projects", "<header><h1>Talos projects</h1></header><ul class=\"index\">%s</ul>" % items))
+    if not locked:
+        sys.stderr.write("talos-map: registry busy, not updated (no lock within %d s)\n" % LOCK_WAIT_S)
     print("map=" + page)
     print("index=" + index)
     return 0
@@ -841,13 +895,45 @@ def write(path, text):
     os.replace(tmp, path)
 
 
+@contextlib.contextmanager
+def registry_lock(path, wait=LOCK_WAIT_S):
+    """Hold an exclusive flock on `path` (created if need be) for the block;
+    yields whether it was taken within `wait` seconds. A lock that cannot be
+    taken or opened yields False: the caller skips what the lock protects."""
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError:
+        yield False
+        return
+    try:
+        end = time.monotonic() + wait
+        held = False
+        while not held:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held = True
+            except OSError:
+                if time.monotonic() >= end:
+                    break
+                time.sleep(0.05)
+        yield held
+    finally:
+        os.close(fd)   # closing the descriptor releases the lock
+
+
+# The dark palette, applied under `prefers-color-scheme: dark` unless the page's
+# embedder says `data-theme="light"` on :root, and always under `data-theme="dark"`.
+# The page itself never sets the attribute.
+DARK = """--bg:#151513;--panel:#1e1e1b;--ink:#ecebe6;--muted:#9c9a92;--line:#2f2e2a;
+--done:#6cc28f;--done-bg:#1d3326;--run:#7aa7ef;--run-bg:#1b2840;--fail:#f08a80;--fail-bg:#3a1d1a;
+--redo:#e2b252;--redo-bg:#3a2e14;--todo:#4a4842;--todo-bg:#262521;--bar:#33415a"""
+
 CSS = """
 :root{--bg:#f7f6f2;--panel:#fff;--ink:#1d1d1b;--muted:#6b6a65;--line:#e4e2db;
 --done:#2f7d4f;--done-bg:#e3f1e8;--run:#1f5fbf;--run-bg:#e2ecfb;--fail:#b3261e;--fail-bg:#fbe4e2;
 --redo:#9a6200;--redo-bg:#fbf0d9;--todo:#c9c6bd;--todo-bg:#f0eee8;--bar:#cfd8e6}
-@media (prefers-color-scheme:dark){:root{--bg:#151513;--panel:#1e1e1b;--ink:#ecebe6;--muted:#9c9a92;--line:#2f2e2a;
---done:#6cc28f;--done-bg:#1d3326;--run:#7aa7ef;--run-bg:#1b2840;--fail:#f08a80;--fail-bg:#3a1d1a;
---redo:#e2b252;--redo-bg:#3a2e14;--todo:#4a4842;--todo-bg:#262521;--bar:#33415a}}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){""" + DARK + """}}
+:root[data-theme="dark"]{""" + DARK + """}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 a{color:var(--run)}code{font-size:.9em;overflow-wrap:anywhere}

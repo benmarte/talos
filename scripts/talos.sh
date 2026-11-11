@@ -4268,8 +4268,13 @@ _talos_emit_next_wait() { printf '%s\0%s\0' action "${1#action=}" >> "$_TALOS_OU
 # title cache pipeline-meta.sh keeps. Prints map=<path> and index=<path> on
 # success; non-zero on failure. No network, no provider call.
 _talos_map_render() {  # extra arguments go to talos-map.py (--missing-titles)
-  local _sd _ep _st _r _v
+  local _sd _ep _st _r _v _rt _pc=""
   _sd="$(_talos_state_dir)" || return 1
+  # The registry entry records where to redraw from (#903): the main checkout
+  # (the parent of the git common dir, the same from every lane worktree) and
+  # the config this render used, when it is a regular file.
+  _rt="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" && _rt="$(dirname "$_rt")" || _rt=""
+  if [ -f "${PIPELINE_CONFIG:-}" ]; then _pc="$PIPELINE_CONFIG"; fi
   # The stage timeouts (#888), role keys first: `<role>=<s>,...,default=<s>`.
   # A stage open longer than its timeout is stalled, not running.
   _st="default=$(cfg agents.stage_timeout_s)"
@@ -4292,7 +4297,7 @@ _talos_map_render() {  # extra arguments go to talos-map.py (--missing-titles)
     --provider "$(cfg vcs.provider)" --repo "$(cfg vcs.repo)" \
     --azure-org "$(cfg vcs.azure.org_url)" --azure-project "$(cfg vcs.azure.project)" \
     --scripts "$SCRIPT_DIR" --titles "${XDG_RUNTIME_DIR:-${HOME:-/nonexistent}/.cache}/talos/meta" \
-    --stage-timeouts "$_st" "$@"
+    --stage-timeouts "$_st" --root "$_rt" --config "$_pc" "$@"
 }
 
 # _talos_map_refresh: the reads of `map --refresh` (#889), the only network calls a
