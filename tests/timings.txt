@@ -282,6 +282,7 @@
 1 test-tests-line-directory-672.sh
 20 test-threat-model.sh
 2 test-timing-guard.sh
+3 test-title-cache-886.sh
 6 test-unsafe-cleanup-guard.sh
 79 test-upsert-pr-comment.sh
 13 test-user-layer-hermetic.sh

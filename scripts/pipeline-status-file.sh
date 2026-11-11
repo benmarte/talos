@@ -165,4 +165,5 @@ case "${TALOS_CLAIM_STATE:-}" in on:?*) me="${TALOS_CLAIM_STATE#on:}" ;; esac
 python3 -I "$SCRIPT_DIR/pipeline-next.py" collect \
   --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --roles "$roles" --me "$me" \
   --merge-auto "$auto" --required-checks "$checks" --pr-draft "$draft" --ready-gate "$ready_gate" --fix-on-first-findings "$fix_first" --required-when "$required_when" \
-  --talos-labels "$talos_labels" --base-branch "$BASE_BRANCH" </dev/null
+  --talos-labels "$talos_labels" --base-branch "$BASE_BRANCH" \
+  --meta "$SCRIPT_DIR/pipeline-meta.sh" --repo "$(cfg vcs.repo)" </dev/null

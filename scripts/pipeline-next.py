@@ -314,6 +314,25 @@ def pick_order(data, inflight, ready, overlapping=()):
 
 # ── collect ──────────────────────────────────────────────────────────────────
 
+def cache_titles(raw_issues):
+    """Hand the titles `list-issues` already read to `pipeline-meta.sh cache-titles`
+    (--meta, with --repo): the project map's title cache, filled with no provider
+    call (#886). One process for all of them. Best effort: a failure or a timeout
+    changes neither the collect's output nor its exit status."""
+    meta = opts.get('meta', '')
+    if not meta:
+        return
+    lines = ['%d %s\n' % (n, i['title']) for i in raw_issues
+             for n in [_num(i)] if n and isinstance(i.get('title'), str) and not re.search(r'[\r\n]', i['title'])]
+    if not lines:
+        return
+    try:
+        subprocess.run(['bash', meta, '--repo', opts.get('repo', ''), 'cache-titles'], input=''.join(lines).encode('utf-8'),
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, start_new_session=True)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+
+
 def collect():
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, _stop_on_signal)
@@ -485,6 +504,7 @@ def collect():
         state['me'] = me
         state['theirs'] = sorted(theirs, key=lambda t: (t['n'], t['kind']))
         state['unclaimed'] = sorted(n for n in pending if n in issues and not amap.get(n))
+    cache_titles(raw_issues)
     sys.stdout.write(json.dumps(state))
 
 
