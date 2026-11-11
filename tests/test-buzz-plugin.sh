@@ -15,8 +15,9 @@
 #   AC12 edge states: no registry, corrupt JSON, spawn rejects, silent non-zero exit
 #   AC13 no root: last map, not-redrawn message, nothing spawned
 #   AC14 the docs subsection exists and the README links it
-# AC15 (CHANGELOG, timings) is prose; AC16 (talos-buzz.sh unchanged) is covered by
-# test-buzz-entry-904.sh; AC17 is the owner's live check in Buzz.
+#   AC16 the plugin consumes talos-buzz.sh's documented verbs and lines as they are
+#        (talos-buzz.sh itself is covered by test-buzz-entry-904.sh)
+# AC15 (CHANGELOG, timings) is prose; AC17 is the owner's live check in Buzz.
 # The plugin runs under node with a stand-in ctx: a minimal react, a recording
 # pages.register, readFile over a temp dir and a scripted spawn.
 set -u
@@ -120,6 +121,7 @@ const eq = (got, want, what) => {
   }
 };
 const unhandled = [];
+const allSpawns = []; // every process any test world spawned (AC16)
 process.on("unhandledRejection", (e) => unhandled.push(String(e && e.message || e)));
 const settle = async (n = 30) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };
 
@@ -209,6 +211,7 @@ async function world(o = {}) {
       w.inflight++; w.maxInflight = Math.max(w.maxInflight, w.inflight);
       s.exited.then(() => { w.inflight--; }, () => { w.inflight--; });
       w.spawns.push(s);
+      allSpawns.push(s);
       const reply = replies[s.args[0]];
       if (o.rejectExited) setImmediate(() => s.fail(new Error(o.rejectExited)));
       else if (reply) setImmediate(() => { for (const l of reply.lines || []) s.say(l); s.exit(reply.rc === undefined ? 0 : reply.rc); });
@@ -614,6 +617,21 @@ test("AC13 an entry with no root shows the last map and the not-redrawn message,
   click(buttonsIn(page(w), "Refresh all")[0]);
   await settle();
   eq(w.spawns.length, 0, "Refresh all spawned for a project with no root");
+});
+
+// ── AC16 ────────────────────────────────────────────────────────────────────
+test("AC16 the plugin consumes talos-buzz.sh's documented verbs and lines as they are", async () => {
+  eq(P.parseLine("talos-buzz phase=render"), { kind: "phase", phase: "render" });
+  eq(P.parseLine("talos-buzz done map=/m/p.html warn=merged-unavailable"), { kind: "done", map: "/m/p.html", warn: "merged-unavailable" });
+  eq(P.parseLine("talos-buzz done forgot=p"), { kind: "done", forgot: "p" });
+  eq(P.parseLine("talos-buzz busy since=2026-11-11T12:00:00Z"), { kind: "busy", since: "2026-11-11T12:00:00Z" });
+  eq(P.parseLine("talos-buzz failed reason=auth detail=gh auth login"), { kind: "failed", reason: "auth", detail: "gh auth login" });
+  eq(P.parseLine("talos-buzz error=root-invalid"), { kind: "error", reason: "root-invalid" });
+  eq(P.parseLine("some other output"), null, "a line that is not talos-buzz's");
+  check(allSpawns.length > 0, "no spawn was recorded by the earlier tests");
+  for (const s of allSpawns) {
+    check(s.id === "talos" && s.args.length === 2 && ["redraw", "refresh", "forget", "open"].includes(s.args[0]), "an undocumented spawn: " + JSON.stringify([s.id, s.args]));
+  }
 });
 
 // ── run ─────────────────────────────────────────────────────────────────────
