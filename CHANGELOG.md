@@ -3,6 +3,8 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+
+## [0.21.0] - 2026-11-11
 - fix: the project map reads an old unfinished stage as `stalled since <date>` on an issue in a fix round too (a `blocked` after the start no longer hides it), and a Needs you row's stage bar no longer marks it running.
 - feat: a hand-driven run (no stage session, not inside `talos.sh run`) now logs what its verbs prove, tagged `"source": "hand"`: `post-approval` writes the role's event (`APPROVED`, `CLEAR`, `PASS`, `pass`, `approve`) and its `approval-posted` note carries the role as `stage`, `ready-pr` / `draft-pr` (new `--issue N`) write `pr-opened`, and `pipeline-notify.sh merged` writes `merged`, the last two once per PR, so the project map, status line and spend views are no longer empty for such a repository.
 - fix: `pipeline-criteria.sh spec-check -` reads the spec from stdin (so does `/dev/stdin` or a named pipe), and the PM profile checks its draft through a heredoc instead of a file it may not be able to write; an empty stdin is a usage error.

@@ -33,7 +33,7 @@ git clone https://github.com/benmarte/talos
 bash talos/install.sh --global     # installs to ~/.talos (re-run after git pull)
 ```
 
-Needs `bash`, `git`, `python3`, and the CLI of your tracker (`gh` for GitHub). Details: [Install and setup](docs/reference.md#install-and-setup). Upgrading: [from v0.19](docs/reference.md#upgrading-from-v019), [from v0.18](docs/reference.md#upgrading-from-v018).
+Needs `bash`, `git`, `python3`, and the CLI of your tracker (`gh` for GitHub). Details: [Install and setup](docs/reference.md#install-and-setup). Upgrading: [from v0.20](docs/reference.md#upgrading-from-v020), [from v0.19](docs/reference.md#upgrading-from-v019), [from v0.18](docs/reference.md#upgrading-from-v018).
 
 ## Quickstart
 
