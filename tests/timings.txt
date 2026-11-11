@@ -245,6 +245,7 @@
 0 test-skill-size.sh
 5 test-spec-check.sh
 12 test-spec-check-752.sh
+5 test-spec-check-stdin-892.sh
 39 test-spec-fault-648.sh
 6 test-spec-usable-suite-813.sh
 33 test-spend-cache-split.sh

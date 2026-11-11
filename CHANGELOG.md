@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: `pipeline-criteria.sh spec-check -` reads the spec from stdin (so does `/dev/stdin` or a named pipe), and the PM profile checks its draft through a heredoc instead of a file it may not be able to write; an empty stdin is a usage error.
 - fix: the project map never shows an old unfinished stage as running: an open `stage_start` with no lane record that is older than its stage timeout (`agents.roles.<role>.stage_timeout_s`, else `agents.stage_timeout_s`, else 6 h) reads `stalled since <date>`, activity rows from before today carry their date, and the heading reads `Activity · latest` when no run is recorded.
 - fix: the project map's title cache never holds a GitHub error body (a failed `gh` or a JSON value is not cached, and the map ignores one already on disk), makes no `gh api repos/...` call unless `vcs.provider` is `github` or `github-api`, and is filled from the titles a successful collect already read, so queued and in-flight issues have titles on Azure DevOps and GitLab too.
 - fix: a run the `/talos:pipeline` skill drives feeds the project map: outside `talos.sh run`, `next` and `state` write the map snapshot (recording no run, so no false `Run going` pill) and `done` redraws the page; `map.enabled: false` turns both off

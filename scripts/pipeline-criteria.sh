@@ -155,10 +155,11 @@
 #       entry uses the runner above. A malformed entry is skipped with one
 #       stderr note naming its index. A path outside [A-Za-z0-9_./()[]-] that an
 #       entry matches is `verdict BLOCKED spec`, exit 4; nothing runs.
-#   pipeline-criteria.sh spec-check <spec-file>
+#   pipeline-criteria.sh spec-check <spec-file>|-
 #       Would qa-run accept this spec's `Tests:` line (#594)? Pure text, the
 #       parser qa-run uses; `talos.sh done pm` runs it on the spec the PM just
-#       posted. One line:
+#       posted. `-`, /dev/stdin or a named pipe reads the spec from stdin (#892);
+#       an empty one is a usage error. One line:
 #         spec-check: ok
 #         spec-check: refused tests-line-refused: <the parser's reason and its fix>
 #         spec-check: refused tests-line-missing: <n> test criteria and no usable Tests: line (<fix>)
@@ -639,9 +640,31 @@ EOF
 # spec-check FILE (#594): the `Tests:` line first, then the test criteria it
 # would have to cover. One line; exit 1 on a refusal.
 cmd_spec_check() {
-  local spec="${1:-}" paths filters refused found n_test open_line
+  local spec="${1:-}" tmp="" spool="" rc=0
   [ $# -eq 1 ] && [ -n "$spec" ] || usage
+  # #892: `-`, /dev/stdin (a regular file when redirected from one, but read once
+  # only), /dev/fd/N or a named pipe is spooled into a scratch file, so a PM that
+  # cannot write a draft can pipe it in.
+  case "$spec" in
+    -|/dev/stdin|/dev/fd/*|/proc/self/fd/*) spool=1 ;;
+    *) if [ ! -f "$spec" ] && [ -r "$spec" ] && { [ -p "$spec" ] || [ -c "$spec" ]; }; then spool=1; fi ;;
+  esac
+  if [ -n "$spool" ]; then
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/talos-spec-check.XXXXXX")" && [ -d "$tmp" ] \
+      || { echo "pipeline-criteria: spec-check: no scratch directory" >&2; return 1; }
+    if [ "$spec" = "-" ]; then cat > "$tmp/spec.md"; else cat "$spec" > "$tmp/spec.md" 2>/dev/null; fi
+    if [ ! -s "$tmp/spec.md" ]; then rm -rf "${tmp:?}"; usage; fi
+    spec="$tmp/spec.md"
+  fi
   [ -f "$spec" ] && [ -r "$spec" ] || { echo "pipeline-criteria: spec-check: no such file: $spec" >&2; return 2; }
+  _spec_check_file "$spec" || rc=$?
+  [ -z "$tmp" ] || rm -rf "${tmp:?}"
+  return "$rc"
+}
+
+# _spec_check_file FILE: the verdict line of spec-check on a regular file.
+_spec_check_file() {
+  local spec="$1" paths filters refused found n_test open_line
   _tests_line "$spec"
   if [ -n "$refused" ]; then
     echo "spec-check: refused tests-line-refused: $refused"
