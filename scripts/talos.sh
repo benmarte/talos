@@ -267,7 +267,8 @@
 #         cache): map=<TALOS_HOME>/maps/<owner>-<name>.html and
 #         index=<TALOS_HOME>/maps/index.html. No network or provider call.
 #         `map.enabled: false` turns off `run`'s snapshot and renders, not this
-#         command.
+#         command. `map --forget <slug>` removes one repository from the index
+#         (forgot=<slug> index=<html>); it needs only TALOS_HOME and deletes no page.
 # map-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable map-failed
 #   stop: all of them (exit 2 for usage; else 1)
 #
@@ -609,9 +610,10 @@ verbs:
   done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
                                      end-of-stage bookkeeping: board, role relay,
                                      post_stage, spend block, lifecycle event
-  map [--refresh]                    the project map: map=<html> index=<html> (local
+  map [--refresh|--forget <slug>]    the project map: map=<html> index=<html> (local
                                      records only; --refresh first reads the provider:
-                                     one collect, the merged PRs of the last 7 days)
+                                     one collect, the merged PRs of the last 7 days;
+                                     --forget drops <slug> from the index, forgot=<slug>)
   state [--summary]                  the normalised run state as one state=<JSON>
                                      line (pipeline-status-file.sh collect:
                                      same reads, same shape, no writes);
@@ -4340,13 +4342,32 @@ for i in items if isinstance(items, list) else []:
   fi
 }
 
-# map [--refresh]: render the project map and the index (#614). --refresh first
-# reads the provider (_talos_map_refresh); a plain map stays offline.
+# _talos_map_forget <slug>: `map --forget` (#904): drop one repository from the
+# registry under its lock and redraw the index. It needs only TALOS_HOME: no
+# config, no git repository, no scratch dir. An unknown slug (or one that is no
+# <owner>/<name> key) is usage; the registry changes nothing else.
+_talos_map_forget() {
+  local _l _rc=0
+  [[ "$1" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+$ ]] || _talos_stop usage 2
+  [ -f "$SCRIPT_DIR/talos-map.py" ] || _talos_stop scripts-missing
+  command -v python3 >/dev/null 2>&1 || _talos_stop python-missing
+  _l="$(python3 -I "$SCRIPT_DIR/talos-map.py" --home "${TALOS_HOME:-$HOME/.talos}" --forget "$1" 2>/dev/null < /dev/null)" || _rc=$?
+  case "$_rc" in
+    0) sed -n -e '/^forgot=/p' -e '/^index=/p' <<< "$_l" ;;
+    2) _talos_stop usage 2 ;;
+    *) _talos_stop map-failed ;;
+  esac
+}
+
+# map [--refresh|--forget <slug>]: render the project map and the index (#614).
+# --refresh first reads the provider (_talos_map_refresh); a plain map stays
+# offline; --forget drops a repository from the registry (_talos_map_forget).
 _talos_map() {
   local _refresh=""
   case "$#:${1:-}" in
     0:) ;;
     1:--refresh) _refresh=1 ;;
+    2:--forget) _talos_map_forget "$2"; return ;;
     *) _talos_stop usage 2 ;;
   esac
   _talos_prepare map pipeline-config.sh pipeline-cfg-cache.sh pipeline-next.py talos-map.py \

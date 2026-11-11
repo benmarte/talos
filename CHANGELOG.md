@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- feat: `scripts/talos-buzz.sh <redraw|refresh|forget|open> <slug>` is a narrow entry point for the Buzz plugin: it checks the slug against `maps/index.json`, runs `talos.sh` in the project's recorded checkout with its recorded config, prints only `talos-buzz ...` lines, allows one `refresh` per project and records its outcome in `maps/.refresh/<file>.json`; `talos.sh map --forget <slug>` removes a project from the registry.
 - feat: each project map registry entry (`maps/index.json`) now carries `provider`, `root` (the main checkout, the same from every lane worktree), `config`, the five `tiles`, the first 3 `needs` rows, `run` and `state_read`; registry writes run under an exclusive lock on `maps/index.json.lock`, so two renders never lose each other's entry; and an embedder can force the page's theme with `data-theme="light"` or `"dark"` on `:root`.
 
 ## [0.21.0] - 2026-11-11
