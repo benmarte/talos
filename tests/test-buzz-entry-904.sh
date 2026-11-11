@@ -294,4 +294,19 @@ buzz nope no/such
 assert_eq "0" "$(all_buzz "$OUT")" "AC9 an error line starts talos-buzz"
 assert_file_absent "$FX/gh-called" "AC9 buzz never calls gh itself"
 
+# ── AC11: map and map --refresh keep their shapes (their own tests are 889's and 903's) ──
+export PIPELINE_CONFIG="$FX/talos.pipeline.json"
+printf '{"vcs": {"provider": "github", "repo": "acme/widget"}}\n' > "$PIPELINE_CONFIG"
+git -C "$SANDBOX" -c user.name=t -c user.email=t@talos.invalid commit -q --allow-empty -m init
+export TALOS_HOME="$FX/home11"
+OUT="$(cd "$SANDBOX" && bash "$TALOS" map 2> /dev/null)"; RC=$?
+assert_eq "0" "$RC" "AC11 a plain map still exits 0"
+assert_contains "$OUT" "map=$TALOS_HOME/maps/acme-widget.html" "AC11 a plain map still prints map="
+assert_contains "$OUT" "index=$TALOS_HOME/maps/index.html" "AC11 a plain map still prints index="
+OUT="$(cd "$SANDBOX" && bash "$TALOS" map --bogus 2>&1)"; RC=$?
+assert_eq "2:stop reason=usage" "$RC:$OUT" "AC11 any other map argument is still usage"
+OUT="$(cd "$SANDBOX" && bash "$TALOS" map --refresh extra 2>&1)"; RC=$?
+assert_eq "2:stop reason=usage" "$RC:$OUT" "AC11 --refresh with an extra argument is still usage"
+unset PIPELINE_CONFIG
+
 finish
