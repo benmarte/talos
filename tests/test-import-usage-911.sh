@@ -212,11 +212,13 @@ print(json.dumps({"session_id": "s", "hook_event_name": "SubagentStop", "agent_t
                   "agent_transcript_path": sys.argv[3], "cwd": "/x"}))' "$@"
 }
 N0="$(usage_n "$LOGA")"
+hook "$(payload general-purpose q3 "$S7/subagents/agent-q3.jsonl")"   # an ignored agent: the start-up baseline
+BASE_S="$SECS"
 hook "$(payload talos:qa q1 "$S7/subagents/agent-q1.jsonl")"
 assert_eq "0 " "$RC $OUT" "AC7 the hook for talos:qa exits 0 with empty stdout"
 assert_eq "$((N0 + 1))" "$(usage_n "$LOGA")" "AC7 talos:qa appends one usage event"
 assert_eq "1" "$(count "$LOGA" 'e.get("agent_id") == "q1" and e["role"] == "qa"')" "AC7 the event is the subagent's, role qa"
-assert_eq "yes" "$(python3 -I -c 'import sys; print("yes" if float(sys.argv[1]) < 2 else "no")' "$SECS")" "AC7 the hook returns within 2 s"
+assert_cut_short "AC7 the hook returns within 2 s of an ignored payload's start-up time" "$SECS" "$BASE_S" 4
 hook "$(payload qa q2 "$S7/subagents/agent-q2.jsonl")"
 assert_eq "$((N0 + 2))" "$(usage_n "$LOGA")" "AC7 a bare qa appends one usage event"
 N1="$(usage_n "$LOGA")"

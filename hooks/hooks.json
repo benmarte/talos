@@ -1,0 +1,16 @@
+{
+  "description": "Talos: record the token usage of hand-driven stage subagents as usage events (#911). TALOS_USAGE_HOOK=0 turns it off.",
+  "hooks": {
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/talos-usage-hook.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
