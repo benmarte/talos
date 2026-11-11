@@ -158,6 +158,7 @@
 2 test-lock-reclaim.sh
 8 test-map-no-runner-907.sh
 12 test-map-refresh-889.sh
+8 test-map-usage-elsewhere-914.sh
 10 test-map-registry-903.sh
 23 test-marker-author-trust.sh
 0 test-marker-contract.sh

@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: the project map counts the `usage` events (hand-driven subagent tokens) of an issue the provider merged with no local `merged` event, so its tokens tile, `tiles.tokens_7d` and Top spend no longer drop them; its stage events stay excluded
 
 ## [0.22.0] - 2026-11-11
 - feat: hand-driven stage subagents now record their tokens: `pipeline-events.sh import-usage` turns Claude Code subagent transcripts into one `usage` event per subagent in the right repository's events log, the plugin's new `SubagentStop` hook (`hooks/hooks.json`, `TALOS_USAGE_HOOK=0` turns it off) does the same as each one ends, and the project map shows `—` / `not recorded` (and `tiles.tokens_7d` is `null`) instead of 0 when no token figure was recorded
