@@ -71,7 +71,7 @@ reg() {  # <home> <slug> <python expression over e, the entry>
   python3 -I -c '
 import json, sys
 e = json.load(open(sys.argv[1] + "/maps/index.json")).get(sys.argv[2])
-print(json.dumps(eval(sys.argv[3]), sort_keys=True))' "$1" "$2" "$3" 2>&1
+print(json.dumps(eval(sys.argv[3]), sort_keys=True, ensure_ascii=False))' "$1" "$2" "$3" 2>&1
 }
 tile() {  # <page> <label>: the number on a tile
   python3 -I -c '
@@ -206,7 +206,7 @@ forced = re.search(r":root\[data-theme=\"dark\"\]\{(.*?)\}", css, re.S)
 print("media-selector", ":root:not([data-theme=\"light\"])" in (media.group(1) if media else ""))
 print("media-bare", bool(media and re.match(r"\s*:root\{", media.group(1))))
 print("forced-dark", bool(forced and "--bg:#151513" in forced.group(1)))
-print("same-palette", bool(media and forced and media.group(1).split("{", 1)[1] == forced.group(1) + "}"))
+print("same-palette", bool(media and forced and media.group(1).split("{", 1)[1] == forced.group(1)))
 print("light-root", bool(re.search(r"^:root\{--bg:#f7f6f2", css, re.M)))
 print("sets-attribute", "data-theme" in re.sub(r"<style>.*?</style>", "", open(sys.argv[1]).read(), flags=re.S))' "$PAGE" > "$FX/theme.out"
 assert_contains "$(cat "$FX/theme.out")" "media-selector True" "AC8 the dark palette under prefers-color-scheme is limited to :root:not([data-theme=\"light\"])"

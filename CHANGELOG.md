@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- feat: each project map registry entry (`maps/index.json`) now carries `provider`, `root` (the main checkout, the same from every lane worktree), `config`, the five `tiles`, the first 3 `needs` rows, `run` and `state_read`; registry writes run under an exclusive lock on `maps/index.json.lock`, so two renders never lose each other's entry; and an embedder can force the page's theme with `data-theme="light"` or `"dark"` on `:root`.
 
 ## [0.21.0] - 2026-11-11
 - fix: the project map reads an old unfinished stage as `stalled since <date>` on an issue in a fix round too (a `blocked` after the start no longer hides it), and a Needs you row's stage bar no longer marks it running.
