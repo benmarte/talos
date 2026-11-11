@@ -195,6 +195,33 @@ claude plugin marketplace add benmarte/talos
 claude plugin install talos@talos
 ```
 
+### Upgrading from v0.21
+
+This section is for people already on v0.21. Re-run `bash install.sh --global` first. That refreshes `~/.talos` and writes the new Buzz plugin folder. Then read these.
+
+- **Buzz plugin (#902, #910).** `install.sh --global` now writes `~/.talos/buzz-plugin/`. To use it in [Buzz](https://github.com/block/buzz-app), open Settings → Plugins → Manage plugins → Load from folder and pick that folder.
+  - The page shows every project as a card: what needs you, what is running, and when the provider was last read.
+  - Click a card to see that project's map.
+  - A badge on the sidebar row counts the items that need you.
+  - After each later upgrade, load the folder again.
+  - See [Buzz plugin](#buzz-plugin).
+- **Run `talos.sh map` once in each repo (#903).** Registry entries in `maps/index.json` now carry `provider`, `root`, `config`, `tiles`, the first 3 `needs` rows, `run` and `state_read`. An entry gets these keys at its next render. Until then the Buzz plugin shows that project's last map, but can't redraw or refresh it.
+  - For a repo that needs its own `PIPELINE_CONFIG`, set it for that one render.
+  - Every write to the registry now takes a lock.
+  - An embedder can force the map's theme with `data-theme`.
+- **`scripts/talos-buzz.sh` and `talos.sh map --forget <slug>` (#904).**
+  - `talos-buzz.sh <redraw|refresh|forget|open> <slug>` is the narrow entry point the plugin spawns. It runs only those four verbs, only for a slug in the registry.
+  - `map --forget` removes a project from the registry and leaves its files alone.
+- **Drawing a map no longer needs a runner CLI on `PATH` (#907).** `talos.sh map` (plain, `--refresh` and `--forget`) and `talos-buzz.sh` used to exit 4 `reason=profile-unusable` when `claude` wasn't on `PATH`. A GUI app or a cron job can now redraw a map. `run`, `prompt` and `next` still refuse a runner they can't find.
+- **Token use of hand-driven sessions (#911).** A coordinator session that dispatches `talos:*` stage agents as Claude Code subagents now records their tokens, so the map, `cost` and the status line stop reading 0 for such a repository.
+  - The plugin's new `SubagentStop` hook writes one `usage` event when a Talos stage subagent finishes. Update the plugin (`claude plugin update talos@talos`) and restart the session to get it. `TALOS_USAGE_HOOK=0` turns it off.
+  - For past work, run `pipeline-events.sh import-usage --projects-dir <claude config>/projects/<project> --dry-run`, check the counts, then run it again without `--dry-run`. It never imports a subagent twice.
+  - A token figure no event recorded now shows `—` / "not recorded" instead of 0, and the registry's `tiles.tokens_7d` is `null`.
+  - See [Hooks, events, spend and the status line](#hooks-events-spend-and-the-status-line).
+- **README: Project map and Buzz plugin sections.** They cover opening the map from the status line's `map` link, `talos.sh map`, and installing the plugin, with screenshots.
+
+Every change is listed in [CHANGELOG.md](../CHANGELOG.md).
+
 ### Upgrading from v0.20
 
 For people already on v0.20. Re-run `bash install.sh --global` first (it refreshes `~/.talos`, the role profiles and the plugin registration, and with them the new map page), then read these.
