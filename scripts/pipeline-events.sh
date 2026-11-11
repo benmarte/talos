@@ -15,6 +15,8 @@
 #        pipeline-events.sh cost --summary --issue A [--issue B ...]
 #        pipeline-events.sh note --issue N [--pr M] --kind K [--body-file F|-]
 #        pipeline-events.sh scoreboard [--since YYYY-MM-DD] [--repo NAME] [--json]
+#        pipeline-events.sh import-usage (--transcript F... | --session-dir D... | --projects-dir D...)
+#                                        [--since DATE] [--repo owner/name] [--dry-run]
 #
 #   path Prints the resolved absolute path to the events log (does not
 #          require the file to exist).
@@ -174,6 +176,29 @@
 #          missing or empty log prints the header only (rows: [] with --json),
 #          exit 0. A bad --since or an option with no value exits 2 with the usage.
 #          The reading rules are in docs/reference.md ("The events log").
+#
+#   import-usage (#911) records the token usage of hand-driven stage subagents: a
+#          repository driven from a Claude Code coordinator session dispatches
+#          talos:developer, talos:qa and so on as subagents, which `talos.sh run`
+#          never sees. Each subagent's transcript (agent-<id>.jsonl, with its
+#          agent-<id>.meta.json) becomes one `usage` event in the events log of
+#          the repository it worked on (scripts/talos-usage.py). --transcript
+#          names files, --session-dir a session's subagents/agent-*.jsonl,
+#          --projects-dir every session under a Claude config's projects/;
+#          --since DATE skips a transcript whose last message is older. The
+#          repository is the slug (a maps/index.json key of TALOS_HOME, or --repo,
+#          which is rooted at the current checkout) the brief names, else the one
+#          whose registry root holds the subagent's cwd (a linked worktree
+#          included); none or several is `no-repo`. A transcript whose agent_id
+#          already has a usage event in that log is `seen`, so a re-run and the
+#          plugin's SubagentStop hook never double count. --dry-run prints the
+#          same line and writes nothing. One stdout line:
+#            imported=<n> skipped=<n> (no-repo=<n> no-issue=<n> seen=<n> not-subagent=<n>) tokens=<sum>
+#          An unknown option, a missing value or no source exits 2, writing nothing.
+#          The events.enabled / events.path rules are the other writers'.
+#   usage-target (internal, for import-usage) prints the events log path this
+#          checkout writes to, nothing when events.enabled is false or the path
+#          cannot be used.
 #
 # A malformed line (not valid JSON, or not a JSON object) is skipped rather
 # than aborting the read; the count of skipped lines is reported once on
@@ -1190,6 +1215,7 @@ _usage() {
   echo "       pipeline-events.sh cost --summary --issue A [--issue B ...]" >&2
   echo "       pipeline-events.sh note --issue N [--pr M] --kind <spec-revised|approval-posted|unblocked|relabelled|code-pushed> [--body-file F|-]" >&2
   echo "       pipeline-events.sh scoreboard [--since YYYY-MM-DD] [--repo NAME] [--json]" >&2
+  echo "       pipeline-events.sh import-usage (--transcript F... | --session-dir D... | --projects-dir D...) [--since DATE] [--repo owner/name] [--dry-run]" >&2
 }
 
 # _need_value OPTION ARGC -- exit 2 with usage when a value-taking option is
@@ -1353,6 +1379,42 @@ case "$VERB" in
       esac
     done
     cmd_scoreboard "$repo" "$since" "$json_mode"
+    ;;
+  import-usage)
+    shift
+    have_src="0"
+    iu_args=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --transcript|--session-dir|--projects-dir) _need_value "$1" $#; have_src="1"; iu_args+=("$1" "$2"); shift 2 ;;
+        --since|--repo) _need_value "$1" $#; iu_args+=("$1" "$2"); shift 2 ;;
+        --dry-run) iu_args+=("$1"); shift ;;
+        *) echo "pipeline-events: unknown option '$1'" >&2; _usage; exit 2 ;;
+      esac
+    done
+    if [ "$have_src" != "1" ]; then
+      echo "pipeline-events: import-usage needs --transcript, --session-dir or --projects-dir" >&2
+      _usage
+      exit 2
+    fi
+    if [ ! -f "$SCRIPT_DIR/talos-usage.py" ]; then
+      echo "pipeline-events: talos-usage.py missing; reinstall Talos" >&2
+      exit 0
+    fi
+    python3 -I -B "$SCRIPT_DIR/talos-usage.py" import-usage "${iu_args[@]}" || exit $?
+    ;;
+  usage-target)
+    [ "$(cfg events.enabled)" = "false" ] && exit 0
+    path_cfg="$(cfg events.path)"
+    case "$path_cfg" in
+      /*|'') : ;;
+      *) if _events_path_leaves_common "$path_cfg"; then
+           echo "pipeline-events: events.path '$path_cfg' leaves the git common dir -- skipped" >&2
+           exit 0
+         fi ;;
+    esac
+    log_path="$(_events_log_path)" || exit 0
+    [ -z "$log_path" ] || printf '%s\n' "$log_path"
     ;;
   *)
     _usage

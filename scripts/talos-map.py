@@ -521,7 +521,7 @@ def main(argv):
         if not late:
             continue
         moved.add(n)
-        said = [e for e in late if e.get("event") not in ("stage_start", "stage_complete", "run_end", "hand_note", "finding_outcome")]
+        said = [e for e in late if e.get("event") not in ("stage_start", "stage_complete", "run_end", "hand_note", "finding_outcome", "usage")]
         if n in running:
             continue
         if said and is_blocked(said[-1]):
@@ -826,6 +826,10 @@ def main(argv):
     # Spend: every issue the page shows, the five with the most tokens listed.
     spent = [(n, tokens(n)) for n in shown if tokens(n)]
     total = sum(t for _, t in spent)
+    # An unknown figure is never 0: with no token number on any shown issue the
+    # tile and the registry say so (`usage` events from hand-driven subagents,
+    # #911, carry tokens like a stage event does).
+    recorded = any(tokens(n) is not None for n in shown)
     top = sorted(spent, key=lambda r: (-r[1], r[0]))[:TOP_SPEND]
     if top:
         aside.append('<section><h2>Top spend · %d days</h2><table>%s<tr class="total"><td class="muted">total</td>'
@@ -839,7 +843,8 @@ def main(argv):
         '<a class="kpi" href="#flight"><b>%d</b><span>in flight</span></a>' % len(by_state["In progress"]),
         '<a class="kpi" href="#queue"><b>%d</b><span>queued</span></a>' % len(waiting),
         '<div class="kpi"><b>%d</b><span>merged · %d days</span></div>' % (counts["Done"], RECENT_DAYS),
-        '<div class="kpi"><b>%s</b><span>tokens · %d days</span></div>' % (esc(fmt_tok(total)), RECENT_DAYS)))
+        '<div class="kpi"><b>%s</b><span>tokens · %d days%s</span></div>' % (
+            esc(fmt_tok(total) if recorded else "—"), RECENT_DAYS, "" if recorded else " · not recorded")))
     parts = [header, note, tiles, nxt_bar, '<div class="grid"><main>', "".join(main), "</main><aside>", "".join(aside), "</aside></div>"]
 
     # What a card, or a redraw from outside the checkout, needs (#903): the
@@ -848,7 +853,7 @@ def main(argv):
     newest = max(lanes, key=lambda ln: parse_ts(ln.get("stage_start")) or EARLIEST, default=None)
     facts = {"provider": "github" if provider == "github-api" else provider,
              "tiles": {"needs": len(by_state["Stuck"]), "in_flight": len(by_state["In progress"]), "queued": len(waiting),
-                       "merged_7d": counts["Done"], "tokens_7d": total},
+                       "merged_7d": counts["Done"], "tokens_7d": total if recorded else None},
              "needs": [needs_entry(n) for n in by_state["Stuck"][:REG_NEEDS]],
              "run": {"going": bool(going), "lanes": len(lanes)},
              "state_read": col_ts.strftime("%Y-%m-%dT%H:%M:%SZ") if col_ts else None}
