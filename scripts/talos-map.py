@@ -53,6 +53,7 @@ RECENT_DAYS = 7
 # A run entry the snapshot has not touched for this long is an ended run: a live
 # run writes the snapshot at every pass and stage, and no stage takes this long.
 RUN_STALE_AFTER = datetime.timedelta(hours=6)
+STAGE_TIMEOUT_S = 6 * 3600  # a stage's timeout when the config sets none
 
 
 def pid_alive(pid):
@@ -350,7 +351,7 @@ def fmt_tok(t):
 
 def main(argv):
     ap = argparse.ArgumentParser()
-    for k in ("events", "state", "home", "provider", "repo", "azure-org", "azure-project", "scripts", "titles"):
+    for k in ("events", "state", "home", "provider", "repo", "azure-org", "azure-project", "scripts", "titles", "stage-timeouts"):
         ap.add_argument("--" + k, default="")
     a = ap.parse_args(argv)
     remote = "" if sys.stdin.isatty() else sys.stdin.readline()
@@ -369,6 +370,14 @@ def main(argv):
     col = snap.get("collect") if isinstance(snap.get("collect"), dict) else {}
     run = snap.get("run") if isinstance(snap.get("run"), dict) else {}
     col_ts = parse_ts(snap.get("collect_ts")) if col else None
+    # agents.roles.<role>.stage_timeout_s and agents.stage_timeout_s, as
+    # `<role>=<s>,...,default=<s>` (talos.sh): a stage open longer than its
+    # timeout has been ended by the agent's own wrapper, so it is not running.
+    timeouts = {}
+    for part in a.stage_timeouts.split(","):
+        k, _, v = part.partition("=")
+        if k and re.fullmatch(r"[0-9]+", v) and int(v) >= 1:
+            timeouts[k] = int(v)
     lanes, lanes_seen, lane_issues = read_lanes(os.path.join(os.path.dirname(a.state), "lanes"), now)
 
     by_issue = {}
@@ -401,25 +410,44 @@ def main(argv):
     # last failing verdict.
     live_issues = {ln["issue"] for ln in lanes}
 
-    def stage_running(n, evs):
-        """A stage is going only while its latest `stage_start` is open (no
-        `stage_complete` and no role event of its own for that stage after it)
-        and something vouches for it: its lane record when it has one (live by
-        the `run_going` rule), else a start newer than the collect and than the
-        last run's end (no collect: the start counts)."""
+    def open_stage(evs):
+        """(stage, start ts) of the issue's latest `stage_start` while it is open
+        (no `stage_complete` and no role event of its own for that stage after
+        it, no `blocked` after it), else None."""
         start = next((i for i in range(len(evs) - 1, -1, -1) if evs[i].get("event") == "stage_start"), -1)
         if start < 0:
-            return False
+            return None
         stage = evs[start].get("stage")
         if open_starts(evs).get(stage, (-1,))[0] != start:
-            return False
+            return None
         if any(e.get("event") == "blocked" or (e.get("event") == "stage_complete" and e.get("role") == stage)
                for e in evs[start + 1:]):
+            return None
+        return stage, parse_ts(evs[start].get("ts"))
+
+    def stalled_since(n, evs):
+        """The start of an open stage that no lane record vouches for and that is
+        older than its stage timeout (the role's, else the global one, else 6 h),
+        or None. A lane record is its own word: the agent's wrapper ends it."""
+        op = open_stage(evs)
+        if not op or n in lane_issues or not op[1]:
+            return None
+        limit = timeouts.get(op[0]) or timeouts.get("default") or STAGE_TIMEOUT_S
+        return op[1] if (now - op[1]).total_seconds() > limit else None
+
+    def stage_running(n, evs):
+        """A stage is going only while its latest `stage_start` is open and
+        something vouches for it: its lane record when it has one (live by the
+        `run_going` rule), else a start younger than its stage timeout, newer
+        than the collect and than the last run's end (no collect: the start
+        counts)."""
+        op = open_stage(evs)
+        if not op:
             return False
         if n in lane_issues:
             return n in live_issues
-        began = parse_ts(evs[start].get("ts"))
-        return not began or not ((col_ts and began < col_ts) or (run_end and began < run_end))
+        began = op[1]
+        return not began or not (stalled_since(n, evs) or (col_ts and began < col_ts) or (run_end and began < run_end))
 
     moved, running, rounds = set(), set(), {}
     for n, evs in by_issue.items():
@@ -580,12 +608,17 @@ def main(argv):
             body += '<div class="why">%s</div>' % esc(stuck_reason(n) or STOP_WHY.get(kind) or "waiting on a person")
         step = link(links.issue(n), STOP_DO[kind]) + "." if kind in ("owner", "epic") else STOP_DO[kind]
         return '<div class="row"><div>%s<div class="do">To continue: %s</div></div>%s</div>' % (
-            body, step, steps_html(evs, open_starts(evs), kind == "merge"))
+            body, step, steps_html(evs, {} if stalled_since(n, evs) else open_starts(evs), kind == "merge"))
 
     def flight_row(n):
         evs = by_issue.get(n, [])
         op = open_starts(evs)
         tag = ""
+        since_at = stalled_since(n, evs)
+        if since_at:
+            op, stage = {}, open_stage(evs)[0]
+            tag = '<span class="tag stalled">%s</span>' % esc("%s · stalled since %s" % (
+                "QA" if stage == "qa" else stage, since_at.strftime("%Y-%m-%d")))
         if op:
             stage, (_, ts) = max(op.items(), key=lambda kv: kv[1][0])
             began = parse_ts(ts)
@@ -677,8 +710,10 @@ def main(argv):
                 "v-bad" if v in FAILING else "v-ok", esc(v)) if v in FAILING or v in PASSING else esc(v))
         else:
             continue
+        old = bool(ts and ts.date() < now.date())
         feed.append('<li><time>%s</time><span>%s %s</span></li>' % (
-            ts.strftime("%H:%M") if ts else "—", link(links.issue(e["issue"]), "#%d" % e["issue"]), what))
+            ts.strftime("%Y-%m-%d %H:%M" if old else "%H:%M") if ts else "—",
+            link(links.issue(e["issue"]), "#%d" % e["issue"]), what))
     feed = feed[-ACTIVITY_MAX:][::-1]
     aside = []
     if lanes:
@@ -692,7 +727,8 @@ def main(argv):
     if feed:
         later = ('<details><summary>Show %d earlier</summary><ul class="feed">%s</ul></details>'
                  % (len(feed) - ACTIVITY_SHOWN, "".join(feed[ACTIVITY_SHOWN:])) if len(feed) > ACTIVITY_SHOWN else "")
-        aside.append('<section><h2>Activity · this run</h2><ul class="feed">%s</ul>%s</section>' % ("".join(feed[:ACTIVITY_SHOWN]), later))
+        aside.append('<section><h2>Activity · %s</h2><ul class="feed">%s</ul>%s</section>' % (
+            "this run" if since else "latest", "".join(feed[:ACTIVITY_SHOWN]), later))
     if track:
         aside.append('<section><h2>Priority track</h2>%s</section>' % track)
 
@@ -795,7 +831,7 @@ h2+.row,.key+.row{border-top:0}
 .ask b{color:var(--fail)}
 .do{margin-top:6px;font-size:12.5px}.do a{font-weight:600}
 .tag{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:4px;margin-right:6px;vertical-align:1px}
-.tag.run{background:var(--run-bg);color:var(--run)}.tag.stuck{background:var(--fail-bg);color:var(--fail)}
+.tag.run{background:var(--run-bg);color:var(--run)}.tag.stalled,.tag.stuck{background:var(--fail-bg);color:var(--fail)}
 .steps{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px;align-self:center;list-style:none;margin:0;padding:0}
 .s{margin:0;font-size:9.5px;text-align:center;color:var(--muted);overflow-wrap:anywhere}
 .s::before{content:"";display:block;height:7px;border-radius:4px;margin-bottom:3px;background:var(--todo)}
@@ -816,7 +852,7 @@ td.num,th.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-n
 tr.total td{font-weight:600}
 details summary{cursor:pointer;color:var(--muted);font-size:12.5px;margin-top:8px}
 .feed{list-style:none;margin:0;padding:0}
-.feed li{display:grid;grid-template-columns:44px minmax(0,1fr);gap:8px;padding:5px 0;border-top:1px solid var(--line);font-size:12.5px;overflow-wrap:anywhere}
+.feed li{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:8px;padding:5px 0;border-top:1px solid var(--line);font-size:12.5px;overflow-wrap:anywhere}
 .feed li:first-child{border-top:0}.feed time{color:var(--muted)}
 .v-ok{color:var(--done);font-weight:600}.v-bad{color:var(--fail);font-weight:600}
 .tier{display:flex;justify-content:space-between;gap:8px;font-size:12.5px;padding:4px 0}
