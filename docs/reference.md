@@ -1044,6 +1044,23 @@ A failed `redraw`, `refresh`, `forget` or `open` prints `talos-buzz failed reaso
 
 **Theme.** The page's dark palette applies under `@media (prefers-color-scheme:dark)` only when `:root` has no `data-theme="light"`, and always under `:root[data-theme="dark"]`. The page never sets the attribute, so a browser shows what it always did; an embedder (the Buzz plugin) forces either theme by adding `data-theme="light"` or `data-theme="dark"` to `:root`.
 
+#### Buzz plugin
+
+`buzz-plugin/` is a plugin for the [Buzz](https://github.com/block/buzz-app) desktop app (apiVersion 1): plain JavaScript, no build step, no npm dependency. It shows every project in `maps/index.json` as a card (what needs you, what is running, when the provider was last read) and, on a click, the project's map in a sandboxed frame, with Refresh and Open in browser. The badge on its sidebar row is the total of `tiles.needs`.
+
+- **Load it.** `install.sh --global` writes `${TALOS_HOME:-~/.talos}/buzz-plugin/` (`plugin.js`, with `__TALOS_HOME__` replaced by the absolute `TALOS_HOME`, and a generated `manifest.json`; both are in `.install-manifest`, a per-repo install copies neither). In Buzz: Settings → Plugins → Manage plugins → Load from folder → `~/.talos/buzz-plugin`. After a Talos upgrade run `install.sh --global` again and load the folder again, so Buzz reads the new `plugin.js`.
+- **What the access review lists.** File reads (`host.files`: `maps/index.json`, the map pages and `maps/.refresh/<file>.json`) and one process, `bash <TALOS_HOME>/scripts/talos-buzz.sh`. Buzz appends the plugin's arguments to it, and the script accepts only `redraw`, `refresh`, `forget` and `open` with a registry slug (above), so the plugin cannot start a run.
+- **No token, no network.** The plugin holds no credential and makes no network call. A refresh runs `talos-buzz.sh refresh`, which reads the provider with Talos's own `gh` or `az` login, exactly as `talos.sh run` does. A read that fails with `reason=auth` names the login command (`gh auth login` or `az login`) on the card and above the map, and the last map stays.
+- **The map frame.** The page is shown in `<iframe sandbox="allow-popups allow-popups-to-escape-sandbox" srcdoc=…>`: no script, no same-origin access. The plugin removes the page's `<meta http-equiv="refresh">` (the sandbox refuses it, the plugin reloads itself), adds `<base target="_blank">` so issue links open outside the frame, and sets `data-theme` on `<html>` from Buzz's current theme (the luminance of its `--bg-panel`, else `prefers-color-scheme`). A registry `file` that is not `^[A-Za-z0-9._-]+\.html$` is refused: the plugin never reads it.
+- **Refresh policy.**
+  - Opening a project runs `redraw` at once (about 1 s, local records only); if its `state_read` is `null` or over 1 hour old it then runs `refresh`.
+  - Opening the Projects view queues a `refresh` for every project whose `state_read` is over 1 hour old, one project at a time (the plugin never runs two `talos-buzz.sh` processes at once).
+  - **Refresh** and **Refresh all** do the same unconditionally.
+  - Every 30 seconds, while the page is shown and the document is visible, the plugin re-reads `index.json`, the open project's map and its refresh record, and replaces the frame only when the prepared page changed, so the scroll position holds.
+  - After a failed refresh (a `talos-buzz failed` line or a record with `ok: false`) automatic refreshes skip that project for 15 minutes; a manual Refresh always runs. A `talos-buzz busy` line means another refresh is already reading: the plugin shows the spinner and does not retry.
+  - A project whose registry entry has no `root` (written before the registry carried one) shows its last map and the note that Talos redraws it at its next stage (or after `talos.sh map` in the repo once); the plugin runs nothing for it. An entry not updated for over 14 days is dimmed and offers **Remove from list** (`talos-buzz.sh forget`, confirmed in the card).
+  - The processes the plugin spawned are killed when the page is left.
+
 ## Isolation, locking and multi-user claims
 
 ### Isolation modes

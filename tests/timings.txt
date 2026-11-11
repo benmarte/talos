@@ -45,6 +45,7 @@
 8 test-bootstrap-board.sh
 24 test-budget-guard.sh
 20 test-buzz-entry-904.sh
+20 test-buzz-plugin.sh
 0 test-callsite-guard.sh
 0 test-callsite-literal-defaults.sh
 32 test-canary.sh
