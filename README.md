@@ -68,6 +68,56 @@ One dot per stage (validator, pm, developer, review, qa, merge): done, running, 
 
 `talos.sh map` renders a one-page [project map](docs/reference.md#project-map) of the queue (the [Buzz plugin](docs/reference.md#buzz-plugin) shows every project and its map inside Buzz), `talos.sh evidence prune` removes the QA evidence of finished PRs from the [`talos-evidence` branch](docs/reference.md#evidence-storage) in one commit, and `agents.claude_api_credits: true` lets claude stages on a Max or Team plan start on its [monthly API credits](docs/reference.md#monthly-api-credits).
 
+## Project map
+
+Every repository Talos works on gets a one-page map in your browser: what needs you, what's in flight and at which stage, what merged in the last 7 days and what it cost in tokens. It's a plain HTML file. It needs no server, no login and no Buzz, and it reloads itself every 30 seconds.
+
+![The project map in a browser](docs/images/project-map-browser.png)
+
+**Opening it:**
+
+- **From the status line:** the Talos status line ends with a clickable `map` link (see [Status line](#status-line)). Cmd-click it (Ctrl-click on Linux) in any terminal that supports links, such as iTerm2, Ghostty, WezTerm, kitty or VS Code.
+- **By hand:** run `talos.sh map` in the repo. It prints the page's path:
+  - `~/.talos/maps/<owner>-<name>.html` is this repo's map;
+  - `~/.talos/maps/index.html` links every repo's map.
+
+  Open either one with `open <path>` on macOS or `xdg-open <path>` on Linux.
+- **cmux users:** cmux opens Cmd-clicked files in its own preview. Set `"app": { "openSupportedFilesInCmux": false }` in `~/.config/cmux/cmux.json` to open the map in your browser instead.
+
+**Keeping it current:**
+
+- **During a run:** `talos.sh run` (or `/talos:pipeline`) redraws the map at every stage.
+- **Without a run:** `talos.sh map` redraws it from local records, with no network call. `talos.sh map --refresh` also reads GitHub, Azure DevOps or GitLab first, which helps when the work ran in another checkout or environment.
+
+Details are in [docs/reference.md](docs/reference.md#project-map).
+
+## Buzz plugin
+
+If you use [Buzz](https://github.com/block/buzz-app), the Talos plugin shows every project on your Mac, and each project's map, in a Buzz page. A badge on its sidebar row counts the items that need you.
+
+![The Talos page in Buzz: one card per project with what needs you, what is running and when the provider was last read (example projects)](docs/images/buzz-plugin-projects-dark.png)
+
+**Install it:**
+
+1. Run `bash install.sh --global`. It writes the plugin to `~/.talos/buzz-plugin/`.
+2. In Buzz, open **Settings → Plugins → Manage plugins → Load from folder**. Press ⌘⇧G, paste `~/.talos/buzz-plugin` and choose the folder.
+3. Approve the access review. It lists two things:
+   - reading files (the Talos maps in `~/.talos/maps`);
+   - one process, `talos`, which runs `~/.talos/scripts/talos-buzz.sh`. That script can only redraw, refresh, forget or open a project's map; it can't start a run.
+4. Open **Talos** in the sidebar.
+
+A project appears after Talos draws its map once: run `talos.sh map` in the repo, or start a Talos run there.
+
+**Using it:**
+
+- **Cards:** projects that need you come first, with the top three items (each opens its issue), then running projects.
+- **Project view:** click a card to see its map. **Refresh** redraws it and reads GitHub, Azure DevOps or GitLab again with Talos's own `gh`, `az` or `glab` login. The page updates by itself when the read finishes. **Open in browser** opens the same map in your browser.
+- **Theme:** the plugin follows Buzz's light or dark theme.
+
+![A project's map inside Buzz while a refresh reads GitHub](docs/images/buzz-plugin-map-dark.png)
+
+The plugin holds no token and makes no network call of its own. **After you upgrade Talos**, run `install.sh --global` again and load the folder in Buzz again, so Buzz picks up the new `plugin.js`. The refresh rules and the security model are in [docs/reference.md](docs/reference.md#buzz-plugin).
+
 ## Switching LLMs: profiles
 
 A profile bundles a mode, a runner, a model and per-role overrides under one name. Select one with `agents.profile` or per run with `TALOS_PROFILE`; `agents.fallback` lists what to switch to when a provider is down.
