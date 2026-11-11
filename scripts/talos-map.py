@@ -9,6 +9,11 @@ repository, rendered by code from Talos's local records, plus an index.
 
 The origin URL is read from stdin, never argv: it may carry a credential.
 
+    python3 -I talos-map.py --home <TALOS_HOME> --forget <slug>
+
+removes one entry from the registry (same lock), redraws index.html and prints
+`forgot=<slug>` and `index=<path>`; exit 2 for an unknown slug. It reads nothing else.
+
 Reads only local files: the events log, the state snapshot `talos.sh run`
 writes from the collect it already fetched, and the title cache
 pipeline-meta.sh keeps. No network, no provider call, no LLM. Writes
@@ -364,7 +369,10 @@ def main(argv):
               "root", "config"):
         ap.add_argument("--" + k, default="")
     ap.add_argument("--missing-titles", action="store_true")
+    ap.add_argument("--forget", default=None)
     a = ap.parse_args(argv)
+    if a.forget is not None:
+        return forget(a.home, a.forget)
     remote = "" if sys.stdin.isatty() else sys.stdin.readline()
     provider = (a.provider or "github").lower()
     slug, title_key, links = locate(provider, a.repo, remote, a.azure_org, a.azure_project)
@@ -876,13 +884,43 @@ def main(argv):
                              line="%d merged · %d in flight · %d stuck · %d not started"
                                   % (counts["Done"], counts["In progress"], counts["Stuck"], counts["Not started"]))
             write(reg_path, json.dumps(reg, indent=1, sort_keys=True))
-            items = "".join('<li><a href="%s">%s</a> <span class="sub">%s · updated %s</span></li>'
-                            % (esc(v.get("file", "")), esc(k), esc(v.get("line", "")), esc(v.get("updated", "")))
-                            for k, v in sorted(reg.items()) if isinstance(v, dict))
-            write(index, doc("Talos projects", "<header><h1>Talos projects</h1></header><ul class=\"index\">%s</ul>" % items))
+            write(index, index_page(reg))
     if not locked:
         sys.stderr.write("talos-map: registry busy, not updated (no lock within %d s)\n" % LOCK_WAIT_S)
     print("map=" + page)
+    print("index=" + index)
+    return 0
+
+
+def index_page(reg):
+    items = "".join('<li><a href="%s">%s</a> <span class="sub">%s · updated %s</span></li>'
+                    % (esc(v.get("file", "")), esc(k), esc(v.get("line", "")), esc(v.get("updated", "")))
+                    for k, v in sorted(reg.items()) if isinstance(v, dict))
+    return doc("Talos projects", "<header><h1>Talos projects</h1></header><ul class=\"index\">%s</ul>" % items)
+
+
+def forget(home, slug):
+    """`map --forget <slug>` (#904): drop one entry from the registry, under the
+    registry's lock, and redraw the index. It deletes no page, no events and
+    nothing in a repository, and needs only the home. An unknown slug is 2."""
+    maps = os.path.join(home, "maps")
+    if not os.path.isdir(maps):
+        sys.stderr.write("talos-map: unknown project\n")
+        return 2
+    reg_path = os.path.join(maps, "index.json")
+    with registry_lock(os.path.join(maps, "index.json.lock")) as locked:
+        if not locked:
+            sys.stderr.write("talos-map: registry busy, nothing forgotten (no lock within %d s)\n" % LOCK_WAIT_S)
+            return 1
+        reg = read_state(reg_path) or {}
+        if slug not in reg:
+            sys.stderr.write("talos-map: unknown project\n")
+            return 2
+        del reg[slug]
+        index = os.path.join(maps, "index.html")
+        write(reg_path, json.dumps(reg, indent=1, sort_keys=True))
+        write(index, index_page(reg))
+    print("forgot=" + slug)
     print("index=" + index)
     return 0
 

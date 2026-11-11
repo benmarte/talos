@@ -980,7 +980,7 @@ From `~/.talos/scripts` (or `scripts/` in a checkout); `--dry-run` prints the ca
 - `pipeline-vcs.sh current-user | assert-sync`: your login; checkout clean and level.
 - `pipeline-vcs.sh comment-issue <n> | comment-pr <n>`: post a comment. A stage writes its body to `.talos/<role>-*.body` or passes `--body-file -` with a heredoc on stdin; a `--body-file` or stdin body is never read as a path. A positional or `--body` body that is one whitespace-free token naming a readable file (bare, relative or absolute) is refused with "use `--body-file`", so a path is never posted as the comment; any other text is posted as written.
 - `talos.sh state --summary`: in flight, waiting, next, other operators' items.
-- `talos.sh map [--refresh]`: the project map (below); `--refresh` first reads the provider once (a collect and the merged PRs of the last 7 days).
+- `talos.sh map [--refresh|--forget <slug>]`: the project map (below); `--refresh` first reads the provider once (a collect and the merged PRs of the last 7 days); `--forget <slug>` drops a repository from the registry. `scripts/talos-buzz.sh <redraw|refresh|forget|open> <slug>` is the narrow entry point the Buzz plugin spawns (below).
 - `pipeline-vcs.sh list-merged-prs [--since YYYY-MM-DD]`: the PRs merged into the base branch, newest first, as `[{"number", "issue", "title", "mergedAt"}]` (`issue` is the issue the PR closes by the rule `find-pr <n> merged` uses, `null` when unknown; azure also reads the PR's linked work items). Read only, on `github`, `github-api`, `gitlab` and `azure`; a failed read or one that hits the 20-page cap exits 1 and prints no partial list, `file` exits 2 with `not implemented for provider 'file'`.
 
 ### Project map
@@ -1020,6 +1020,27 @@ The current stage is the issue's latest `stage_start` that has no later event of
 | `state_read` | ISO time of the state read the page shows as `queue as of`, or `null` when the page has no state read |
 
 The registry's read-modify-write takes an exclusive `flock` on `maps/index.json.lock` and writes through a temp file and a rename, so two renders (or a render and a later `map --forget`) never lose each other's entry. A lock not taken within 10 seconds skips the registry update (`index.json` and `index.html`) with one `talos-map: registry busy` line on stderr; the page is still written and the exit status does not change.
+
+**`talos.sh map --forget <slug>`** removes `<slug>`'s entry from `maps/index.json` under the `index.json.lock` lock and regenerates `maps/index.html`, then prints `forgot=<slug>` and `index=<path>`. It deletes no map page, no events and nothing in a repository, and needs only `TALOS_HOME` (no git repository, no config, no provider call), so it runs from any directory. A slug that is no registry key is `stop reason=usage`, exit 2, and changes nothing; a lock not taken within 10 seconds is `map-failed`, exit 1.
+
+**`scripts/talos-buzz.sh <verb> <slug>`** is the only entry point the Buzz plugin spawns (#904). Buzz's `host.spawn` appends the caller's arguments to a declared command, so a plugin that could spawn `talos.sh` itself could pass any verb, `run` included; this script takes four verbs and a slug, runs `talos.sh` from its own `scripts/` directory, and needs no shell profile (`python3 -I`, coreutils and pure shell).
+
+- **Slug check.** `<slug>` must be an exact key of `${TALOS_HOME:-~/.talos}/maps/index.json`, at most 200 bytes, with no control character and no `..` path part. The entry's `root` must be an absolute, existing directory that contains `.git`, its `config`, when present, an absolute regular file, and (for `refresh` and `open`) its `file` must match `^[A-Za-z0-9._-]+\.html$`. Anything else prints `talos-buzz error=<reason>` (`usage`, `bad-slug`, `unknown-slug`, `registry-unreadable`, `entry-invalid`, `root-invalid`, `config-invalid`, `file-invalid`, and a few for an unusable temp or `.refresh` directory), exits 2 and runs nothing. An unknown verb, a missing slug or an extra argument is `error=usage`. A project whose `root` is gone fails the check for every verb, `forget` included.
+- **Running.** `talos.sh` runs in `root`, with `PIPELINE_CONFIG` set to the entry's `config`, or unset when it has none (an ambient one never leaks in), and `TALOS_HOME` exported.
+- **Output.** Every stdout line starts `talos-buzz `, so the plugin can stream it; `talos.sh`'s own stdout is never echoed (it is read only for `map=`, `stop reason=` and `warn reason=merged-unavailable`). Exit status: 0 for `done` and `busy`, 1 for `failed`, 2 for `usage` and `error`.
+
+| Verb | Runs | Prints |
+|---|---|---|
+| `redraw` | `talos.sh map` (local records only) | `talos-buzz phase=render`, then `talos-buzz done map=<path>` |
+| `refresh` | `talos.sh map --refresh` (15 to 30 s) | `talos-buzz phase=reading`, then `talos-buzz done map=<path> [warn=merged-unavailable]` |
+| `forget` | `talos.sh map --forget <slug>` | `talos-buzz done forgot=<slug>` |
+| `open` | `open` (macOS) or `xdg-open` on `<TALOS_HOME>/maps/<file>`, rebuilt from the entry's `file` | `talos-buzz done opened=<path>` |
+
+A failed `redraw`, `refresh`, `forget` or `open` prints `talos-buzz failed reason=<word> detail=<text>` and exits 1. `detail` is the last non-empty stderr line, control characters stripped, at most 200 characters. The reason is `auth` when stderr names `gh auth login`, `az login` or HTTP 401 or 403; else `state-unavailable` when `talos.sh` printed `stop reason=state-unavailable`; else `network` when stderr names a connection, timeout or DNS fault; else `failed`. A `redraw` or `refresh` whose `talos.sh` exits 0 without a `map=` line is `failed` too.
+
+**One refresh per project.** `refresh` takes `maps/.refresh/<file>.lock`, which holds `<pid> <start time>` (one line, UTC ISO). A second `refresh` of the same slug while one runs prints `talos-buzz busy since=<iso>` and exits 0 without running anything. A lock whose pid is dead, that is older than 10 minutes or that cannot be read is taken over; the lock is removed when the refresh ends. A `maps/.refresh/<file>.lock.guard` file serialises the take-over and stays.
+
+**The refresh record.** Each finished `refresh` writes `maps/.refresh/<file>.json`: `{"started", "finished", "ok", "reason", "detail"}` (UTC ISO times; `ok` a boolean; `reason` is `ok` on success or the failure word above; `detail` is the failure's detail, or `warn=merged-unavailable` on a warned success). It is a separate file so that the registry is never written by this script. The plugin reads it to show the last read's outcome and to back off after a failure. A busy call writes no record.
 
 **Theme.** The page's dark palette applies under `@media (prefers-color-scheme:dark)` only when `:root` has no `data-theme="light"`, and always under `:root[data-theme="dark"]`. The page never sets the attribute, so a browser shows what it always did; an embedder (the Buzz plugin) forces either theme by adding `data-theme="light"` or `data-theme="dark"` to `:root`.
 

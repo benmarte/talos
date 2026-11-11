@@ -154,7 +154,7 @@ refresh_fails other failed "any other failure"
 DETAIL="$(printf '%s\n' "$OUT" | sed -n 's/^talos-buzz failed reason=failed detail=//p')"
 assert_eq "boom" "$(printf '%s' "$DETAIL" | cut -c1-4)" "AC3 the detail is the last non-empty stderr line"
 assert_eq "true" "$(rec acme-widget.html 'len(d["detail"]) <= 200 and not any(ord(c) < 32 for c in d["detail"])')" "AC3 the record's detail is at most 200 chars with no control characters"
-assert_eq "true" "$([ "${#DETAIL}" -le 200 ] && ! printf '%s' "$DETAIL" | grep -q "$(printf '[\001\033]')" && echo true || echo false)" "AC3 the printed detail is at most 200 chars with no control characters"
+assert_eq "true" "$([ "${#DETAIL}" -le 200 ] && ! grep -q "$(printf '[\001\033]')" <<< "$DETAIL" && echo true || echo false)" "AC3 the printed detail is at most 200 chars with no control characters"
 assert_eq "true" "$(rec acme-widget.html 'bool(__import__("re").fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", d["started"])) and bool(__import__("re").fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", d["finished"]))')" "AC3 started and finished are ISO times"
 assert_file_exists "$TALOS_HOME/maps/.refresh/acme-widget.html.json" "AC3 the record is maps/.refresh/<file>.json"
 assert_file_absent "$TALOS_HOME/maps/.refresh/acme-widget.html.lock" "AC3 a failed refresh leaves no lock"
@@ -185,7 +185,7 @@ assert_eq "1" "$(cat "$FX/o1" "$FX/o2" | grep -c '^talos-buzz busy since=[0-9]\{
 assert_eq "1" "$(cat "$FX/o1" "$FX/o2" | grep -c '^talos-buzz done map=')" "AC5 exactly one of them ran"
 assert_eq "1" "$(ncalls)" "AC5 the stub ran once"
 assert_contains "$LOCKTXT" "Z" "AC5 the lock holds a start time"
-assert_eq "true" "$(printf '%s' "$LOCKTXT" | grep -Eq '(^|[^0-9])[0-9]+([^0-9]|$)' && echo true || echo false)" "AC5 the lock holds a pid"
+assert_eq "true" "$(grep -Eq '^[0-9]+ ' <<< "$LOCKTXT" && echo true || echo false)" "AC5 the lock holds a pid"
 assert_file_absent "$TALOS_HOME/maps/.refresh/acme-widget.html.lock" "AC5 the lock is gone after the refresh ends"
 
 mode ok
@@ -210,14 +210,17 @@ rm -f "$LOCK"
 put_reg "$GOOD"
 printf 'page' > "$TALOS_HOME/maps/acme-widget.html"; printf 'page' > "$TALOS_HOME/maps/acme-bare.html"
 mkdir -p "$TALOS_HOME/maps/.refresh"; printf '{}' > "$TALOS_HOME/maps/.refresh/acme-widget.html.json"
-BEFORE="$(cd "$TALOS_HOME/maps" && find . -type f ! -name 'index.json' ! -name 'index.html' | sort | tr '\n' ' ')"
+maps_files() {  # every file in maps/ but the registry, its page and its lock (a forget rewrites those)
+  (cd "$TALOS_HOME/maps" && find . -type f ! -name 'index.json' ! -name 'index.html' ! -name 'index.json.lock' | sort | tr '\n' ' ')
+}
+BEFORE="$(maps_files)"
 REPO_BEFORE="$(find "$FX/r1" | sort | tr '\n' ' ')"
 OUT="$(cd "$NOGIT" && env -i PATH="$PATH" HOME="$NOGIT" TALOS_HOME="$TALOS_HOME" bash "$TALOS" map --forget acme/widget 2> "$FX/forget.err")"; RC=$?
 assert_eq "0" "$RC" "AC6 map --forget exits 0 from a directory with no git repo and no config"
 assert_contains "$OUT" "forgot=acme/widget" "AC6 map --forget prints forgot=<slug>"
 assert_contains "$OUT" "index=$TALOS_HOME/maps/index.html" "AC6 map --forget prints index=<path>"
 assert_eq '["acme/bare"]' "$(python3 -I -c 'import json, sys; print(json.dumps(sorted(json.load(open(sys.argv[1])))))' "$TALOS_HOME/maps/index.json")" "AC6 only that key is removed"
-assert_eq "$BEFORE" "$(cd "$TALOS_HOME/maps" && find . -type f ! -name 'index.json' ! -name 'index.html' | sort | tr '\n' ' ')" "AC6 no other file in maps/ is deleted"
+assert_eq "$BEFORE" "$(maps_files)" "AC6 no other file in maps/ is deleted"
 assert_eq "$REPO_BEFORE" "$(find "$FX/r1" | sort | tr '\n' ' ')" "AC6 nothing in the repository changes"
 assert_file_exists "$TALOS_HOME/maps/acme-widget.html" "AC6 the forgotten project's page stays"
 assert_file_exists "$TALOS_HOME/maps/index.json.lock" "AC6 the registry lock is maps/index.json.lock"
@@ -281,7 +284,7 @@ for m in ok warn auth state net other nomap; do
   mode "$m"
   for verb in redraw refresh forget open; do
     buzz "$verb" acme/widget
-    assert_eq "0" "$(all_buzz "$OUT")" "AC9 $verb with the stub in mode $m: every stdout line starts talos-buzz"
+    assert_eq "0:1" "$(all_buzz "$OUT"):$([ -n "$OUT" ] && echo 1 || echo 0)" "AC9 $verb with the stub in mode $m: some stdout, and every line starts talos-buzz"
     assert_not_contains "$OUT" "secret stub stdout" "AC9 $verb ($m) does not echo the stub's stdout"
     assert_not_contains "$OUT" "opener stdout" "AC9 $verb ($m) does not echo the opener's stdout"
     put_reg "$GOOD"
