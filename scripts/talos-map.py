@@ -353,6 +353,7 @@ def main(argv):
     ap = argparse.ArgumentParser()
     for k in ("events", "state", "home", "provider", "repo", "azure-org", "azure-project", "scripts", "titles", "stage-timeouts"):
         ap.add_argument("--" + k, default="")
+    ap.add_argument("--missing-titles", action="store_true")
     a = ap.parse_args(argv)
     remote = "" if sys.stdin.isatty() else sys.stdin.readline()
     slug, title_key, links = locate((a.provider or "github").lower(), a.repo, remote, a.azure_org, a.azure_project)
@@ -380,10 +381,38 @@ def main(argv):
             timeouts[k] = int(v)
     lanes, lanes_seen, lane_issues = read_lanes(os.path.join(os.path.dirname(a.state), "lanes"), now)
 
+    if a.missing_titles:
+        # `talos.sh map --refresh` asks which issues the collect lists have no cached
+        # title, to decide whether one title list is worth a call. No page is written.
+        listed = {n for key in ("queued", "inflight", "held") for n in col.get(key) or [] if num(n)}
+        listed |= {p["issue"] for p in col.get("prs") or [] if isinstance(p, dict) and num(p.get("issue"))}
+        listed |= {i[1] for i in col.get("blocked") or [] if isinstance(i, list) and len(i) == 2 and i[0] == "issue" and num(i[1])}
+        listed |= {o["n"] for o in col.get("owners") or [] if isinstance(o, dict) and num(o.get("n"))}
+        for n in sorted(n for n in listed if not title_of(a.titles, title_key, n)):
+            print(n)
+        return 0
+
     by_issue = {}
     for e in events:
         by_issue.setdefault(e["issue"], []).append(e)
     merged = {n for n, evs in by_issue.items() if any(e.get("event") == "merged" for e in evs)}
+    # Merges the provider reported (`talos.sh map --refresh`, #889), for work that ran
+    # elsewhere. A merge with a local `merged` event keeps its local row; any other
+    # merge of the last RECENT_DAYS is a "merged elsewhere" row, keyed by its issue
+    # or, with none known, by its PR.
+    local_prs = {e["pr"] for evs in by_issue.values() for e in evs if e.get("event") == "merged" and num(e.get("pr"))}
+    elsewhere, orphans = {}, {}
+    for p in snap.get("merged_remote") if isinstance(snap.get("merged_remote"), list) else []:
+        at = parse_ts(p.get("mergedAt")) if isinstance(p, dict) else None
+        if not at or not num(p.get("number")) or (now - at).days >= RECENT_DAYS or p["number"] in local_prs:
+            continue
+        row = {"pr": p["number"], "title": str(p.get("title") or ""), "at": at}
+        if num(p.get("issue")):
+            if p["issue"] not in merged and (p["issue"] not in elsewhere or at > elsewhere[p["issue"]]["at"]):
+                elsewhere[p["issue"]] = row
+        else:
+            orphans[p["number"]] = row
+    merged |= set(elsewhere)
     pr_of = {}
     for n, evs in by_issue.items():
         for e in evs:
@@ -392,7 +421,9 @@ def main(argv):
     for p in col.get("prs") or []:
         if isinstance(p, dict) and num(p.get("issue")) and num(p.get("n")):
             pr_of[p["issue"]] = p["n"]
-    queued = [n for n in col.get("queued") or [] if num(n)]
+    for n, row in elsewhere.items():
+        pr_of.setdefault(n, row["pr"])
+    queued =[n for n in col.get("queued") or [] if num(n)]
     inflight = [n for n in col.get("inflight") or [] if num(n)]
     pr_issues = [p.get("issue") for p in col.get("prs") or [] if isinstance(p, dict) and num(p.get("issue"))]
     blocked = set()
@@ -489,15 +520,22 @@ def main(argv):
             return "In progress"
         return "Not started"
 
+    def merged_at(n):
+        """When the issue merged: its local `merged` event, else the provider's time."""
+        local = parse_ts(next((e.get("ts") for e in reversed(by_issue.get(n, [])) if e.get("event") == "merged"), ""))
+        return local or (elsewhere[n]["at"] if n in elsewhere else None)
+
     recent = set()
     for n in merged:
-        ts = parse_ts(next((e.get("ts") for e in reversed(by_issue[n]) if e.get("event") == "merged"), ""))
+        ts = merged_at(n)
         if ts and (now - ts).days < RECENT_DAYS:
             recent.add(n)
     shown = sorted(set(queued) | set(inflight) | set(pr_issues) | blocked | recent | moved | running)
 
     def tokens(n):
         """The issue's recorded tokens, or None when no stage event carried a number."""
+        if n in elsewhere:
+            return None   # the work ran elsewhere: stale local events are not its cost
         vals = [num(e.get("tokens")) for e in by_issue.get(n, []) if e.get("role") != "orchestrator"]
         vals = [v for v in vals if v is not None]
         return sum(vals) if vals else None
@@ -515,6 +553,7 @@ def main(argv):
     counts = {"Done": 0, "In progress": 0, "Stuck": 0, "Not started": 0}
     for n in shown:
         counts[state(n)] += 1
+    counts["Done"] += len(orphans)
     # A lane record is the word of a `talos.sh run` (#878); with none at all (a
     # session driven by `talos.sh next` writes none) the snapshot's run entry decides.
     if bool(lanes) if lanes_seen else run_going(run, parse_ts(snap.get("ts")), now):
@@ -557,7 +596,7 @@ def main(argv):
     held = {n for n in col.get("held") or [] if num(n)}
 
     def title_html(n):
-        return esc(title_of(a.titles, title_key, n)) or "(title not cached)"
+        return esc(title_of(a.titles, title_key, n) or elsewhere.get(n, {}).get("title") or "") or "(title not cached)"
 
     def head(n):
         return '<div class="t">%s %s</div>' % (link(links.issue(n), "#%d" % n), title_html(n))
@@ -652,18 +691,23 @@ def main(argv):
         main.append('<section id="queue"><h2>Queued <span class="n">%d</span></h2><table><tr><th>#</th><th>issue</th><th>title</th>'
                     '<th>priority</th><th class="hide-sm">why it waits</th></tr>%s</table></section>'
                     % (len(waiting), "".join(queue_row(i, n) for i, n in enumerate(waiting, 1))))
-    if by_state["Done"]:
-        def merged_at(n):
-            return parse_ts(next((e.get("ts") for e in reversed(by_issue[n]) if e.get("event") == "merged"), ""))
-        done = sorted(by_state["Done"], key=lambda n: merged_at(n) or now, reverse=True)
-        widest = max([tokens(n) or 0 for n in done] + [1])
+    if by_state["Done"] or orphans:
+        # One list of rows, newest merge first: an issue's, or a PR's that closes no known issue.
+        done = sorted([("issue", n) for n in by_state["Done"]] + [("pr", n) for n in orphans],
+                      key=lambda r: (orphans[r[1]]["at"] if r[0] == "pr" else merged_at(r[1])) or now, reverse=True)
+        widest = max([tokens(n) or 0 for kind, n in done if kind == "issue"] + [1])
+        elsewhere_cell = '<span class="muted">merged elsewhere</span>'
 
-        def merged_row(n):
+        def merged_row(kind, n):
+            if kind == "pr":
+                o = orphans[n]
+                return ('<tr><td class="nw">—</td><td>%s</td><td class="nw hide-sm">%s</td><td class="nw hide-sm muted">%s</td><td class="nw num">%s</td></tr>'
+                        % (esc(o["title"]) or "(no title)", link(links.pr(n), "#%d" % n), esc(ago(o["at"], now)), elsewhere_cell))
             pr, t, m = pr_of.get(n), tokens(n), merged_at(n)
             return ('<tr><td class="nw">%s</td><td>%s</td><td class="nw hide-sm">%s</td><td class="nw hide-sm muted">%s</td><td class="nw num">%s</td></tr>'
                     % (link(links.issue(n), "#%d" % n), title_html(n), link(links.pr(pr), "#%d" % pr) if pr else "—",
-                       esc(ago(m, now)) if m else "—", bar(t, widest, 60)))
-        rows = [merged_row(n) for n in done]
+                       esc(ago(m, now)) if m else "—", elsewhere_cell if n in elsewhere else bar(t, widest, 60)))
+        rows = [merged_row(*r) for r in done]
         more = ('<details><summary>Show %d more</summary><table>%s</table></details>' % (len(rows) - MERGED_SHOWN, "".join(rows[MERGED_SHOWN:]))
                 if len(rows) > MERGED_SHOWN else "")
         main.append('<section><h2>Merged · last %d days <span class="n">%d</span></h2><table><tr><th>issue</th><th>title</th>'
@@ -747,7 +791,7 @@ def main(argv):
         '<a class="kpi%s" href="#needs"><b>%d</b><span>needs you</span></a>' % (" alert" if by_state["Stuck"] else "", len(by_state["Stuck"])),
         '<a class="kpi" href="#flight"><b>%d</b><span>in flight</span></a>' % len(by_state["In progress"]),
         '<a class="kpi" href="#queue"><b>%d</b><span>queued</span></a>' % len(waiting),
-        '<div class="kpi"><b>%d</b><span>merged · %d days</span></div>' % (len(by_state["Done"]), RECENT_DAYS),
+        '<div class="kpi"><b>%d</b><span>merged · %d days</span></div>' % (counts["Done"], RECENT_DAYS),
         '<div class="kpi"><b>%s</b><span>tokens · %d days</span></div>' % (esc(fmt_tok(total)), RECENT_DAYS)))
     parts = [header, note, tiles, nxt_bar, '<div class="grid"><main>', "".join(main), "</main><aside>", "".join(aside), "</aside></div>"]
 

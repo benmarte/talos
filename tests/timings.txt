@@ -152,6 +152,7 @@
 106 test-llm-profiles.sh
 33 test-lock.sh
 2 test-lock-reclaim.sh
+12 test-map-refresh-889.sh
 23 test-marker-author-trust.sh
 0 test-marker-contract.sh
 19 test-mergebase.sh

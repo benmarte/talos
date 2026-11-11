@@ -609,7 +609,9 @@ verbs:
   done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
                                      end-of-stage bookkeeping: board, role relay,
                                      post_stage, spend block, lifecycle event
-  map                                the project map: map=<html> index=<html> (local records only)
+  map [--refresh]                    the project map: map=<html> index=<html> (local
+                                     records only; --refresh first reads the provider:
+                                     one collect, the merged PRs of the last 7 days)
   state [--summary]                  the normalised run state as one state=<JSON>
                                      line (pipeline-status-file.sh collect:
                                      same reads, same shape, no writes);
@@ -4265,7 +4267,7 @@ _talos_emit_next_wait() { printf '%s\0%s\0' action "${1#action=}" >> "$_TALOS_OU
 # the events log, the run's state snapshot (<state dir>/state.json) and the
 # title cache pipeline-meta.sh keeps. Prints map=<path> and index=<path> on
 # success; non-zero on failure. No network, no provider call.
-_talos_map_render() {
+_talos_map_render() {  # extra arguments go to talos-map.py (--missing-titles)
   local _sd _ep _st _r _v
   _sd="$(_talos_state_dir)" || return 1
   # The stage timeouts (#888), role keys first: `<role>=<s>,...,default=<s>`.
@@ -4290,13 +4292,61 @@ _talos_map_render() {
     --provider "$(cfg vcs.provider)" --repo "$(cfg vcs.repo)" \
     --azure-org "$(cfg vcs.azure.org_url)" --azure-project "$(cfg vcs.azure.project)" \
     --scripts "$SCRIPT_DIR" --titles "${XDG_RUNTIME_DIR:-${HOME:-/nonexistent}/.cache}/talos/meta" \
-    --stage-timeouts "$_st"
+    --stage-timeouts "$_st" "$@"
 }
 
-# map: render the project map and the index (#614).
+# _talos_map_refresh: the reads of `map --refresh` (#889), the only network calls a
+# map makes: one collect, one merged-PR list for the last 7 days and, only when a
+# collect-listed issue has no cached title, one title list. Each goes to the
+# snapshot (the map's input, written even with map.enabled false: _TALOS_MAP_FORCE).
+# A failed collect stops like `next`'s; a failed merged list is one warn, and the
+# page renders from what it has.
+_talos_map_refresh() {
+  local _since _miss _f="$_CFG_CACHE_DIR/merged.json"
+  _TALOS_MAP_FORCE=1
+  _talos_run_capture map bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
+  [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
+  _talos_collect_put "$_OUT"
+  _since="$(python3 -I -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)).strftime("%Y-%m-%d"))')"
+  _talos_run_capture map bash "$SCRIPT_DIR/pipeline-vcs.sh" list-merged-prs --since "$_since"
+  if [ "$_RC" -eq 0 ] && printf '%s' "$_OUT" | python3 -I -c 'import json, sys; sys.exit(0 if isinstance(json.load(sys.stdin), list) else 1)' 2>/dev/null \
+      && printf '%s' "$_OUT" > "$_f"; then
+    _talos_run_snapshot active "" "$_f" < /dev/null
+  else
+    _talos_warn merged-unavailable
+  fi
+  _miss="$(_talos_map_render --missing-titles 2>/dev/null)" || _miss=""
+  if [ -n "$_miss" ]; then
+    _talos_run_capture map bash "$SCRIPT_DIR/pipeline-vcs.sh" list-issues --no-body
+    if [ "$_RC" -eq 0 ]; then
+      printf '%s' "$_OUT" | python3 -I -c '
+import json, sys
+try:
+    items = json.load(sys.stdin)
+except ValueError:
+    items = []
+for i in items if isinstance(items, list) else []:
+    n = i.get("number", i.get("id")) if isinstance(i, dict) else None
+    t = i.get("title") if isinstance(i, dict) else None
+    if isinstance(n, int) and isinstance(t, str) and t and "\n" not in t and "\r" not in t:
+        print("%d %s" % (n, t))' 2>/dev/null \
+        | bash "$SCRIPT_DIR/pipeline-meta.sh" --repo "$(cfg vcs.repo)" cache-titles > /dev/null 2>&1 || true
+    fi
+  fi
+}
+
+# map [--refresh]: render the project map and the index (#614). --refresh first
+# reads the provider (_talos_map_refresh); a plain map stays offline.
 _talos_map() {
-  [ "$#" -eq 0 ] || _talos_stop usage 2
-  _talos_prepare map pipeline-config.sh pipeline-cfg-cache.sh pipeline-next.py talos-map.py
+  local _refresh=""
+  case "$#:${1:-}" in
+    0:) ;;
+    1:--refresh) _refresh=1 ;;
+    *) _talos_stop usage 2 ;;
+  esac
+  _talos_prepare map pipeline-config.sh pipeline-cfg-cache.sh pipeline-next.py talos-map.py \
+                     ${_refresh:+pipeline-status-file.sh pipeline-vcs.sh pipeline-meta.sh}
+  [ -z "$_refresh" ] || _talos_map_refresh
   local _l
   _l="$(_talos_map_render 2>/dev/null)" || _talos_stop map-failed
   _talos_emit map "$(sed -n 's/^map=//p' <<< "$_l")"
@@ -4322,7 +4372,7 @@ _talos_run_snapshot() {
   _sd="$(_talos_state_dir 2>/dev/null)" || return 0
   python3 -I -c '
 import datetime, json, os, sys
-path, mode, started, end, pid = sys.argv[1:6]
+path, mode, started, end, pid, merged = sys.argv[1:7]
 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 try:
     with open(path) as f:
@@ -4345,6 +4395,15 @@ if isinstance(col, dict) and col:
     prio.update(col.get("priority") if isinstance(col.get("priority"), dict) else {})
     snap["priority"] = prio
 snap.setdefault("collect", {})
+if merged:
+    # The provider-reported merges of `map --refresh` (#889), kept by every later write.
+    try:
+        with open(merged) as f:
+            rows = json.load(f)
+    except (OSError, ValueError):
+        rows = None
+    if isinstance(rows, list):
+        snap["merged_remote"], snap["merged_remote_ts"] = rows, now
 snap["ts"] = now
 if pid.isdigit():
     snap["run"] = {"active": mode != "end", "started": started, "end": end, "pid": int(pid)}
@@ -4353,12 +4412,14 @@ elif not isinstance(snap.get("run"), dict):
 tmp = "%s.%d.tmp" % (path, os.getpid())
 with open(tmp, "w") as f:
     json.dump(snap, f)
-os.replace(tmp, path)' "$_sd/state.json" "$1" "${TALOS_RUN_STARTED:-}" "${2:-}" "${TALOS_RUN_PID:-}" 2>/dev/null || true
+os.replace(tmp, path)' "$_sd/state.json" "$1" "${TALOS_RUN_STARTED:-}" "${2:-}" "${TALOS_RUN_PID:-}" "${3:-}" 2>/dev/null || true
 }
 
 # _talos_run_map_on: whether the run keeps the map: `map.enabled` (default
 # true) and no earlier failure in this run (_TALOS_MAP_OFF, set by the first).
+# `map --refresh` is an explicit command and writes either way (_TALOS_MAP_FORCE).
 _talos_run_map_on() {
+  [ -n "${_TALOS_MAP_FORCE:-}" ] && return 0
   [ -z "${_TALOS_MAP_OFF:-}" ] && [ "$(cfg map.enabled)" != "false" ]
 }
 

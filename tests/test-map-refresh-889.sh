@@ -274,7 +274,9 @@ assert_contains "$ROW104" "#104" "AC5 that row links the PR"
 ROW61="$(row_of "$PAGE" '>#61<')"
 assert_not_contains "$ROW61" "merged elsewhere" "AC5 a merge with local events keeps its local row"
 assert_not_contains "$PAGE" "feat: provider title for 61" "AC5 the provider's title does not replace the local row"
-assert_eq "1" "$(grep -o '>#61<' <<< "$PAGE" | wc -l | tr -d ' ')" "AC5 a merge with local events is not duplicated"
+assert_eq "1" "$(python3 -I -c '
+import re, sys
+print(sum(1 for r in re.findall(r"<tr>.*?</tr>", sys.argv[1], re.S) if ">#61<" in r))' "$PAGE")" "AC5 a merge with local events is not duplicated (one row in the merged table)"
 assert_eq "2" "$(grep -o 'merged elsewhere' <<< "$PAGE" | wc -l | tr -d ' ')" "AC5 two merged-elsewhere rows"
 assert_contains "$(snap_field 'sorted(p["number"] for p in snap["merged_remote"])')" "[101, 102, 103, 104]" "AC3 the snapshot holds the provider's list"
 

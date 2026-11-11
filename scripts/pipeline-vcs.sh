@@ -64,7 +64,15 @@
 #                                             line, at the start of a line, in the body
 #                                             of an issue or PR of any state (#800); no
 #                                             body is printed. Exit codes as above.
-#   view-issue <n>                            View issue details
+#   list-merged-prs [--since YYYY-MM-DD]      The PRs merged into the base branch, newest
+#                                             merge first, as [{"number", "issue",
+#                                             "title", "mergedAt"}] (#889; `issue` is the
+#                                             issue the PR closes by `find-pr <n>
+#                                             merged`'s rule, null when unknown). Read
+#                                             only; the map's `--refresh` read. Exit 1
+#                                             on a failed read or a hit page cap (never a
+#                                             partial list); the file provider exits 2.
+#   view-issue <n>                         View issue details
 #             <n> --spec                     Compact form for stage handoff (#201):
 #                                             same {title, body, labels, comments}
 #                                             shape, but comments is at most the one
@@ -1377,6 +1385,66 @@ except (ValueError, KeyError, TypeError, AttributeError):
     sys.exit(1)
 print(json.dumps(out))
 ' "$1"
+}
+
+# _vcs_merged_prs_shape <github|gitlab|azure> <since> <repo> -- a provider's raw list
+# of PRs (azure: the merged `repos pr list` array) on stdin; prints [{number, issue,
+# title, mergedAt}], newest merge first (#889). Only a merged PR (github: merged_at
+# set; gitlab: state merged; azure: status completed) whose merge is on or after
+# <since> (YYYY-MM-DD, '' for any) is kept. `issue` is the issue the PR closes, null
+# when unknown, by the rule `find-pr <n> merged` uses: the branch `issue-<n>`, else a
+# closing keyword before a reference to <repo>'s #<n> (bare #<n> always). Non-zero,
+# nothing on stdout, on any other shape.
+_vcs_merged_prs_shape() {
+  python3 -I -c '
+import datetime, json, re, sys
+
+provider, since, repo = sys.argv[1:4]
+try:
+    raw = json.load(sys.stdin)
+    if not isinstance(raw, list):
+        raise ValueError("not an array")
+    refs = [r"(?<![\w/])#(\d+)(?!\d)"]
+    if re.fullmatch(r"[\w.-]+(?:/[\w.-]+)+", repo):
+        r = re.escape(repo)
+        refs += [r"(?<!\d)GH-(\d+)(?!\d)", r"(?<![\w/])" + r + r"#(\d+)(?!\d)",
+                 r"https?://[^/\s]+/" + r + r"(?:/-)?/issues/(\d+)(?!\d)"]
+    words = r"close[sd]?|fix(?:e[sd])?|resolve[sd]?" + (r"|implement(?:s|ed|ing)?" if provider == "gitlab" else "")
+    closing = re.compile(r"(?<![\w-])(?:" + words + r")\s*:?\s*(?:" + "|".join(refs) + ")", re.I)
+
+    def when(ts):
+        d = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)
+
+    floor = when(since + "T00:00:00Z") if since else None
+    rows = []
+    for p in raw:
+        if provider == "github":
+            num, title, body, head, at, ok = p["number"], p["title"], p.get("body"), (p.get("head") or {}).get("ref"), p.get("merged_at"), True
+        elif provider == "gitlab":
+            num, title, body, head, at = p["iid"], p["title"], p.get("description"), p.get("source_branch"), p.get("merged_at")
+            ok = p.get("state") == "merged"
+        else:
+            num, title, body, head, at = p["pullRequestId"], p["title"], p.get("description"), (p.get("sourceRefName") or "").replace("refs/heads/", "", 1), p.get("closureDate")
+            ok = p.get("status") == "completed"
+        if not ok or not at:
+            continue
+        stamp = when(at)
+        if floor and stamp < floor:
+            continue
+        m = re.search(r"(?:^|/)issue-(\d+)(?:-|$)", head or "")
+        issue = int(m.group(1)) if m else None
+        if issue is None:
+            c = closing.search(((title or "") + " " + (body or ""))[:65536])
+            if c:
+                issue = int(next(g for g in c.groups() if g))
+        rows.append((stamp, {"number": num, "issue": issue, "title": title or "", "mergedAt": at}))
+except (ValueError, KeyError, TypeError, AttributeError):
+    print("pipeline-vcs: list-merged-prs: unreadable PR list", file=sys.stderr)
+    sys.exit(1)
+rows.sort(key=lambda r: r[0], reverse=True)
+print(json.dumps([r[1] for r in rows]))
+' "$1" "$2" "$3"
 }
 
 # _vcs_regresses_items <github|gitlab|azure> [issue|pr] -- a provider's raw list of
@@ -4755,9 +4823,11 @@ print(p.path.lstrip("/") + ("?" + p.query if p.query else ""))
 # with <strict> it is a failure instead (#800: one note, nothing on stdout).
 # Returns 1 with NOTHING on stdout on any failed or wrong-shaped page (#319), so
 # callers read non-zero as "no usable data". Next links are pinned to the API
-# origin before a request carries a token (#320).
+# origin before a request carries a token (#320). A sixth argument, YYYY-MM-DD, is
+# for a list newest-updated first (#889): it ends the read at the first page whose
+# items were all updated before that date, which is not a cap.
 _gh_pages() {
-  local _gp_path="$1" _gp_max="${2:-}" _gp_noun="${3:-items}" _gp_key="${4:-}" _gp_strict="${5:-}"
+  local _gp_path="$1" _gp_max="${2:-}" _gp_noun="${3:-items}" _gp_key="${4:-}" _gp_strict="${5:-}" _gp_stop="${6:-}"
   local _gp_all _gp_body _gp_next_file _gp_pages=0 _gp_url _gp_ref
   _gp_all="[]"
   [ -n "$_gp_key" ] && _gp_all="{\"$_gp_key\": []}"
@@ -4794,6 +4864,13 @@ json.dump(prev, sys.stdout)
     _gp_url="$(cat "$_gp_next_file")"
     _gp_path=""
     _gp_pages=$((_gp_pages + 1))
+    if [ -n "$_gp_url" ] && [ -n "$_gp_stop" ] && printf '%s' "$_gp_body" | python3 -I -c '
+import json, sys
+page = json.load(sys.stdin)
+sys.exit(0 if isinstance(page, list) and page and all(isinstance(i, dict) and (i.get("updated_at") or "9") < sys.argv[1] for i in page) else 1)
+' "$_gp_stop" 2>/dev/null; then
+      _gp_url=""
+    fi
     if [ -n "$_gp_url" ]; then
       if [ -n "$_gp_max" ] && [ "$_gp_pages" -ge "$_gp_max" ]; then
         if [ -n "$_gp_strict" ]; then
@@ -5421,6 +5498,18 @@ _github() {
       _lr_raw="$(_gh_pages "$_lr_ep" "$_VCS_READ_MAX_PAGES" "issues and PRs" "" strict)" || exit 1
       _lr_raw="$(printf '%s' "$_lr_raw" | _vcs_regresses_items github)" || exit 1
       printf '%s' "$_lr_raw" | _vcs_regresses_shape "$_lr_since" || exit 1
+      ;;
+    list-merged-prs)
+      # The map's merged read (#889): PRs merged into this config's base branch
+      # since a date, newest first, with the issue each closes. REST has no merged
+      # state, so closed PRs come newest-updated first and the read ends at the
+      # first page older than --since (a merge is never older than its update).
+      local _lm_since _lm_ep="$_GH_API/pulls?state=closed&sort=updated&direction=desc&per_page=100" _lm_raw
+      _lm_since="$(_vcs_read_since "$verb" "$@")" || exit 1
+      [ -n "$BASE_BRANCH" ] && _lm_ep="${_lm_ep}&base=${BASE_BRANCH}"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_lm_ep (paginated via Link headers, up to $_VCS_READ_MAX_PAGES pages) | keep merged_at set${_lm_since:+ since $_lm_since}"; return 0; }
+      _lm_raw="$(_gh_pages "$_lm_ep" "$_VCS_READ_MAX_PAGES" "merged PRs" "" strict "$_lm_since")" || exit 1
+      printf '%s' "$_lm_raw" | _vcs_merged_prs_shape github "$_lm_since" "$REPO" || exit 1
       ;;
     list-issues)
       # The REST issues endpoint returns pull requests too (they carry a
@@ -6688,6 +6777,19 @@ print(json.dumps(out))
       _glr_iss="$(printf '%s' "$_glr_iss" | _gh_paginate_merge | _vcs_regresses_items gitlab issue)" || exit 1
       _glr_mrs="$(printf '%s' "$_glr_mrs" | _gh_paginate_merge | _vcs_regresses_items gitlab pr)" || exit 1
       printf '%s\n%s\n' "$_glr_iss" "$_glr_mrs" | _vcs_regresses_shape "$_glr_since" || exit 1
+      ;;
+    list-merged-prs)
+      # The map's merged read (#889): merge requests merged into the base branch
+      # since a date, newest first, with the issue each closes. Every page
+      # (`glab api --paginate` has no page cap to hit).
+      local _glmp_since _glmp_ep _glmp_raw
+      _glmp_since="$(_vcs_read_since "$verb" "$@")" || exit 1
+      _glmp_ep="projects/$(_gl_api_project)/merge_requests?state=merged&order_by=updated_at&sort=desc&per_page=100"
+      [ -n "$BASE_BRANCH" ] && _glmp_ep="${_glmp_ep}&target_branch=${BASE_BRANCH}"
+      [ -n "$_glmp_since" ] && _glmp_ep="${_glmp_ep}&updated_after=${_glmp_since}T00:00:00Z"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] glab api --paginate $_glmp_ep"; return 0; }
+      _glmp_raw="$(glab api --paginate "$_glmp_ep")" || exit 1
+      printf '%s' "$_glmp_raw" | _gh_paginate_merge | _vcs_merged_prs_shape gitlab "$_glmp_since" "$(_gl_repo_path)" || exit 1
       ;;
     list-issues)
       # glab's default page size is well under 100; --per-page raises it to
@@ -8659,6 +8761,60 @@ print(len(d), min((p.get("creationDate") or "")[:10] for p in d) if d else "")
       _azr_prs="$(printf '%s' "$_azr_prs" | _gh_paginate_merge | _vcs_regresses_items azure pr)" || exit 1
       printf '%s\n%s\n' "$_azr_wi" "$_azr_prs" | _vcs_regresses_shape "$_azr_since" || exit 1
       ;;
+    list-merged-prs)
+      # The map's merged read (#889): completed PRs into the base branch since a
+      # date, newest merge first. `az repos pr list` pages ($top/$skip) are ordered
+      # by creation, so the read ends at the first page whose PRs were all created
+      # 30 days before --since (a PR open longer than that is not read). A PR whose
+      # branch and text name no issue takes its first linked work item. Reaching
+      # the page cap is a failed read.
+      local _azmp_since _azmp_page _azmp_stat _azmp_all="" _azmp_pages=0 _azmp_skip=0 _azmp_extra="" _azmp_list _azmp_n _azmp_w _azmp_links=""
+      _azmp_since="$(_vcs_read_since "$verb" "$@")" || exit 1
+      [ -n "$AZURE_REPO" ] && _azmp_extra="--repository $AZURE_REPO"
+      [ -n "$BASE_BRANCH" ] && _azmp_extra="$_azmp_extra --target-branch $BASE_BRANCH"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az repos pr list --status completed --top 100 --skip <n> $ORG_ARG $PROJ_ARG $_azmp_extra --output json (up to $_VCS_READ_MAX_PAGES pages); az repos pr work-item list --id <n> for a PR that names no issue"
+        return 0
+      fi
+      while :; do
+        _azmp_page="$(az repos pr list --status completed --top 100 --skip "$_azmp_skip" $ORG_ARG $PROJ_ARG $_azmp_extra --output json)" || exit 1
+        _azmp_stat="$(printf '%s' "$_azmp_page" | python3 -I -c '
+import datetime, json, sys
+d = json.load(sys.stdin)
+floor = ""
+if sys.argv[1]:
+    floor = (datetime.date.fromisoformat(sys.argv[1]) - datetime.timedelta(days=30)).isoformat()
+print(len(d), "old" if floor and d and all((p.get("creationDate") or "9")[:10] < floor for p in d) else "more")
+' "$_azmp_since" 2>/dev/null)" || { echo "pipeline-vcs: $verb: unreadable PR list" >&2; exit 1; }
+        _azmp_all="$_azmp_all$_azmp_page"$'\n'
+        [ "${_azmp_stat%% *}" -lt 100 ] && break
+        [ "${_azmp_stat#* }" = "old" ] && break
+        _azmp_pages=$((_azmp_pages + 1))
+        if [ "$_azmp_pages" -ge "$_VCS_READ_MAX_PAGES" ]; then
+          echo "pipeline-vcs: $verb: read stopped at the $_VCS_READ_MAX_PAGES-page cap (az repos pr list); a partial list is not printed" >&2
+          exit 1
+        fi
+        _azmp_skip=$((_azmp_skip + 100))
+      done
+      _azmp_list="$(printf '%s' "$_azmp_all" | _gh_paginate_merge | _vcs_merged_prs_shape azure "$_azmp_since" "")" || exit 1
+      for _azmp_n in $(printf '%s' "$_azmp_list" | python3 -I -c 'import json, sys; print(*[p["number"] for p in json.load(sys.stdin) if p["issue"] is None])'); do
+        _azmp_w="$(az repos pr work-item list --id "$_azmp_n" $ORG_ARG --output json 2>/dev/null | python3 -I -c '
+import json, sys
+ids = sorted(int(w["id"]) for w in json.load(sys.stdin))
+print(ids[0] if ids else "")
+' 2>/dev/null)" || _azmp_w=""
+        [ -z "$_azmp_w" ] || _azmp_links="$_azmp_links$_azmp_n $_azmp_w"$'\n'
+      done
+      printf '%s' "$_azmp_list" | python3 -I -c '
+import json, sys
+link = dict(l.split() for l in sys.argv[1].splitlines() if l.strip())
+rows = json.load(sys.stdin)
+for p in rows:
+    if p["issue"] is None and str(p["number"]) in link:
+        p["issue"] = int(link[str(p["number"])])
+print(json.dumps(rows))
+' "$_azmp_links" || exit 1
+      ;;
     list-issues)
       # ADO has no `az boards work-item list`. Discover work items with a WIQL
       # query instead. The GitHub adapter's "open issues only" maps to ADO's
@@ -10307,7 +10463,7 @@ fi
 # stdin or a file, so a caller reads it as "unsupported, skip" and not as the
 # exit 1 of a failed call.
 case "$VERB" in
-  mark-needs-owner|list-needs-owner|upsert-pr-comment|attach-files|evidence-prune)
+  mark-needs-owner|list-needs-owner|upsert-pr-comment|attach-files|evidence-prune|list-merged-prs)
     if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ] && [ "$PROVIDER" != "gitlab" ] && [ "$PROVIDER" != "azure" ]; then
       echo "pipeline-vcs: $VERB: not implemented for provider '$PROVIDER'" >&2
       exit 2
