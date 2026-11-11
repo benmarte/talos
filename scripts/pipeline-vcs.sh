@@ -10906,6 +10906,58 @@ _vcs_hand_note() {
   bash "$SCRIPT_DIR/pipeline-hooks.sh" hand_note "$@" </dev/null >/dev/null || :
 }
 
+# _vcs_hand_event <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--once]
+# -- records a `"source": "hand"` event (pipeline-hooks.sh hand_event) for what a
+# verb proves when a person made the call: the same test as _vcs_hand_note (no
+# TALOS_ROLE, not inside `talos.sh run`; a stage or a run writes these through
+# `done`). Writes nothing on stdout and never fails the verb.
+_vcs_hand_event() {
+  [ "$DRY_RUN" != "true" ] && [ -z "${TALOS_ROLE:-}" ] && [ -z "${TALOS_RUN_STARTED:-}" ] \
+    && [ -f "$SCRIPT_DIR/pipeline-hooks.sh" ] || return 0
+  bash "$SCRIPT_DIR/pipeline-hooks.sh" hand_event "$@" </dev/null >/dev/null || :
+}
+
+# _vcs_hand_issue <pr> [<issue>] -- the issue a hand event belongs to: <issue>
+# when the caller gave one, else the N of the PR's head ref `<type>/issue-<N>-<slug>`.
+# Prints nothing (exit 1) when neither names a number.
+_vcs_hand_issue() {
+  local _hi_ref
+  case "${2:-}" in
+    ''|*[!0-9]*) ;;
+    *) printf '%s\n' "$2"; return 0 ;;
+  esac
+  _hi_ref="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head-ref "$1" 2>/dev/null </dev/null)" || return 1
+  [[ "$_hi_ref" =~ ^[^/]+/issue-([0-9]+)(-|$) ]] || return 1
+  printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+# _vcs_hand_approval <pr> <role> <issue-or-empty> <sha> -- the role event a hand
+# post-approval proves, its verdict the one the role's label means.
+_vcs_hand_approval() {
+  local _ha_verdict _ha_issue
+  [ -z "${TALOS_ROLE:-}" ] && [ -z "${TALOS_RUN_STARTED:-}" ] && [ "$DRY_RUN" != "true" ] || return 0
+  case "$2" in
+    reviewer) _ha_verdict=APPROVED ;;
+    security) _ha_verdict=CLEAR ;;
+    qa) _ha_verdict=PASS ;;
+    docs) _ha_verdict=pass ;;
+    adversarial) _ha_verdict=approve ;;
+    *) return 0 ;;
+  esac
+  _ha_issue="$(_vcs_hand_issue "$1" "$3")" || return 0
+  _vcs_hand_event "$2" "$2" "$_ha_issue" --pr "$1" --sha "$4" --verdict "$_ha_verdict"
+}
+
+# _vcs_hand_pr_opened <pr> [<issue>] -- the pr-opened event a hand ready-pr /
+# draft-pr proves, once per PR.
+_vcs_hand_pr_opened() {
+  local _hp_issue
+  [ -z "${TALOS_ROLE:-}" ] && [ -z "${TALOS_RUN_STARTED:-}" ] && [ "$DRY_RUN" != "true" ] || return 0
+  case "${1:-}" in ''|*[!0-9]*) return 0 ;; esac
+  _hp_issue="$(_vcs_hand_issue "$1" "${2:-}")" || return 0
+  _vcs_hand_event pr-opened orchestrator "$_hp_issue" --pr "$1" --once
+}
+
 # ── label-pr: approval-marker guard (#94) ────────────────────────────────────
 # Recognised approval labels and their role names (same set as check-approval-sha).
 # Two modes:
@@ -11351,7 +11403,8 @@ if [ "$VERB" = "post-approval" ]; then
     _r_out="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" check-approval-sha "$_pa_n" --stale-list \
       ${_pa_ci_flag:+"$_pa_ci_flag"} ${REPO:+--repo "$REPO"} 2>&1)"; _r_rc=$?
     if [ "$_r_rc" -eq 0 ] && grep -q 'all approval labels are current' <<<"$_r_out"; then
-      _vcs_hand_note approval-posted --pr "$_pa_n" ${_pa_issue:+--issue "$_pa_issue"}
+      _vcs_hand_note approval-posted --pr "$_pa_n" --role "$_pa_role" ${_pa_issue:+--issue "$_pa_issue"}
+      _vcs_hand_approval "$_pa_n" "$_pa_role" "$_pa_issue" "$_pa_sha"
       printf 'post-approval: PR #%s %s %s; stamp ok\n' "$_pa_n" "$_pa_role" "$1"
       return 0
     fi
@@ -11360,7 +11413,8 @@ if [ "$VERB" = "post-approval" ]; then
       case ",$_r_stale," in
         *",$_pa_role,"*) ;;
         *)
-          _vcs_hand_note approval-posted --pr "$_pa_n" ${_pa_issue:+--issue "$_pa_issue"}
+          _vcs_hand_note approval-posted --pr "$_pa_n" --role "$_pa_role" ${_pa_issue:+--issue "$_pa_issue"}
+          _vcs_hand_approval "$_pa_n" "$_pa_role" "$_pa_issue" "$_pa_sha"
           printf 'post-approval: PR #%s %s %s; stamp ok (stale elsewhere: %s)\n' "$_pa_n" "$_pa_role" "$1" "$_r_stale"
           return 0
           ;;
@@ -11929,6 +11983,7 @@ _vcs_draft_gate_dispatch() {
       if [ "$_g_rc" -eq 0 ]; then
         [ -n "$_g_out" ] && printf '%s\n' "$_g_out"
         _vcs_journal_write
+        case "$VERB" in ready-pr|draft-pr) _vcs_hand_pr_opened "${ARGS[0]:-}" "$_HAND_ISSUE" ;; esac
         exit 0
       fi
       ;;
@@ -12105,6 +12160,23 @@ if [ "$VERB" = "check-approval-sha" ]; then
     ARGS=(${_rq_keep[@]+"${_rq_keep[@]}"})
     _vcs_require_roles
   fi
+fi
+
+# ready-pr / draft-pr --issue N (#897) names the issue for the hand pr-opened
+# event; the provider never sees it.
+_HAND_ISSUE=""
+if [ "$VERB" = "ready-pr" ] || [ "$VERB" = "draft-pr" ]; then
+  _hi_keep=() _hi_i=0
+  while [ "$_hi_i" -lt "${#ARGS[@]}" ]; do
+    if [ "${ARGS[$_hi_i]}" = "--issue" ] && [ "$((_hi_i + 1))" -lt "${#ARGS[@]}" ]; then
+      _HAND_ISSUE="${ARGS[$((_hi_i + 1))]}"
+      _hi_i=$((_hi_i + 2))
+    else
+      _hi_keep+=("${ARGS[$_hi_i]}")
+      _hi_i=$((_hi_i + 1))
+    fi
+  done
+  ARGS=(${_hi_keep[@]+"${_hi_keep[@]}"})
 fi
 
 _DISPATCH_RC=0

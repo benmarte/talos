@@ -127,6 +127,23 @@ sys.stdout.buffer.write(b[:n] + ("\n[message truncated to %d bytes]" % n).encode
 fi
 unset _msg_bytes
 
+# A hand-driven run (no TALOS_ROLE, not inside `talos.sh run`) ends with this verb
+# and writes no `merged` event itself (#897): record one, once per PR, with
+# "source": "hand". The issue is the digits of <ref>, the PR is PIPELINE_PR else the
+# `PR #N` / `pull/N` of the message; either missing writes nothing. Fail-soft, and
+# before the notifications.events filter: the log is not a notification.
+if [ "$EVENT" = "merged" ] && [ -z "$RENDER_ONLY" ] && [ -z "${TALOS_ROLE:-}" ] && [ -z "${TALOS_RUN_STARTED:-}" ] \
+    && [ -z "${PIPELINE_NOTIFY_DEBUG:-}" ] && [ -f "$SCRIPT_DIR/pipeline-hooks.sh" ]; then
+  _he_issue="$(printf '%s' "${REF:-$THREAD_KEY}" | tr -cd '0-9')"
+  _he_pr="${PIPELINE_PR:-}"
+  [ -n "$_he_pr" ] || _he_pr="$(printf '%s' "$MSG" | grep -oE '(pull/|PR #?)[0-9]+' | grep -oE '[0-9]+' | sed -n 1p)"
+  case "$_he_issue:$_he_pr" in
+    :*|*:|*[!0-9:]*) ;;
+    *) bash "$SCRIPT_DIR/pipeline-hooks.sh" hand_event merged orchestrator "$_he_issue" --pr "$_he_pr" --once </dev/null >/dev/null || : ;;
+  esac
+fi
+unset _he_issue _he_pr
+
 # Secrets: pipeline-secrets.sh parses the repo .env (never sources it) and exports
 # only its allow-listed notification variables (#476): the checkout can be a PR
 # branch, so its .env is not trusted to set anything else.
