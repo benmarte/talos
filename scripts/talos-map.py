@@ -441,30 +441,39 @@ def main(argv):
     # last failing verdict.
     live_issues = {ln["issue"] for ln in lanes}
 
-    def open_stage(evs):
+    def open_stage(evs, past_blocked=False):
         """(stage, start ts) of the issue's latest `stage_start` while it is open
         (no `stage_complete` and no role event of its own for that stage after
-        it, no `blocked` after it), else None."""
+        it, no `blocked` after it unless `past_blocked`), else None."""
         start = next((i for i in range(len(evs) - 1, -1, -1) if evs[i].get("event") == "stage_start"), -1)
         if start < 0:
             return None
         stage = evs[start].get("stage")
         if open_starts(evs).get(stage, (-1,))[0] != start:
             return None
-        if any(e.get("event") == "blocked" or (e.get("event") == "stage_complete" and e.get("role") == stage)
+        if any((e.get("event") == "blocked" and not past_blocked)
+               or (e.get("event") == "stage_complete" and e.get("role") == stage)
                for e in evs[start + 1:]):
             return None
         return stage, parse_ts(evs[start].get("ts"))
 
     def stalled_since(n, evs):
-        """The start of an open stage that no lane record vouches for and that is
-        older than its stage timeout (the role's, else the global one, else 6 h),
-        or None. A lane record is its own word: the agent's wrapper ends it."""
-        op = open_stage(evs)
+        """(stage, start) of an open stage that no lane record vouches for and
+        that is older than its stage timeout (the role's, else the global one,
+        else 6 h), or None. A lane record is its own word: the agent's wrapper
+        ends it. A `blocked` after the start does not close it here: a fix round
+        records one and the start is still unfinished (display only; whether the
+        issue is running is `stage_running`)."""
+        op = open_stage(evs, past_blocked=True)
         if not op or n in lane_issues or not op[1]:
             return None
         limit = timeouts.get(op[0]) or timeouts.get("default") or STAGE_TIMEOUT_S
-        return op[1] if (now - op[1]).total_seconds() > limit else None
+        return op if (now - op[1]).total_seconds() > limit else None
+
+    def running_now(n, evs):
+        """The one rule every row and stage bar reads for what is running now:
+        the open starts, none of them once the latest start is stalled."""
+        return {} if stalled_since(n, evs) else open_starts(evs)
 
     def stage_running(n, evs):
         """A stage is going only while its latest `stage_start` is open and
@@ -647,15 +656,15 @@ def main(argv):
             body += '<div class="why">%s</div>' % esc(stuck_reason(n) or STOP_WHY.get(kind) or "waiting on a person")
         step = link(links.issue(n), STOP_DO[kind]) + "." if kind in ("owner", "epic") else STOP_DO[kind]
         return '<div class="row"><div>%s<div class="do">To continue: %s</div></div>%s</div>' % (
-            body, step, steps_html(evs, {} if stalled_since(n, evs) else open_starts(evs), kind == "merge"))
+            body, step, steps_html(evs, running_now(n, evs), kind == "merge"))
 
     def flight_row(n):
         evs = by_issue.get(n, [])
-        op = open_starts(evs)
+        op = running_now(n, evs)
         tag = ""
-        since_at = stalled_since(n, evs)
-        if since_at:
-            op, stage = {}, open_stage(evs)[0]
+        stalled = stalled_since(n, evs)
+        if stalled:
+            stage, since_at = stalled
             tag = '<span class="tag stalled">%s</span>' % esc("%s · stalled since %s" % (
                 "QA" if stage == "qa" else stage, since_at.strftime("%Y-%m-%d")))
         if op:

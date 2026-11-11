@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: the project map reads an old unfinished stage as `stalled since <date>` on an issue in a fix round too (a `blocked` after the start no longer hides it), and a Needs you row's stage bar no longer marks it running.
 - fix: `pipeline-criteria.sh spec-check -` reads the spec from stdin (so does `/dev/stdin` or a named pipe), and the PM profile checks its draft through a heredoc instead of a file it may not be able to write; an empty stdin is a usage error.
 - fix: the project map never shows an old unfinished stage as running: an open `stage_start` with no lane record that is older than its stage timeout (`agents.roles.<role>.stage_timeout_s`, else `agents.stage_timeout_s`, else 6 h) reads `stalled since <date>`, activity rows from before today carry their date, and the heading reads `Activity · latest` when no run is recorded.
 - feat: `talos.sh map --refresh` reads the provider once (one collect, the PRs merged in the last 7 days through the new `pipeline-vcs.sh list-merged-prs [--since]` on github, github-api, gitlab and azure, and one title list only when a listed issue has no cached title) and renders the page, so a repository whose work ran elsewhere shows its real merges as "merged elsewhere" rows and no stale In flight rows; a plain `talos.sh map` stays offline.
