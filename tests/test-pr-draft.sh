@@ -26,6 +26,10 @@ use_stubs
 
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
 export TALOS_RETRY_SLEEP_SCALE=0
+# A stage session: the hand pr-opened event (#897, one extra read of the PR's head
+# ref) is off, so the last request or argv asserted below is the verb's own.
+export TALOS_ROLE=developer
+unset TALOS_RUN_STARTED
 
 # ── Private CLI stubs ────────────────────────────────────────────────────────
 # Each stub appends its argv, one "[arg]" per element, to $DRAFT_LOG. Replies
