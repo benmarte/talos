@@ -195,6 +195,20 @@ claude plugin marketplace add benmarte/talos
 claude plugin install talos@talos
 ```
 
+### Upgrading from v0.20
+
+For people already on v0.20. Re-run `bash install.sh --global` first (it refreshes `~/.talos`, the role profiles and the plugin registration, and with them the new map page), then read these.
+
+- **`talos.sh map --refresh` reads the live provider (#889).** It does one collect, the PRs merged in the last 7 days (the new `pipeline-vcs.sh list-merged-prs [--since]` on github, github-api, gitlab and azure) and one title list only when a listed issue has no cached title, then renders the page. Use it when work was driven from another environment or checkout, so the page shows its real merges as "merged elsewhere" rows and no stale In flight rows. A plain `talos.sh map` stays offline. See [Project map](#project-map).
+- **The status line ends with clickable links (#883).** `map` opens the project map page and `board` opens your board, as OSC 8 links built offline. The new optional `board.url` key sets the board link; on Azure DevOps and GitLab it is derived from config when unset. `TALOS_STATUSLINE_LINKS=0` turns the links off. See [The status line](#the-status-line).
+- **The status line has an idle form (#883).** In a repo with a Talos config and no active issue it prints `talos idle` plus the links, where it printed nothing before. See [The status line](#the-status-line).
+- **`board.stage_label` is opt-in, default off (#873).** When set, one display-only `talos:stage:<role>` label is put on the issue at each stage start and removed when a merge closes the issue, so a board card shows the stage. `bootstrap-labels.sh` creates the labels, no routing reads them, and a failed write is a warning.
+- **Hand-driven runs log their stages (#897).** Outside a stage session and outside `talos.sh run`, `post-approval`, `draft-pr`, `ready-pr` and the merge notice write the stage, PR-opened and merged events, tagged `"source": "hand"`. The map, status line and spend views are no longer empty for a repository driven by hand. See [Project map](#project-map).
+- **`pipeline-criteria.sh spec-check -` reads the spec from stdin (#892).** `/dev/stdin` and a named pipe work too, and an empty stdin is a usage error. The PM profile checks its draft through a heredoc instead of a file.
+- **Re-run `install.sh --global` to get the new map (#875, #877, #878, #881, #886, #887, #888, #894).** The dashboard layout, the per-lane run record and Lanes panel, `stalled since <date>` for an old open stage, and the map writes from a skill-driven run all ship with the install, so a `~/.talos` from v0.20 keeps the old map until you do. See [Project map](#project-map).
+
+Every change is listed in [CHANGELOG.md](../CHANGELOG.md).
+
 ### Upgrading from v0.19
 
 For people already on v0.19. Re-run `bash install.sh --global` first (it refreshes `~/.talos`, the role profiles and the plugin registration), then read these.
