@@ -657,27 +657,84 @@ function defaultTheme() {
 
 // ── views ────────────────────────────────────────────────────────────────────
 
+// Colours come from Buzz's own Radix scales (--red-3 tint, --red-11 text, and
+// so on), which switch with Buzz's light/dark mode. The fallbacks are the
+// approved comp's light palette, for a Buzz without those tokens.
 const CSS = [
-  ".tmap-spin{display:inline-block;width:11px;height:11px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:tmap-rot .8s linear infinite;vertical-align:-2px;margin-right:6px}",
-  "@keyframes tmap-rot{to{transform:rotate(360deg)}}",
-  ".tmap-bar{height:3px;border-radius:2px;background:var(--border-standard,#8884);overflow:hidden;position:relative;flex:none}",
-  ".tmap-bar::after{content:'';position:absolute;top:0;bottom:0;width:30%;background:#3b82f6;animation:tmap-slide 1.2s ease-in-out infinite}",
-  "@keyframes tmap-slide{0%{left:-30%}100%{left:100%}}",
-  ".tmap-card:hover{border-color:var(--text-secondary,#888)}",
-  ".tmap-btn{cursor:pointer;font:inherit;padding:4px 10px;border-radius:6px;border:1px solid var(--border-standard,#8886);background:transparent;color:inherit}",
-  ".tmap-btn:hover:not(:disabled){background:var(--border-standard,#8883)}",
+  ".tmap-page{--tm-red:var(--red-11,#d33a3a);--tm-redbg:var(--red-3,#fde8e8);--tm-blue:var(--blue-11,#2f63d6);--tm-bluebg:var(--blue-3,#e6eefc);",
+  "--tm-amber:var(--amber-11,#a86a00);--tm-amberbg:var(--amber-3,#fdf1dc);--tm-sub:var(--text-secondary,#6b6b74);",
+  "--tm-border:var(--border-standard,rgba(127,127,127,.28));--tm-panel:var(--bg-panel,transparent);--tm-raised:rgba(127,127,127,.07);",
+  "display:flex;flex-direction:column;height:100%;min-height:0;box-sizing:border-box;padding:18px 20px;font-size:14px;line-height:1.45}",
+  ".tmap-page *{box-sizing:border-box}",
+  ".tmap-projects{display:flex;flex-direction:column;gap:14px;width:100%}",
+  ".tmap-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap}",
+  ".tmap-head h2{margin:0;font-size:18px;font-weight:600}",
+  ".tmap-sub{color:var(--tm-sub);font-size:12.5px}",
+  ".tmap-grow{flex:1 1 160px;min-width:0}",
+  ".tmap-btn{cursor:pointer;font:inherit;font-size:12.5px;line-height:1.4;padding:5px 10px;border-radius:7px;border:1px solid var(--tm-border);background:var(--tm-raised);color:inherit;white-space:nowrap}",
+  ".tmap-btn:hover:not(:disabled){border-color:var(--tm-blue)}",
   ".tmap-btn:disabled{opacity:.5;cursor:default}",
-  ".tmap-btn:focus-visible,.tmap-link:focus-visible,.tmap-pick:focus-visible{outline:2px solid #3b82f6;outline-offset:1px}",
-  ".tmap-link{color:inherit;text-decoration:none;display:block}",
-  ".tmap-link:hover{text-decoration:underline}",
-  "@media (max-width:640px){.tmap-bar-row{flex-direction:column;align-items:stretch!important}.tmap-cardhead{flex-direction:column;align-items:flex-start!important}}",
+  ".tmap-btn.tmap-ic-refresh::before{content:'\\21BB';margin-right:5px}",
+  ".tmap-btn.tmap-ic-out::after{content:'\\2197';margin-left:5px}",
+  ".tmap-btn.tmap-linkbtn{border:0;background:none;padding:0;color:var(--tm-blue);font-size:12.5px}",
+  ".tmap-btn.tmap-linkbtn:hover{text-decoration:underline}",
+  ".tmap-btn.tmap-danger{color:var(--tm-red)}",
+  ".tmap-btn:focus-visible,.tmap-link:focus-visible,.tmap-pick:focus-visible{outline:2px solid var(--tm-blue);outline-offset:2px}",
+  ".tmap-cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(min(100%,420px),1fr));align-items:stretch}",
+  ".tmap-card[data-wide=true]{grid-column:1/-1}",
+  ".tmap-card{border:1px solid var(--tm-border);border-radius:10px;background:var(--tm-raised);overflow:hidden;display:flex;flex-direction:column}",
+  ".tmap-card:hover{border-color:var(--tm-blue)}",
+  ".tmap-card[data-stale=true]{opacity:.55}",
+  ".tmap-ctop{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;align-items:center;padding:12px 14px 10px}",
+  ".tmap-name{display:flex;gap:6px;align-items:center;min-width:0}",
+  ".tmap-btn.tmap-open{border:0;background:none;padding:0;font-weight:600;font-size:14.5px;overflow:hidden;text-overflow:ellipsis}",
+  ".tmap-btn.tmap-open:hover{text-decoration:underline}",
+  ".tmap-prov{font-size:11px;color:var(--tm-sub);border:1px solid var(--tm-border);border-radius:5px;padding:0 5px;white-space:nowrap}",
+  ".tmap-chips{display:flex;gap:6px;flex-wrap:wrap;grid-column:1/-1}",
+  ".tmap-chip{font-size:12px;border-radius:999px;padding:2px 9px;background:var(--tm-panel);border:1px solid var(--tm-border);white-space:nowrap}",
+  ".tmap-chip b{font-weight:700}",
+  ".tmap-chip.red{background:var(--tm-redbg);color:var(--tm-red);border-color:transparent}",
+  ".tmap-chip.blue{background:var(--tm-bluebg);color:var(--tm-blue);border-color:transparent}",
+  ".tmap-pill{font-size:11.5px;border-radius:999px;padding:2px 9px;white-space:nowrap}",
+  ".tmap-pill.run{background:var(--tm-bluebg);color:var(--tm-blue);font-weight:600}",
+  ".tmap-pill.idle{background:var(--tm-panel);color:var(--tm-sub);border:1px solid var(--tm-border)}",
+  ".tmap-pill.stale{background:var(--tm-amberbg);color:var(--tm-amber)}",
+  ".tmap-needs{border-top:1px solid var(--tm-border);padding:6px 14px 8px;display:grid;gap:2px}",
+  ".tmap-need{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:2px 8px;align-items:baseline;font-size:12.5px;padding:3px 0;color:inherit;text-decoration:none}",
+  ".tmap-need:hover .tmap-t{text-decoration:underline}",
+  ".tmap-num{color:var(--tm-blue);font-weight:600}",
+  ".tmap-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+  ".tmap-k{font-size:11px;color:var(--tm-red);background:var(--tm-redbg);border-radius:4px;padding:0 6px;white-space:nowrap}",
+  ".tmap-why{grid-column:2/-1;color:var(--tm-sub);font-size:12px}",
+  ".tmap-btn.tmap-more{justify-self:start;margin-top:2px}",
+  ".tmap-msg{font-size:12px;padding:6px 14px;border-top:1px solid var(--tm-border)}",
+  ".tmap-msg.err{color:var(--tm-red)}",
+  ".tmap-msg.warn{color:var(--tm-amber)}",
+  ".tmap-footer{margin-top:auto;border-top:1px solid var(--tm-border);padding:6px 14px;font-size:12px;color:var(--tm-sub);display:flex;gap:6px 10px;align-items:center;flex-wrap:wrap;background:var(--tm-panel)}",
+  ".tmap-footer .warn{color:var(--tm-amber)}",
+  ".tmap-footer .busy{color:var(--tm-blue)}",
+  ".tmap-confirm{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 14px;border-top:1px solid var(--tm-border);font-size:12px}",
+  ".tmap-remove{padding:0 14px 10px}",
+  ".tmap-spin{display:inline-block;width:10px;height:10px;border:2px solid rgba(127,127,127,.35);border-top-color:currentColor;border-radius:50%;vertical-align:-1px;margin-right:6px;animation:tmap-rot .9s linear infinite}",
+  "@keyframes tmap-rot{to{transform:rotate(360deg)}}",
+  ".tmap-project{display:flex;flex-direction:column;gap:10px;flex:1 1 auto;min-height:0}",
+  ".tmap-bar-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;flex:none}",
+  ".tmap-pick{font:inherit;font-size:12.5px;padding:4px 8px;border-radius:7px;border:1px solid var(--tm-border);background:var(--tm-raised);color:inherit;max-width:100%}",
+  ".tmap-banner{border-radius:8px;padding:8px 12px;font-size:13px;background:var(--tm-amberbg);color:var(--tm-amber);flex:none}",
+  ".tmap-banner.info{background:var(--tm-bluebg);color:var(--tm-blue)}",
+  ".tmap-banner.err{background:var(--tm-redbg);color:var(--tm-red)}",
+  ".tmap-banner.quiet{background:var(--tm-raised);color:var(--tm-sub)}",
+  ".tmap-frame{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;border:1px solid var(--tm-border);border-radius:10px;overflow:hidden;background:var(--tm-panel)}",
+  ".tmap-frame iframe{flex:1 1 auto;min-height:0;width:100%;border:0;display:block;background:var(--tm-panel)}",
+  ".tmap-bar{height:3px;background:var(--tm-bluebg);overflow:hidden;position:relative;flex:none}",
+  ".tmap-bar::after{content:'';position:absolute;top:0;bottom:0;width:35%;background:var(--tm-blue);animation:tmap-slide 1.4s ease-in-out infinite}",
+  "@keyframes tmap-slide{0%{left:-35%}100%{left:100%}}",
+  ".tmap-note{color:var(--tm-sub);padding:12px 0}",
+  ".tmap-note.err{color:var(--tm-red)}",
+  ".tmap-empty{border:1px dashed var(--tm-border);border-radius:10px;padding:28px;text-align:center;color:var(--tm-sub)}",
+  "@media (max-width:640px){.tmap-page{padding:12px}.tmap-ctop{grid-template-columns:1fr}}",
   "@media (prefers-reduced-motion:reduce){.tmap-spin,.tmap-bar::after{animation:none}}",
 ].join("");
-
-const RED = "var(--text-danger, #dc2626)";
-const BLUE = "#3b82f6";
-const AMBER = "#d97706";
-const MUTED = "var(--text-secondary, #888)";
 
 function buildComponents(React, store) {
   const h = React.createElement;
@@ -689,27 +746,17 @@ function buildComponents(React, store) {
     useEffect(() => store.subscribe(() => set((n) => n + 1)), []);
   }
 
-  const note = (text, extra) =>
-    h("div", { className: "tmap-note", role: "status", style: Object.assign({ color: MUTED, padding: "12px 0" }, extra || {}) }, text);
+  const note = (text, cls) => h("div", { className: "tmap-note" + (cls ? " " + cls : ""), role: "status" }, text);
 
   const button = (label, onClick, opts) => {
     const o = opts || {};
-    return h("button", { type: "button", className: "tmap-btn", onClick, disabled: !!o.disabled, title: o.title, style: o.style }, label);
+    return h("button", { type: "button", className: "tmap-btn" + (o.cls ? " " + o.cls : ""), onClick, disabled: !!o.disabled, title: o.title }, label);
   };
 
   const spinner = () => h("span", { className: "tmap-spin", "aria-hidden": "true" });
 
-  function chip(text, color) {
-    return h("span", {
-      key: text,
-      style: { fontSize: 12, padding: "2px 8px", borderRadius: 999, border: "1px solid " + (color || "var(--border-standard, #8886)"), color: color || MUTED },
-    }, text);
-  }
-
-  function providerBadge(entry) {
-    return h("span", {
-      style: { fontSize: 11, padding: "1px 6px", borderRadius: 4, border: "1px solid var(--border-standard, #8886)", color: MUTED },
-    }, providerOf(entry).name);
+  function chip(n, label, cls) {
+    return h("span", { key: label, className: "tmap-chip" + (cls ? " " + cls : "") }, h("b", null, String(n)), " " + label);
   }
 
   function readingText(entry, p) {
@@ -721,39 +768,33 @@ function buildComponents(React, store) {
     const p = store.proj(slug);
     const now = store.now();
     const name = providerOf(entry).name;
+    const items = [];
     if (p.reading) {
-      return h("div", { className: "tmap-footer", style: { color: BLUE, fontSize: 12 } }, spinner(), readingText(entry, p));
+      items.push(h("span", { key: "busy", className: "busy" }, spinner(), readingText(entry, p)));
+    } else {
+      const t = isoMs(entry.state_read);
+      if (t === null) items.push(h("span", { key: "read", className: "warn" }, "never read"));
+      else items.push(h("span", { key: "read", className: now - t > READ_AMBER_MS ? "warn" : "" }, name + " read " + age(now - t) + " ago"));
+      if (store.isQueued(slug)) items.push(h("span", { key: "queued" }, "· refresh queued"));
     }
-    if (store.isQueued(slug)) {
-      return h("div", { className: "tmap-footer", style: { color: MUTED, fontSize: 12 } }, "refresh queued");
-    }
-    const t = isoMs(entry.state_read);
-    if (t === null) return h("div", { className: "tmap-footer", style: { color: AMBER, fontSize: 12 } }, "never read");
-    return h("div", { className: "tmap-footer", style: { color: now - t > READ_AMBER_MS ? AMBER : MUTED, fontSize: 12 } },
-      name + " read " + age(now - t) + " ago");
+    return h("div", { key: "foot", className: "tmap-footer" }, items);
   }
 
   function pill(entry) {
     const now = store.now();
     const days = staleDays(entry, now);
-    let text;
-    let color = MUTED;
-    if (days > 0) {
-      text = "Not updated in " + days + " days";
-    } else if (isRunning(entry, now)) {
+    if (days > 0) return h("span", { className: "tmap-pill stale" }, "Not updated in " + days + " days");
+    if (isRunning(entry, now)) {
       const run = entry.run || {};
       const parts = ["Running"];
       if (run.role && run.issue) parts.push(run.role + " on #" + run.issue);
       else if (run.role) parts.push(run.role);
       const a = ageSince(run.stage_since, now);
       if (a) parts.push(a);
-      text = parts.join(" · ");
-      color = BLUE;
-    } else {
-      const a = ageSince(entry.updated, now);
-      text = "Idle" + (a ? " · map " + a + " old" : "");
+      return h("span", { className: "tmap-pill run" }, parts.join(" · "));
     }
-    return h("span", { className: "tmap-pill", style: { fontSize: 12, color, whiteSpace: "nowrap" } }, text);
+    const a = ageSince(entry.updated, now);
+    return h("span", { className: "tmap-pill idle" }, "Idle" + (a ? " · map " + a + " old" : ""));
   }
 
   function needRows(entry) {
@@ -762,14 +803,11 @@ function buildComponents(React, store) {
     return rows.map((r, i) => {
       const a = ageSince(r.since, now);
       const detail = [r.why, r.next].filter(Boolean).join(" · ");
-      return h("a", {
-        key: "need" + i, className: "tmap-link tmap-need", href: safeUrl(r.url), target: "_blank", rel: "noopener noreferrer",
-        style: { padding: "6px 0", borderTop: "1px solid var(--border-standard, #8884)" },
-      },
-        h("div", { style: { display: "flex", gap: 8, justifyContent: "space-between", alignItems: "baseline" } },
-          h("span", null, "#" + r.issue + " " + (r.title || "")),
-          h("span", { style: { color: RED, fontSize: 12, whiteSpace: "nowrap" } }, [r.kind, a].filter(Boolean).join(" · "))),
-        detail ? h("div", { style: { color: MUTED, fontSize: 12 } }, detail) : null);
+      return h("a", { key: "need" + i, className: "tmap-link tmap-need", href: safeUrl(r.url), target: "_blank", rel: "noopener noreferrer" },
+        h("span", { className: "tmap-num" }, "#" + r.issue),
+        h("span", { className: "tmap-t" }, r.title || ""),
+        h("span", { className: "tmap-k" }, [r.kind, a].filter(Boolean).join(" · ")),
+        detail ? h("span", { className: "tmap-why" }, detail) : null);
     });
   }
 
@@ -778,52 +816,42 @@ function buildComponents(React, store) {
     const now = store.now();
     const tiles = tilesOf(entry);
     const days = staleDays(entry, now);
-    const extra = tiles.needs - 3;
     const parts = [
-      h("div", { key: "head", className: "tmap-cardhead", style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 } },
-        h("span", { style: { display: "flex", gap: 8, alignItems: "center" } },
-          h("button", {
-            type: "button", className: "tmap-btn tmap-open", onClick: () => store.openProject(slug),
-            style: { border: "none", fontWeight: 600, fontSize: 15, padding: 0 },
-          }, slug),
-          providerBadge(entry)),
-        pill(entry)),
-      h("div", { key: "chips", style: { display: "flex", gap: 6, flexWrap: "wrap" } },
-        chip(tiles.needs + " need you", tiles.needs > 0 ? RED : null),
-        chip(tiles.in_flight + " in flight", tiles.in_flight > 0 ? BLUE : null),
-        chip(tiles.queued + " queued"),
-        chip(tiles.merged_7d + " merged · 7 d")),
+      h("div", { key: "top", className: "tmap-ctop" },
+        h("div", { className: "tmap-name" },
+          h("button", { type: "button", className: "tmap-btn tmap-open", onClick: () => store.openProject(slug), title: "Open " + slug + "'s map" }, slug),
+          h("span", { className: "tmap-prov" }, providerOf(entry).name)),
+        pill(entry),
+        h("div", { className: "tmap-chips" },
+          chip(tiles.needs, "need you", tiles.needs > 0 ? "red" : ""),
+          chip(tiles.in_flight, "in flight", tiles.in_flight > 0 ? "blue" : ""),
+          chip(tiles.queued, "queued"),
+          chip(tiles.merged_7d, "merged · 7 d"))),
     ];
-    parts.push(...needRows(entry));
-    if (tiles.needs > 3) {
-      parts.push(h("button", {
-        key: "more", type: "button", className: "tmap-btn", onClick: () => store.openProject(slug),
-        style: { border: "none", padding: "4px 0", color: MUTED, textAlign: "left" },
-      }, "+" + extra + " more · open map →"));
+    const rows = needRows(entry);
+    if (rows.length || tiles.needs > 3) {
+      const more = tiles.needs > 3
+        ? h("button", { key: "more", type: "button", className: "tmap-btn tmap-linkbtn tmap-more", onClick: () => store.openProject(slug) },
+          "+" + (tiles.needs - 3) + " more · open map →")
+        : null;
+      parts.push(h("div", { key: "needs", className: "tmap-needs" }, rows, more));
     }
-    if (!hasRoot(entry) || p.noRoot) parts.push(note(NO_ROOT_TEXT, { padding: "2px 0", fontSize: 12 }));
-    if (!validFile(entry.file)) parts.push(note("Refused: this project's map file name is not a plain .html name, so it is never read.", { padding: "2px 0", fontSize: 12, color: RED }));
-    parts.push(footer(slug, entry));
-    if (p.failure) parts.push(h("div", { key: "fail", style: { color: RED, fontSize: 12 } }, failureText(entry, p.failure)));
-    if (p.forgetError) parts.push(h("div", { key: "ferr", style: { color: RED, fontSize: 12 } }, p.forgetError));
+    if (!hasRoot(entry) || p.noRoot) parts.push(h("div", { key: "noroot", className: "tmap-msg warn" }, NO_ROOT_TEXT));
+    if (!validFile(entry.file)) parts.push(h("div", { key: "refused", className: "tmap-msg err" }, "Refused: this project's map file name is not a plain .html name, so it is never read."));
+    if (p.failure) parts.push(h("div", { key: "fail", className: "tmap-msg err" }, failureText(entry, p.failure)));
+    if (p.forgetError) parts.push(h("div", { key: "ferr", className: "tmap-msg err" }, p.forgetError));
     if (days > 0) {
       if (state.confirm === slug) {
-        parts.push(h("div", { key: "confirm", className: "tmap-confirm", style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
-          h("span", { style: { fontSize: 12 } }, "Remove " + slug + " from the list? Its map file and repository are not touched."),
-          button("Remove", () => store.forget(slug), { style: { color: RED } }),
+        parts.push(h("div", { key: "confirm", className: "tmap-confirm" },
+          h("span", null, "Remove " + slug + " from the list? Its map file and repository are not touched."),
+          button("Remove", () => store.forget(slug), { cls: "tmap-danger" }),
           button("Cancel", () => store.cancelForget())));
       } else {
-        parts.push(h("div", { key: "remove" }, button("Remove from list", () => store.askForget(slug))));
+        parts.push(h("div", { key: "remove", className: "tmap-remove" }, button("Remove from list", () => store.askForget(slug))));
       }
     }
-    return h("div", {
-      key: slug, className: "tmap-card", "data-slug": slug, "data-stale": days > 0 ? "true" : "false",
-      style: {
-        display: "flex", flexDirection: "column", gap: 8, padding: "var(--space-panel-inset, 14px)",
-        border: "1px solid var(--border-standard, #8886)", borderRadius: "var(--radius-panel, 10px)",
-        background: "var(--bg-panel, transparent)", opacity: days > 0 ? 0.6 : 1,
-      },
-    }, parts);
+    parts.push(footer(slug, entry));
+    return h("div", { key: slug, className: "tmap-card", "data-slug": slug, "data-stale": days > 0 ? "true" : "false", "data-wide": rows.length ? "true" : "false" }, parts);
   }
 
   function ProjectsView() {
@@ -831,17 +859,17 @@ function buildComponents(React, store) {
     const entries = state.reg.entries;
     const slugs = Object.keys(entries);
     const needs = needsTotal(entries);
-    const head = h("div", { key: "head", style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" } },
-      h("div", null,
-        h("h2", { style: { margin: 0, fontSize: 20 } }, "Talos"),
-        h("div", { style: { color: MUTED, fontSize: 13 } }, slugs.length + (slugs.length === 1 ? " project" : " projects") + " · " + needs + " need you")),
-      button("Refresh all", () => store.refreshAll()));
+    const head = h("div", { key: "head", className: "tmap-head" },
+      h("div", { className: "tmap-grow" },
+        h("h2", null, "Talos"),
+        h("div", { className: "tmap-sub" }, slugs.length + (slugs.length === 1 ? " project" : " projects") + " · " + needs + " need you")),
+      button("Refresh all", () => store.refreshAll(), { cls: "tmap-ic-refresh" }));
     let body;
     if (state.reg.state === "loading") body = note("Loading Talos projects…");
-    else if (state.reg.state === "none") body = note("No Talos projects on this Mac yet. Run `talos.sh map` in a repo, or start a Talos run there.");
-    else if (state.reg.state === "bad") body = note(state.reg.error, { color: RED });
-    else body = h("div", { key: "cards", style: { display: "flex", flexDirection: "column", gap: 12 } }, orderEntries(entries, now).map(([slug, e]) => card(slug, e)));
-    return h("div", { className: "tmap-projects", style: { display: "flex", flexDirection: "column", gap: 14 } }, head, body);
+    else if (state.reg.state === "none") body = h("div", { key: "empty", className: "tmap-empty", role: "status" }, "No Talos projects on this Mac yet. Run `talos.sh map` in a repo, or start a Talos run there.");
+    else if (state.reg.state === "bad") body = h("div", { key: "bad", className: "tmap-banner err", role: "status" }, state.reg.error);
+    else body = h("div", { key: "cards", className: "tmap-cards" }, orderEntries(entries, now).map(([slug, e]) => card(slug, e)));
+    return h("div", { className: "tmap-projects" }, head, body);
   }
 
   function banner(slug, entry) {
@@ -850,39 +878,37 @@ function buildComponents(React, store) {
     const lines = [];
     if (p.reading) {
       const long = now - p.reading.since >= LONG_READ_MS;
-      lines.push(h("div", { key: "bar", className: "tmap-bar", role: "progressbar", "aria-label": "Reading " + providerOf(entry).name }));
-      lines.push(h("div", { key: "reading", style: { fontSize: 13, color: BLUE } },
+      lines.push(h("div", { key: "reading", className: "tmap-banner " + (long ? "" : "info"), role: "status" },
         spinner(),
         long
           ? "Still reading. It keeps going in the background; you can leave this page."
           : "Reading " + providerOf(entry).name + "… The map updates by itself when it's done."));
     } else if (store.isQueued(slug)) {
-      lines.push(h("div", { key: "queued", style: { fontSize: 13, color: MUTED } }, "refresh queued"));
+      lines.push(h("div", { key: "queued", className: "tmap-banner quiet" }, "refresh queued"));
     }
-    if (p.redrawing) lines.push(h("div", { key: "redraw", style: { fontSize: 13, color: MUTED } }, "Redrawing the map…"));
-    if (store.noRoot(slug)) lines.push(h("div", { key: "noroot", style: { fontSize: 13, color: AMBER } }, NO_ROOT_TEXT));
-    if (p.failure) lines.push(h("div", { key: "fail", style: { fontSize: 13, color: RED } }, failureText(entry, p.failure)));
+    if (p.redrawing) lines.push(h("div", { key: "redraw", className: "tmap-banner quiet" }, "Redrawing the map…"));
+    if (store.noRoot(slug)) lines.push(h("div", { key: "noroot", className: "tmap-banner" }, NO_ROOT_TEXT));
+    if (p.failure) lines.push(h("div", { key: "fail", className: "tmap-banner err" }, failureText(entry, p.failure)));
     if (p.redrawError) {
       const a = ageSince(entry.updated, now);
-      lines.push(h("div", { key: "rerr", style: { fontSize: 13, color: RED } },
+      lines.push(h("div", { key: "rerr", className: "tmap-banner err" },
         "Couldn't redraw (" + p.redrawError + "). Showing the last map" + (a ? ", from " + a + " ago" : "") + "."));
     }
-    if (p.openError) lines.push(h("div", { key: "oerr", style: { fontSize: 13, color: RED } }, p.openError));
+    if (p.openError) lines.push(h("div", { key: "oerr", className: "tmap-banner err" }, p.openError));
     return lines;
   }
 
   function frameArea(slug) {
     const p = store.proj(slug);
     if (p.mapState === "refused") {
-      return note("Refused: this project's map file name is not a plain .html name, so Talos never reads it.", { color: RED });
+      return note("Refused: this project's map file name is not a plain .html name, so Talos never reads it.", "err");
     }
-    if (p.raw === null && p.mapState === "missing") return note("The map file isn't there yet. It appears after the next redraw; run `talos.sh map` in the repo to draw it now.");
-    if (p.raw === null && p.mapState === "unreadable") return note("Couldn't read the map file.", { color: RED });
+    if (p.raw === null && p.mapState === "missing") return h("div", { className: "tmap-empty", role: "status" }, "The map file isn't there yet. It appears after the next redraw; run `talos.sh map` in the repo to draw it now.");
+    if (p.raw === null && p.mapState === "unreadable") return note("Couldn't read the map file.", "err");
     if (p.raw === null) return note("Loading the map…");
-    return h("iframe", {
-      key: "frame", title: "Talos project map: " + slug, sandbox: SANDBOX, srcDoc: p.frame,
-      style: { flex: "1 1 auto", minHeight: 0, width: "100%", border: "1px solid var(--border-standard, #8886)", borderRadius: "var(--radius-panel, 10px)", background: "var(--bg-panel, transparent)" },
-    });
+    return h("div", { key: "framebox", className: "tmap-frame" },
+      p.reading ? h("div", { key: "bar", className: "tmap-bar", role: "progressbar", "aria-label": "Reading " + providerOf(state.reg.entries[slug] || {}).name }) : null,
+      h("iframe", { key: "frame", title: "Talos project map: " + slug, sandbox: SANDBOX, srcDoc: p.frame }));
   }
 
   function ProjectView() {
@@ -899,18 +925,16 @@ function buildComponents(React, store) {
     ].filter(Boolean).join(" · ");
     const options = Object.keys(state.reg.entries).map((s) =>
       h("option", { key: s, value: s }, s + " · " + tilesOf(state.reg.entries[s]).needs + " need you"));
-    const bar = h("div", { key: "bar", className: "tmap-bar-row", style: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", flex: "none" } },
-      button("← Projects", () => store.showProjects()),
+    const bar = h("div", { key: "bar", className: "tmap-bar-row" },
+      button("← Projects", () => store.showProjects(), { cls: "tmap-linkbtn" }),
       h("select", {
         className: "tmap-pick", value: slug, "aria-label": "Project",
         onChange: (e) => store.openProject(e && e.target ? e.target.value : slug),
-        style: { font: "inherit", padding: "4px 6px", borderRadius: 6, border: "1px solid var(--border-standard, #8886)", background: "transparent", color: "inherit" },
       }, options),
-      h("span", { style: { color: MUTED, fontSize: 12, flex: "1 1 auto" } }, sub),
-      button("Refresh", () => store.refresh(slug), { disabled: store.noRoot(slug) || !!p.reading || store.isQueued(slug) }),
-      button("Open in browser", () => store.openInBrowser(slug), { disabled: !validFile(entry.file) }));
-    return h("div", { className: "tmap-project", style: { display: "flex", flexDirection: "column", gap: 10, flex: "1 1 auto", minHeight: 0 } },
-      bar, ...banner(slug, entry), frameArea(slug));
+      h("span", { className: "tmap-sub tmap-grow" }, sub),
+      button("Refresh", () => store.refresh(slug), { cls: "tmap-ic-refresh", disabled: store.noRoot(slug) || !!p.reading || store.isQueued(slug) }),
+      button("Open in browser", () => store.openInBrowser(slug), { cls: "tmap-ic-out", disabled: !validFile(entry.file) }));
+    return h("div", { className: "tmap-project" }, bar, ...banner(slug, entry), frameArea(slug));
   }
 
   function Page() {
@@ -923,17 +947,13 @@ function buildComponents(React, store) {
     try {
       view = state.view ? ProjectView() : ProjectsView();
     } catch (e) {
-      view = note("Talos couldn't draw this page (" + msg(e) + "). Try Refresh all.", { color: RED });
+      view = note("Talos couldn't draw this page (" + msg(e) + "). Try Refresh all.", "err");
     }
-    return h("div", {
-      className: "tmap-page",
-      style: {
-        display: "flex", flexDirection: "column", height: "100%", minHeight: 0, boxSizing: "border-box",
-        padding: "var(--space-panel-inset, 16px)", overflow: state.view ? "hidden" : "auto",
-      },
-    }, h("style", null, CSS), view);
+    return h("div", { className: "tmap-page", style: { overflow: state.view ? "hidden" : "auto" } }, h("style", null, CSS), view);
   }
 
+  // The badge sits in Buzz's sidebar, outside the page and its stylesheet, so
+  // it styles itself: Buzz's solid status red with its on-status ink.
   function Badge() {
     useTick();
     useEffect(() => {
@@ -947,7 +967,12 @@ function buildComponents(React, store) {
       if (total <= 0) return null;
       return h("span", {
         className: "tmap-badge", "aria-label": total + " need you",
-        style: { fontSize: 11, minWidth: 16, textAlign: "center", padding: "0 5px", borderRadius: 999, background: RED, color: "#fff" },
+        style: {
+          display: "inline-block", minWidth: 18, padding: "0 6px", borderRadius: 999, textAlign: "center",
+          fontSize: 11, fontWeight: 700, lineHeight: "18px", fontVariantNumeric: "tabular-nums",
+          background: "var(--surface-status-danger, #ce2c31)", color: "var(--text-on-status, #fff)",
+          boxShadow: "0 0 0 1px rgba(0,0,0,.12)",
+        },
       }, String(total));
     } catch (e) {
       return null;
