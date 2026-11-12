@@ -195,6 +195,16 @@ claude plugin marketplace add benmarte/talos
 claude plugin install talos@talos
 ```
 
+### Upgrading from v0.22.0
+
+v0.22.1 fixes links on the Buzz plugin's Talos page (#917). Re-run `bash install.sh --global`, then load `~/.talos/buzz-plugin` again in Buzz (Settings → Plugins → Manage plugins → Load from folder).
+
+- The needs-you rows and every issue and PR link in a map now open in your browser. They go through a new `talos-buzz.sh open-url <slug> <url>` verb, which opens a URL only if Talos drew it for that project.
+- The map's jump links (Needs you, Queue, In flight) scroll the map instead of trying to open a window.
+- The map frame is now `sandbox="allow-same-origin"`: no popups and no scripts.
+
+Every change is listed in [CHANGELOG.md](../CHANGELOG.md).
+
 ### Upgrading from v0.21
 
 This section is for people already on v0.21. Re-run `bash install.sh --global` first. That refreshes `~/.talos` and writes the new Buzz plugin folder. Then read these.

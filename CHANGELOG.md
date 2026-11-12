@@ -3,6 +3,8 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+
+## [0.22.1] - 2026-11-12
 - fix: links on the Buzz plugin's Talos page open: the needs rows and every issue, PR and `#` link in the map go through a new `talos-buzz.sh open-url <slug> <url>` verb that runs the system opener only for a URL Talos drew for that project, and the map frame is now `sandbox="allow-same-origin"` with no popups and no scripts
 
 ## [0.22.0] - 2026-11-11
