@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: links on the Buzz plugin's Talos page open: the needs rows and every issue, PR and `#` link in the map go through a new `talos-buzz.sh open-url <slug> <url>` verb that runs the system opener only for a URL Talos drew for that project, and the map frame is now `sandbox="allow-same-origin"` with no popups and no scripts
 
 ## [0.22.0] - 2026-11-11
 - fix: the project map counts the `usage` events (hand-driven subagent tokens) of an issue the provider merged with no local `merged` event, so its tokens tile, `tiles.tokens_7d` and Top spend no longer drop them; its stage events stay excluded

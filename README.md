@@ -105,7 +105,7 @@ If you use [Buzz](https://github.com/block/buzz-app), the Talos plugin shows eve
 2. In Buzz, open **Settings → Plugins → Manage plugins → Load from folder**. Press ⌘⇧G, paste `~/.talos/buzz-plugin` and choose the folder.
 3. Approve the access review. It lists two things:
    - reading files (the Talos maps in `~/.talos/maps`);
-   - one process, `talos`, which runs `~/.talos/scripts/talos-buzz.sh`. That script can only redraw, refresh, forget or open a project's map; it can't start a run.
+   - one process, `talos`, which runs `~/.talos/scripts/talos-buzz.sh`. That script can only redraw, refresh, forget or open a project's map, or open a link that map shows; it can't start a run.
 4. Open **Talos** in the sidebar.
 
 A project appears after Talos draws its map once: run `talos.sh map` in the repo, or start a Talos run there.

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # talos-buzz.sh <redraw|refresh|forget|open> <slug>  (#904)
+# talos-buzz.sh open-url <slug> <url>                 (#917)
 #
 # The one narrow entry point of the Buzz plugin. Buzz's host.spawn appends the
 # caller's arguments to a declared command, so a plugin that could spawn talos.sh
-# itself could pass any verb, `run` included. This script takes four verbs and a
-# project slug, checks the slug against the registry (<TALOS_HOME>/maps/index.json),
+# itself could pass any verb, `run` included. This script takes five verbs, a
+# project slug (and, for open-url, one URL), checks the slug against the registry (<TALOS_HOME>/maps/index.json),
 # and runs talos.sh from the checkout the registry records, with the config it
 # records. It needs no shell profile: python3 -I, coreutils and pure shell.
 #
@@ -12,6 +13,10 @@
 # Exit status: 0 for done and busy, 1 for failed, 2 for usage and error.
 # The registry is read here and never written (talos.sh map --forget writes it);
 # a refresh writes only maps/.refresh/<file>.lock and <file>.json.
+# open-url opens one http(s) link in the system browser: Buzz opens no popups and
+# its plugin API has no open-URL call, so every link the plugin shows comes here.
+# It runs the opener only for a URL Talos drew for that project (an href of the
+# project's map page or a needs[].url of its entry) and writes nothing.
 # docs/reference.md documents the lines and the record.
 set -u
 
@@ -31,9 +36,13 @@ trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT HUP
 
-[ "$#" -eq 2 ] || die usage
-VERB="$1"; SLUG="$2"
-case "$VERB" in redraw | refresh | forget | open) ;; *) die usage ;; esac
+[ "$#" -ge 2 ] || die usage
+VERB="$1"; SLUG="$2"; URL=""
+case "$VERB" in
+  redraw | refresh | forget | open) [ "$#" -eq 2 ] || die usage ;;
+  open-url) [ "$#" -eq 3 ] || die usage; URL="$3" ;;
+  *) die usage ;;
+esac
 command -v python3 > /dev/null 2>&1 || die python-missing
 
 HOME_DIR="${TALOS_HOME:-${HOME:-}/.talos}"
@@ -71,7 +80,7 @@ cfg = e.get("config")
 if cfg is not None and (not isinstance(cfg, str) or ctl(cfg) or not os.path.isabs(cfg) or not os.path.isfile(cfg)):
     bad("config-invalid")
 name = e.get("file")
-if verb in ("refresh", "open") and not (isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9._-]+\.html", name)):
+if verb in ("refresh", "open", "open-url") and not (isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9._-]+\.html", name)):
     bad("file-invalid")
 print("root=" + root)
 print("config=" + (cfg or ""))
@@ -86,6 +95,50 @@ ROOT="$(sed -n 's/^root=//p' <<< "$CHK")"
 CONFIG="$(sed -n 's/^config=//p' <<< "$CHK")"
 FILE="$(sed -n 's/^file=//p' <<< "$CHK")"
 [ -n "$ROOT" ] || die registry-unreadable
+
+# open-url: the URL is one http(s) string of at most 2048 characters with no
+# whitespace or control characters, and it equals an href of the project's map
+# page (entities unescaped) or a needs[].url of the registry entry. Argv in, `ok`
+# out, or `error <reason>` and exit 1. Nothing is written.
+URLCHECK='
+import json, re, sys
+from html.parser import HTMLParser
+reg_path, slug, page, url = sys.argv[1:5]
+def bad(why):
+    print("error " + why)
+    sys.exit(1)
+if len(url) > 2048 or not re.fullmatch(r"https?://[^\s\x00-\x1f\x7f-\x9f]+", url, re.A):
+    bad("bad-url")
+urls = set()
+try:
+    with open(reg_path) as f:
+        need = json.load(f)[slug].get("needs")
+    for n in need if isinstance(need, list) else []:
+        if isinstance(n, dict) and isinstance(n.get("url"), str):
+            urls.add(n["url"])
+except (OSError, ValueError, KeyError, AttributeError):
+    pass
+class Hrefs(HTMLParser):
+    def handle_starttag(self, tag, attrs):
+        for k, v in attrs:
+            if k == "href" and v is not None:
+                urls.add(v)
+try:
+    with open(page, encoding="utf-8", errors="replace") as f:
+        Hrefs(convert_charrefs=True).feed(f.read())
+except OSError:
+    pass
+if url not in urls:
+    bad("url-not-on-map")
+print("ok")
+'
+if [ "$VERB" = open-url ]; then
+  UCHK="$(python3 -I -c "$URLCHECK" "$HOME_DIR/maps/index.json" "$SLUG" "$HOME_DIR/maps/$FILE" "$URL" 2> /dev/null)" || {
+    REASON="${UCHK#error }"
+    case "$REASON" in bad-url | url-not-on-map) ;; *) REASON=url-not-on-map ;; esac
+    die "$REASON"
+  }
+fi
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/talos-buzz.XXXXXX")" || die tmp-unavailable
 [ -n "$TMP" ] && [ -d "$TMP" ] || { TMP=""; die tmp-unavailable; }
@@ -255,6 +308,14 @@ case "$VERB" in
     after_run "$RC"
     [ "$RESULT" = done ] || failed failed "$DETAIL"
     say "done opened=$PAGE"
+    ;;
+  open-url)
+    case "$(uname -s)" in Darwin) OPENER=open ;; *) OPENER=xdg-open ;; esac
+    "$OPENER" "$URL" > /dev/null 2> "$TMP/err" < /dev/null; RC=$?
+    : > "$TMP/out"
+    after_run "$RC"
+    [ "$RESULT" = done ] || failed failed "$DETAIL"
+    say "done opened-url"
     ;;
 esac
 exit 0

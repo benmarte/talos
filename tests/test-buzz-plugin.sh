@@ -368,28 +368,27 @@ test("AC7 a card shows at most 3 needs rows and +K more only above 3", async () 
 });
 
 // ── AC8 ─────────────────────────────────────────────────────────────────────
-test("AC8 the prepared frame HTML: no refresh, one base, data-theme, otherwise identical", async () => {
+test("AC8 the prepared frame HTML: no refresh, no base, data-theme, otherwise identical", async () => {
   const src = mapHtml("x");
   const out = P.prepareFrame(src, "dark");
   check(!/http-equiv=["']?refresh/i.test(out), "refresh meta left");
-  eq(out.split('<base target="_blank">').length - 1, 1, "base count");
+  check(!/<base\b/i.test(out), "a base element was added");
   check(out.includes('<html lang="en" data-theme="dark">'), "data-theme: " + out.slice(0, 80));
-  check(out.includes('<head><base target="_blank">'), "base is not right after <head>");
-  const back = out.replace('<base target="_blank">', "").replace(' data-theme="dark"', "");
+  const back = out.replace(' data-theme="dark"', "");
   eq(back, src.replace('<meta http-equiv="refresh" content="60">', ""), "the rest of the file");
   check(P.prepareFrame(src, "light").includes('data-theme="light"'), "light theme");
-  check(P.prepareFrame(P.prepareFrame(src, "dark"), "light").split('<base target="_blank">').length - 1 === 1, "a second prepare adds a second base");
+  check(P.prepareFrame(P.prepareFrame(src, "dark"), "light").includes('data-theme="light"'), "a second prepare switches the theme");
   eq(P.themeFromColor("rgb(20, 20, 24)", false), "dark");
   eq(P.themeFromColor("#fafafa", true), "light");
   eq(P.themeFromColor("", true), "dark", "falls back to prefers-color-scheme");
 });
 
-test("AC8 the iframe sandbox is exactly allow-popups allow-popups-to-escape-sandbox and carries the prepared map", async () => {
+test("AC8 the iframe sandbox is exactly allow-same-origin and carries the prepared map", async () => {
   const w = await world({ entries: { p: entry("p") }, last: "p", theme: "dark" });
   await mountPage(w);
   const f = iframeOf(page(w));
   check(f, "no iframe in the project view");
-  eq(f.props.sandbox, "allow-popups allow-popups-to-escape-sandbox");
+  eq(f.props.sandbox, "allow-same-origin");
   eq(f.props.srcDoc, P.prepareFrame(mapHtml("p"), "dark"), "srcDoc");
 });
 
