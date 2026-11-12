@@ -5,7 +5,7 @@
 // by the absolute TALOS_HOME, next to a generated manifest.json. The plugin holds
 // no token and makes no network call: it reads maps/index.json, the map pages and
 // maps/.refresh/<file>.json, and spawns the one declared process,
-// scripts/talos-buzz.sh <redraw|refresh|forget|open> <slug>.
+// scripts/talos-buzz.sh <redraw|refresh|forget|open> <slug> or open-url <slug> <url>.
 //
 // Layout: pure helpers (exported for tests), createStore (all state and every
 // spawn, no React), the components (thin views over the store), apply.
@@ -16,7 +16,12 @@ const TALOS_HOME = "__TALOS_HOME__";
 const MAPS = TALOS_HOME + "/maps";
 const PROCESS_ID = "talos";
 const PAGE_ID = "talos.map";
-const SANDBOX = "allow-popups allow-popups-to-escape-sandbox";
+// Why the map frame has no popups and no scripts (#917): Buzz opens no new
+// windows, and its CSP (script-src 'self') applies to a srcdoc frame too, so an
+// inline script in the map cannot relay a click either. `allow-same-origin`
+// without `allow-scripts` lets this plugin read the frame's document and handle
+// its clicks (openUrl below) while the map itself still runs no code.
+const SANDBOX = "allow-same-origin";
 const FILE_RE = /^[A-Za-z0-9._-]+\.html$/;
 const LAST_KEY = "talos.map.last";
 
@@ -130,20 +135,54 @@ export function parseLine(line) {
 }
 
 // The page, ready for the sandboxed frame: no meta refresh (the browser refuses
-// it there and the plugin reloads itself), one <base target="_blank"> after
-// <head>, and data-theme on <html>. Nothing else changes.
+// it there and the plugin reloads itself) and data-theme on <html>. Nothing else
+// changes. No <base target="_blank">: a popup from the frame goes nowhere in Buzz
+// (see SANDBOX), so the frame's clicks are handled by frameClicks instead.
 export function prepareFrame(html, theme) {
   let out = String(html);
   out = out.replace(/<meta\s+http-equiv\s*=\s*["']?refresh["']?[^>]*>/gi, "");
-  if (!out.includes('<base target="_blank">')) {
-    out = out.replace(/<head\b[^>]*>/i, (m) => m + '<base target="_blank">');
-  }
   const attr = ' data-theme="' + (theme === "dark" ? "dark" : "light") + '"';
   out = out.replace(/<html\b([^>]*)>/i, (m, attrs) => {
     const rest = attrs.replace(/\sdata-theme\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i, "");
     return "<html" + rest + attr + ">";
   });
   return out;
+}
+
+// The map frame runs no code (see SANDBOX), so the plugin handles its clicks from
+// outside, on the frame's document: an http(s) link opens through openUrl, a
+// #fragment link scrolls that element of the frame into view, every other link
+// does nothing. Middle-click opens an http(s) link the same way. Called on every
+// load of the frame, since a redraw replaces srcDoc and so the document.
+export function attachFrameClicks(doc, openUrl) {
+  const linkOf = (ev) => {
+    let t = ev && ev.target;
+    if (t && typeof t.closest !== "function") t = t.parentElement;
+    return t && typeof t.closest === "function" ? t.closest("a[href]") : null;
+  };
+  const isWeb = (href) => /^https?:\/\//i.test(href);
+  doc.addEventListener("click", (ev) => {
+    const a = linkOf(ev);
+    if (!a) return;
+    const href = String(a.getAttribute("href") || "");
+    ev.preventDefault();
+    if (isWeb(href)) {
+      openUrl(href);
+    } else if (href.startsWith("#")) {
+      let id = href.slice(1);
+      try { id = decodeURIComponent(id); } catch (e) { /* keep the raw fragment */ }
+      const el = id ? doc.getElementById(id) : null;
+      if (el && typeof el.scrollIntoView === "function") el.scrollIntoView();
+    }
+  });
+  doc.addEventListener("auxclick", (ev) => {
+    if (!ev || ev.button !== 1) return;
+    const a = linkOf(ev);
+    if (!a) return;
+    const href = String(a.getAttribute("href") || "");
+    ev.preventDefault();
+    if (isWeb(href)) openUrl(href);
+  });
 }
 
 // Buzz's theme from its computed --bg-panel (luminance below 0.5 is dark),
@@ -404,7 +443,7 @@ export function createStore(env) {
       });
   }
 
-  async function runVerb(verb, slug, onLine) {
+  async function runVerb(verb, slug, onLine, extra = []) {
     const lines = [];
     let buf = "";
     const feed = (chunk) => {
@@ -418,7 +457,7 @@ export function createStore(env) {
     };
     let child;
     try {
-      child = await host.spawn(PROCESS_ID, { args: [verb, slug], onStdout: feed, onStderr: () => {} });
+      child = await host.spawn(PROCESS_ID, { args: [verb, slug, ...extra], onStdout: feed, onStderr: () => {} });
     } catch (e) {
       return { rc: null, lines, error: msg(e) };
     }
@@ -435,7 +474,7 @@ export function createStore(env) {
   }
 
   // The outcome of one talos-buzz run, from its lines and its exit.
-  async function runOutcome(verb, slug) {
+  async function runOutcome(verb, slug, extra = []) {
     const out = { ok: false, busy: null, failure: null, noRoot: false };
     const res = await runVerb(verb, slug, (l) => {
       if (!l) return;
@@ -446,7 +485,7 @@ export function createStore(env) {
         if (l.reason === "root-invalid") out.noRoot = true;
         out.failure = { reason: l.reason, detail: "talos-buzz error=" + l.reason };
       }
-    });
+    }, extra);
     if (res.error !== undefined) {
       out.failure = { reason: "spawn", detail: "Couldn't run Talos: " + res.error };
     } else if (out.busy === null && !out.failure && !out.ok) {
@@ -584,6 +623,18 @@ export function createStore(env) {
   function forget(slug) { enqueue({ verb: "forget", slug }); }
   function openInBrowser(slug) { enqueue({ verb: "open", slug }); }
 
+  // One link in the system browser (#917). It spawns at once, outside the queue:
+  // it reads and writes nothing, so a running refresh must not delay a click.
+  async function openUrl(slug, url) {
+    const mine = gen;
+    const p = proj(slug);
+    p.openError = "";
+    const out = await runOutcome("open-url", slug, [url]);
+    if (mine !== gen) return;
+    if (!out.ok) p.openError = "Couldn't open the link in the browser: " + (out.failure.detail || out.failure.reason);
+    emit();
+  }
+
   async function poll() {
     if (!visible()) return;
     try {
@@ -635,7 +686,7 @@ export function createStore(env) {
 
   return {
     state, proj, subscribe, now, noRoot, loadRegistry, mount, unmount, retain, release,
-    showProjects, openProject, refresh, refreshAll, askForget, cancelForget, forget, openInBrowser,
+    showProjects, openProject, refresh, refreshAll, askForget, cancelForget, forget, openInBrowser, openUrl,
     isQueued: (slug) => queue.some((j) => j.verb === "refresh" && j.slug === slug),
   };
 }
@@ -797,13 +848,20 @@ function buildComponents(React, store) {
     return h("span", { className: "tmap-pill idle" }, "Idle" + (a ? " · map " + a + " old" : ""));
   }
 
-  function needRows(entry) {
+  function needRows(slug, entry) {
     const now = store.now();
     const rows = Array.isArray(entry.needs) ? entry.needs.slice(0, 3) : [];
     return rows.map((r, i) => {
       const a = ageSince(r.since, now);
       const detail = [r.why, r.next].filter(Boolean).join(" · ");
-      return h("a", { key: "need" + i, className: "tmap-link tmap-need", href: safeUrl(r.url), target: "_blank", rel: "noopener noreferrer" },
+      const url = safeUrl(r.url);
+      // The href stays for hover and copy; a click goes through the store (#917).
+      const open = (ev) => { if (ev && ev.preventDefault) ev.preventDefault(); if (url) store.openUrl(slug, url); };
+      return h("a", {
+        key: "need" + i, className: "tmap-link tmap-need", href: url, rel: "noopener noreferrer",
+        onClick: (ev) => { if (!ev || !ev.button) open(ev); },
+        onKeyDown: (ev) => { if (ev && ev.key === "Enter") open(ev); },
+      },
         h("span", { className: "tmap-num" }, "#" + r.issue),
         h("span", { className: "tmap-t" }, r.title || ""),
         h("span", { className: "tmap-k" }, [r.kind, a].filter(Boolean).join(" · ")),
@@ -828,7 +886,7 @@ function buildComponents(React, store) {
           chip(tiles.queued, "queued"),
           chip(tiles.merged_7d, "merged · 7 d"))),
     ];
-    const rows = needRows(entry);
+    const rows = needRows(slug, entry);
     if (rows.length || tiles.needs > 3) {
       const more = tiles.needs > 3
         ? h("button", { key: "more", type: "button", className: "tmap-btn tmap-linkbtn tmap-more", onClick: () => store.openProject(slug) },
@@ -839,6 +897,7 @@ function buildComponents(React, store) {
     if (!hasRoot(entry) || p.noRoot) parts.push(h("div", { key: "noroot", className: "tmap-msg warn" }, NO_ROOT_TEXT));
     if (!validFile(entry.file)) parts.push(h("div", { key: "refused", className: "tmap-msg err" }, "Refused: this project's map file name is not a plain .html name, so it is never read."));
     if (p.failure) parts.push(h("div", { key: "fail", className: "tmap-msg err" }, failureText(entry, p.failure)));
+    if (p.openError) parts.push(h("div", { key: "oerr", className: "tmap-msg err" }, p.openError));
     if (p.forgetError) parts.push(h("div", { key: "ferr", className: "tmap-msg err" }, p.forgetError));
     if (days > 0) {
       if (state.confirm === slug) {
@@ -908,7 +967,15 @@ function buildComponents(React, store) {
     if (p.raw === null) return note("Loading the map…");
     return h("div", { key: "framebox", className: "tmap-frame" },
       p.reading ? h("div", { key: "bar", className: "tmap-bar", role: "progressbar", "aria-label": "Reading " + providerOf(state.reg.entries[slug] || {}).name }) : null,
-      h("iframe", { key: "frame", title: "Talos project map: " + slug, sandbox: SANDBOX, srcDoc: p.frame }));
+      h("iframe", {
+        key: "frame", title: "Talos project map: " + slug, sandbox: SANDBOX, srcDoc: p.frame,
+        onLoad: (e) => {
+          const frame = e && (e.currentTarget || e.target);
+          let doc = null;
+          try { doc = frame && frame.contentDocument; } catch (err) { /* not reachable: nothing to attach */ }
+          if (doc) attachFrameClicks(doc, (url) => store.openUrl(slug, url));
+        },
+      }));
   }
 
   function ProjectView() {
