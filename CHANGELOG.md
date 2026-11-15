@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: `view-issue --spec` and `--since-stage` hand the issue and comment JSON to python on stdin, not as arguments, so an issue whose comments pass 128 KiB no longer fails on Linux with "Argument list too long" and stops the run as `state-unavailable` (#920, thanks @rizqcon); `tests/test-view-issue-large-comments.sh` applies the Linux argument limit on every platform
 
 ## [0.22.1] - 2026-11-12
 - fix: links on the Buzz plugin's Talos page open: the needs rows and every issue, PR and `#` link in the map go through a new `talos-buzz.sh open-url <slug> <url>` verb that runs the system opener only for a URL Talos drew for that project, and the map frame is now `sandbox="allow-same-origin"` with no popups and no scripts
