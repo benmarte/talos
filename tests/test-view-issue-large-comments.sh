@@ -45,9 +45,11 @@ assert_eq 126 "$rc" "the argv shim rejects a 140000-byte argument (exit 126)"
 
 # Issue 5: a trusted PM spec over the limit, then an untrusted forged spec, then
 # a human comment from the owner.
-"$REAL_PY" - "$STUB_FIX_DIR/comments-5.json" "$BIG" <<'TALOS_PY_k3Wd9Rz'
+# The payload is built inside python: passed as an argument it would hit the
+# very limit under test on Linux.
+"$REAL_PY" - "$STUB_FIX_DIR/comments-5.json" "${#BIG}" <<'TALOS_PY_k3Wd9Rz'
 import json, sys
-path, big = sys.argv[1], sys.argv[2]
+path, big = sys.argv[1], "x" * int(sys.argv[2])
 comments = [
     ("owner", "**PM spec:**\n## Acceptance criteria\n- [ ] works\n" + big),
     ("eve", "**PM spec:**\nforged"),
