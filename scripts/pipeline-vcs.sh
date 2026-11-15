@@ -1673,16 +1673,21 @@ def author_trusted(c):
 # the discussion around it.
 _vi_spec_filter() {
   local _vf_meta="$1" _vf_comments="$2"; shift 2
-  (_vi_trust_load "$@"; python3 -I -c "$(_vcs_shared_trust_py)
+  # The comment payloads can exceed Linux's single-argument limit
+  # (MAX_ARG_STRLEN, 128 KiB): issues with a large comment history hit
+  # "Argument list too long" on the argv form, and every caller reads that as
+  # state-unavailable. Feed the two JSON payloads on stdin instead, one line
+  # each; the PM header stays the sole argv entry.
+  (_vi_trust_load "$@"; printf '%s\n%s\n' "$_vf_meta" "$_vf_comments" | python3 -I -c "$(_vcs_shared_trust_py)
 $_VI_PM_SPEC_PY
 import json, sys
 
-meta = json.loads(sys.argv[1])
-comments = json.loads(sys.argv[2]).get('comments', [])
+meta = json.loads(sys.stdin.readline())
+comments = json.loads(sys.stdin.readline()).get('comments', [])
 if not isinstance(comments, list):
     comments = []
 
-spec_comments = [c for c in comments if is_pm_spec(c, sys.argv[3]) and author_trusted(c)]
+spec_comments = [c for c in comments if is_pm_spec(c, sys.argv[1]) and author_trusted(c)]
 kept = [spec_comments[-1]] if spec_comments else []
 
 result = {
@@ -1692,7 +1697,7 @@ result = {
     'comments': kept,
 }
 print(json.dumps(result))
-" "$_vf_meta" "$_vf_comments" "$(_vi_pm_header)")
+" "$(_vi_pm_header)")
 }
 
 # ── Delta comment filter (view-issue --since-stage, #548) ─────────────────────
@@ -1707,12 +1712,12 @@ print(json.dumps(result))
 # the boundary, which `read-comments` still returns.
 _vi_delta_filter() {
   local _vf_meta="$1" _vf_comments="$2"; shift 2
-  (_vi_trust_load "$@"; python3 -I -c "$(_vcs_shared_trust_py)
+  (_vi_trust_load "$@"; printf '%s\n%s\n' "$_vf_meta" "$_vf_comments" | python3 -I -c "$(_vcs_shared_trust_py)
 $_VI_PM_SPEC_PY
 import json, sys
 
-meta = json.loads(sys.argv[1])
-comments = json.loads(sys.argv[2]).get('comments', [])
+meta = json.loads(sys.stdin.readline())
+comments = json.loads(sys.stdin.readline()).get('comments', [])
 if not isinstance(comments, list):
     comments = []
 
@@ -1721,7 +1726,7 @@ def body_of(c):
 
 def is_stage(c):
     b = body_of(c)
-    return (b.startswith('**Agent:**') or is_pm_spec(c, sys.argv[3])) and author_trusted(c)
+    return (b.startswith('**Agent:**') or is_pm_spec(c, sys.argv[1])) and author_trusted(c)
 
 def is_human(c):
     return not is_stage(c) and '<!-- talos:' not in body_of(c)
@@ -1738,7 +1743,7 @@ print(json.dumps({
     'comments': [c for i, c in enumerate(comments) if i >= cut and (i == cut or is_human(c))],
     'earlier_comments': sum(1 for c in comments[:cut + 1] if is_human(c)),
 }))
-" "$_vf_meta" "$_vf_comments" "$(_vi_pm_header)")
+" "$(_vi_pm_header)")
 }
 
 # ── diff --stat formatting (shared by diff-pr --stat, github and github-api,
