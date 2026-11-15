@@ -61,10 +61,10 @@ Two optional files on your base branch tell the stages what you know about the r
 `install.sh --global` wires Claude Code's status line to `scripts/talos-status.sh` (an existing one is chained, shown above the Talos line, and `--statusline-undo` restores it), which reads the local events log (no network call, no model tokens):
 
 ```
-talos #7 qa ●●●●◐○ 3.41M · cache read 48.20M · map · board
+talos #7 qa ●●●●◐○ 3.41M · cache read 48.20M · dashboard ↗ · board ↗
 ```
 
-One dot per stage (validator, pm, developer, review, qa, merge): done, running, pending, then the tokens spent on the issue so far, then its cache reads, which are not part of that total (the part is absent when no run recorded them). The line ends with clickable [OSC 8](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda) `map` (the project map page) and `board` links, built offline; `board` needs the optional `board.url` on GitHub (Azure DevOps and GitLab derive it), and `TALOS_STATUSLINE_LINKS=0` turns the links off. In a repo with a Talos config and no active issue it prints `talos idle` plus the links. Other harnesses can call `talos-status.sh --line` from their footer hook. After a cleared session or an LLM switch, run `/talos:pipeline` (or `talos.sh run`) again: the work is resumed from GitHub labels, the PR and the events log, with no extra file to maintain. See [Hooks, events, spend and the status line](docs/reference.md#hooks-events-spend-and-the-status-line).
+One dot per stage (validator, pm, developer, review, qa, merge): done, running, pending, then the tokens spent on the issue so far, then its cache reads, which are not part of that total (the part is absent when no run recorded them). The line ends with clickable [OSC 8](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda) `dashboard ↗` (the project map page) and `board ↗` links, built offline; `board` needs the optional `board.url` on GitHub (Azure DevOps and GitLab derive it), and `TALOS_STATUSLINE_LINKS=0` turns the links off. In a repo with a Talos config and no active issue it prints `talos idle` plus the links. Other harnesses can call `talos-status.sh --line` from their footer hook. After a cleared session or an LLM switch, run `/talos:pipeline` (or `talos.sh run`) again: the work is resumed from GitHub labels, the PR and the events log, with no extra file to maintain. See [Hooks, events, spend and the status line](docs/reference.md#hooks-events-spend-and-the-status-line).
 
 A repository driven by hand from a Claude Code session (stage agents dispatched as subagents, no `talos.sh run`) gets its tokens into the status line, the map and `cost` through the plugin's `SubagentStop` hook, or by running `pipeline-events.sh import-usage` over the session's transcripts; the map shows `not recorded`, never 0, when nothing was recorded (see [the events log](docs/reference.md#the-events-log)).
 
@@ -78,7 +78,7 @@ Every repository Talos works on gets a one-page map in your browser: what needs 
 
 **Opening it:**
 
-- **From the status line:** the Talos status line ends with a clickable `map` link (see [Status line](#status-line)). Cmd-click it (Ctrl-click on Linux) in any terminal that supports links, such as iTerm2, Ghostty, WezTerm, kitty or VS Code.
+- **From the status line:** the Talos status line ends with a clickable `dashboard ↗` link (see [Status line](#status-line)). Cmd-click it (Ctrl-click on Linux) in any terminal that supports links, such as iTerm2, Ghostty, WezTerm, kitty or VS Code.
 - **By hand:** run `talos.sh map` in the repo. It prints the page's path:
   - `~/.talos/maps/<owner>-<name>.html` is this repo's map;
   - `~/.talos/maps/index.html` links every repo's map.

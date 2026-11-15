@@ -32,6 +32,9 @@ BASE="talos #7 reviewer ●○○○ 2k"
 
 # osc URL TEXT -- the OSC 8 link, ST being ESC followed by a backslash.
 osc() { printf '%s]8;;%s%s\\%s%s]8;;%s\\' "$ESC" "$1" "$ESC" "$2" "$ESC" "$ESC"; }
+# The link texts (#883 labels, renamed: the map link reads as a dashboard, both carry an arrow).
+DASH='dashboard ↗'
+BOARD='board ↗'
 # norm PATH -- the path as the script prints it: a doubled slash (TMPDIR ending in /) collapsed.
 norm() { printf '%s' "${1//\/\///}"; }
 fileurl() { printf 'file://%s/maps/%s' "$(norm "$TALOS_HOME")" "$1"; }
@@ -76,17 +79,17 @@ reset
 set_cfg '{"vcs": {"provider": "github", "repo": "acme/widget"}}'
 set_map acme/widget acme-widget.html
 run_status --line
-assert_eq "$BASE · $(osc "$(fileurl acme-widget.html)" map)" "$OUT" "AC1 the line ends with the map as an OSC 8 link to the file URL"
+assert_eq "$BASE · $(osc "$(fileurl acme-widget.html)" "$DASH")" "$OUT" "AC1 the line ends with the map as an OSC 8 link to the file URL"
 assert_eq "0" "$RC" "AC1 exit 0"
 assert_contains "$OUT" "${ESC}]8;;file://" "AC1 the link starts with ESC ] 8 ; ; file://"
-assert_contains "$OUT" "${ESC}\\map${ESC}]8;;${ESC}\\" "AC1 the text is closed with ESC \\ (ST), not BEL"
+assert_contains "$OUT" "${ESC}\\${DASH}${ESC}]8;;${ESC}\\" "AC1 the text is closed with ESC \\ (ST), not BEL"
 
 # the entry is found from the remote when the config names no repo
 reset
 set_cfg '{"vcs": {"provider": "github"}}'
 set_map acme/widget acme-widget.html
 run_status --line
-assert_eq "$BASE · $(osc "$(fileurl acme-widget.html)" map)" "$OUT" "AC1 the repo comes from the origin remote when the config has none"
+assert_eq "$BASE · $(osc "$(fileurl acme-widget.html)" "$DASH")" "$OUT" "AC1 the repo comes from the origin remote when the config has none"
 
 # no entry, no file, a bad name, an entry for another repo
 reset
@@ -118,7 +121,7 @@ TALOS_HOME="$SANDBOX/th space"
 export TALOS_HOME
 set_map acme/widget acme-widget.html
 run_status --line
-assert_eq "$BASE · $(osc "file://$(norm "$SANDBOX")/th%20space/maps/acme-widget.html" map)" "$OUT" "AC1 the file URL is percent-encoded"
+assert_eq "$BASE · $(osc "file://$(norm "$SANDBOX")/th%20space/maps/acme-widget.html" "$DASH")" "$OUT" "AC1 the file URL is percent-encoded"
 rm -rf "$TALOS_HOME"
 TALOS_HOME="$SAVE_TH"
 export TALOS_HOME
@@ -128,23 +131,23 @@ for prov in github gitlab azure; do
   reset
   set_cfg '{"vcs": {"provider": "'"$prov"'"}, "board": {"url": "https://example.com/b/1"}}'
   run_status --line
-  assert_eq "$BASE · $(osc https://example.com/b/1 board)" "$OUT" "AC2 board.url gives the board link ($prov)"
+  assert_eq "$BASE · $(osc https://example.com/b/1 "$BOARD")" "$OUT" "AC2 board.url gives the board link ($prov)"
 done
 
 reset
 mkdir -p "$TALOS_HOME"
 printf '%s\n' '{"board": {"url": "http://example.com/global"}}' > "$TALOS_HOME/talos.pipeline.json"
 run_status --line
-assert_eq "$BASE · $(osc http://example.com/global board)" "$OUT" "AC2 board.url from the global config"
+assert_eq "$BASE · $(osc http://example.com/global "$BOARD")" "$OUT" "AC2 board.url from the global config"
 set_cfg '{"board": {"url": "https://example.com/project"}}'
 run_status --line
-assert_eq "$BASE · $(osc https://example.com/project board)" "$OUT" "AC2 the project's board.url wins over the global one"
+assert_eq "$BASE · $(osc https://example.com/project "$BOARD")" "$OUT" "AC2 the project's board.url wins over the global one"
 
 reset
 set_cfg '{"vcs": {"provider": "github", "repo": "acme/widget"}, "board": {"url": "https://example.com/b/1"}}'
 set_map acme/widget acme-widget.html
 run_status --line
-assert_eq "$BASE · $(osc "$(fileurl acme-widget.html)" map) · $(osc https://example.com/b/1 board)" "$OUT" "AC2 map first, then board"
+assert_eq "$BASE · $(osc "$(fileurl acme-widget.html)" "$DASH") · $(osc https://example.com/b/1 "$BOARD")" "$OUT" "AC2 map first, then board"
 
 for bad in 'ftp://example.com/b' 'javascript:alert(1)' 'https://exa mple.com' 'example.com/board' 'https://example.com/\u001b[31m' 'https://example.com/\u0007x' 'https://example.com/\u009bx' ''; do
   reset
@@ -162,13 +165,13 @@ reset
 set_remote https://gitlab.example.com/grp/proj.git
 set_cfg '{"vcs": {"provider": "gitlab"}, "board": {"url": "https://example.com/mine"}}'
 run_status --line
-assert_eq "$BASE · $(osc https://example.com/mine board)" "$OUT" "AC2 board.url overrides the derived GitLab URL"
+assert_eq "$BASE · $(osc https://example.com/mine "$BOARD")" "$OUT" "AC2 board.url overrides the derived GitLab URL"
 
 # ── AC3 derived board URLs ──────────────────────────────────────────────────
 reset
 set_cfg '{"vcs": {"provider": "azure", "azure": {"org_url": "https://dev.azure.com/acme/", "project": "My Proj"}}, "board": {"azure_team": "My Team", "azure_board": "Stories/Epics"}}'
 run_status --line
-assert_eq "$BASE · $(osc 'https://dev.azure.com/acme/My%20Proj/_boards/board/t/My%20Team/Stories%2FEpics' board)" "$OUT" "AC3 Azure DevOps board URL, project, team and board percent-encoded"
+assert_eq "$BASE · $(osc 'https://dev.azure.com/acme/My%20Proj/_boards/board/t/My%20Team/Stories%2FEpics' "$BOARD")" "$OUT" "AC3 Azure DevOps board URL, project, team and board percent-encoded"
 for drop in team board; do
   reset
   if [ "$drop" = team ]; then
@@ -192,11 +195,11 @@ reset
 set_remote https://tok3n:s3cret@gitlab.example.com/grp/sub/proj.git
 set_cfg '{"vcs": {"provider": "gitlab"}}'
 run_status --line
-assert_eq "$BASE · $(osc https://gitlab.example.com/grp/sub/proj/-/boards board)" "$OUT" "AC3 GitLab board URL from the origin: subgroups kept, credentials and .git dropped"
+assert_eq "$BASE · $(osc https://gitlab.example.com/grp/sub/proj/-/boards "$BOARD")" "$OUT" "AC3 GitLab board URL from the origin: subgroups kept, credentials and .git dropped"
 assert_not_contains "$OUT" "s3cret" "AC3 no credential reaches the line"
 set_remote git@gitlab.example.com:grp/proj.git
 run_status --line
-assert_eq "$BASE · $(osc https://gitlab.example.com/grp/proj/-/boards board)" "$OUT" "AC3 GitLab board URL from an ssh remote"
+assert_eq "$BASE · $(osc https://gitlab.example.com/grp/proj/-/boards "$BOARD")" "$OUT" "AC3 GitLab board URL from an ssh remote"
 
 reset
 BELL=$'\007'
@@ -215,7 +218,7 @@ reset
 set_cfg '{"vcs": {"provider": "github", "repo": "acme/widget"}, "board": {"enabled": false, "url": "https://example.com/b/1"}}'
 set_map acme/widget acme-widget.html
 run_status --line
-assert_eq "$BASE · $(osc "$(fileurl acme-widget.html)" map)" "$OUT" "AC4 board.enabled false: no board part, the map stays"
+assert_eq "$BASE · $(osc "$(fileurl acme-widget.html)" "$DASH")" "$OUT" "AC4 board.enabled false: no board part, the map stays"
 
 # ── AC5 no network call ─────────────────────────────────────────────────────
 reset
@@ -245,7 +248,7 @@ assert_file_absent "$SANDBOX/curl.ran" "AC5 curl did not run (idle line)"
 reset
 set_cfg '{"vcs": {"provider": "github", "repo": "acme/widget"}, "board": {"url": "https://example.com/b/1"}}'
 set_map acme/widget acme-widget.html
-IDLE="talos idle · $(osc "$(fileurl acme-widget.html)" map) · $(osc https://example.com/b/1 board)"
+IDLE="talos idle · $(osc "$(fileurl acme-widget.html)" "$DASH") · $(osc https://example.com/b/1 "$BOARD")"
 rm -f "$LOG"
 run_status --line
 assert_eq "$IDLE" "$OUT" "AC6 no log: the idle line with the links"
@@ -335,14 +338,14 @@ mkdir -p "$TH/maps"
 printf '%s\n' '{"acme/widget": {"file": "acme-widget.html"}}' > "$TH/maps/index.json"
 : > "$TH/maps/acme-widget.html"
 chain_vs_direct "links"
-assert_contains "$CHAIN_DIRECT" "${ESC}]8;;file://$(norm "$TH")/maps/acme-widget.html${ESC}\\map" "AC8 the line under test carries the map link"
+assert_contains "$CHAIN_DIRECT" "${ESC}]8;;file://$(norm "$TH")/maps/acme-widget.html${ESC}\\${DASH}" "AC8 the line under test carries the map link"
 assert_contains "$CHAIN_DIRECT" "${ESC}]8;;https://example.com/b/1${ESC}\\board" "AC8 the line under test carries the board link"
 
 # a malformed index, a malformed config, an unreadable remote: the rest of the line prints
 printf '%s\n' '{not json' > "$TH/maps/index.json"
 chain_vs_direct "malformed index"
 assert_contains "$CHAIN_DIRECT" "$BASE" "AC8 a malformed index: the line still prints"
-assert_not_contains "$CHAIN_DIRECT" "map" "AC8 a malformed index: no map part"
+assert_not_contains "$CHAIN_DIRECT" "$DASH" "AC8 a malformed index: no map part"
 printf '%s\n' '[1, 2' > "$SANDBOX/talos.pipeline.json"
 chain_vs_direct "malformed config"
 assert_eq "$BASE" "$CHAIN_DIRECT" "AC8 a malformed config: the issue line, no links"

@@ -990,7 +990,7 @@ A Projects v2 board with a single-select `Status` field mirrors progress. Keys (
 | `board.status_field` | Field name (`PIPELINE_STATUS_FIELD`) |
 | `board.status_map.<status>` | Map a pipeline status to your column |
 | `board.stage_label` | `true` shows the issue's current Talos stage on its card as a `talos:stage:<role>` label; default `false` (see below) |
-| `board.url` | The board's web URL (`http://` or `https://`), shown as the `board` link of [the status line](#the-status-line); it replaces the URL derived for Azure DevOps and GitLab, and GitHub needs it (the owner's type, org or user, is not in the config). Nothing else reads it |
+| `board.url` | The board's web URL (`http://` or `https://`), shown as the `board ↗` link of [the status line](#the-status-line); it replaces the URL derived for Azure DevOps and GitLab, and GitHub needs it (the owner's type, org or user, is not in the config). Nothing else reads it |
 
 **Stage label (`board.stage_label`).** The board's Status column has four values, so "In review" covers reviewer, security, docs and QA. With `board.stage_label: true`, `talos.sh prompt` (the point that writes `stage_start`) gives the issue exactly one of `talos:stage:validator`, `pm`, `developer`, `reviewer`, `security`, `adversarial`, `docs` or `qa`: it adds the new stage's label and removes the other seven, so a card shows where the run is. `planner` and `threat` get no marker. A BLOCKED, FAIL, CHANGES or FINDINGS verdict keeps the label, so a blocked card shows the stage it stopped in. A merge that closes the issue removes them all; a "Part of" merge leaves the label for the next stage start. The labels are display only: no routing code reads them, and they are not in the `pipeline:*` or approval label sets. `bootstrap-labels.sh` creates them. It is independent of `board.enabled` and works on every provider that has `label-issue`. It is off by default because each stage start adds label writes (on GitHub one POST plus seven DELETEs, a 404 ignored; cf. #554) and a closing merge adds the removals. A failed write is `warn reason=stage-label-failed issue=<n>` and never blocks the stage.
 
@@ -1707,16 +1707,16 @@ Exit 1 means exceeded (0 for ok, warn, unknown and guard off), so a `set -e` cal
 `scripts/talos-status.sh --line` prints one line from the events log, offline and free of model tokens, always exit 0:
 
 ```
-talos #7 qa ●●●●◐○ 3.41M · cache read 48.20M · map · board
-talos idle · map · board
+talos #7 qa ●●●●◐○ 3.41M · cache read 48.20M · dashboard ↗ · board ↗
+talos idle · dashboard ↗ · board ↗
 ```
 
 With no active issue (no log, an empty log, a merged issue or an `events.path` that leaves the git common dir) it prints `talos idle` in a repo that has a Talos config (a `talos.pipeline.json` at the git toplevel or in `${TALOS_HOME:-~/.talos}`), and nothing in a repo without one or outside a git repo.
 
-**Links.** `map` and `board` are [OSC 8](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda) hyperlinks, offline like the rest of the line (no `gh` or `curl` call); each part is left out when it has no target:
+**Links.** `dashboard ↗` and `board ↗` are [OSC 8](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda) hyperlinks, offline like the rest of the line (no `gh` or `curl` call); each part is left out when it has no target:
 
-- `map` opens `file://<TALOS_HOME>/maps/<file>`, the project map page. `<file>` is the entry for this repo in `<TALOS_HOME>/maps/index.json` (the registry `talos-map.py` writes, [Project map](#project-map)), and the part shows only when that file exists.
-- `board` opens `board.url` when it is an `http(s)` URL (any provider). Without it, Azure DevOps builds `<vcs.azure.org_url>/<vcs.azure.project>/_boards/board/t/<board.azure_team>/<board.azure_board>` (each part percent-encoded; all four keys must be set) and GitLab builds `<repo web URL>/-/boards` from the origin remote (credentials and `.git` dropped, subgroups kept). A GitHub repo has no derived link: set `board.url`. `board.enabled: false` removes the part.
+- `dashboard ↗` opens `file://<TALOS_HOME>/maps/<file>`, the project map page. `<file>` is the entry for this repo in `<TALOS_HOME>/maps/index.json` (the registry `talos-map.py` writes, [Project map](#project-map)), and the part shows only when that file exists.
+- `board ↗` opens `board.url` when it is an `http(s)` URL (any provider). Without it, Azure DevOps builds `<vcs.azure.org_url>/<vcs.azure.project>/_boards/board/t/<board.azure_team>/<board.azure_board>` (each part percent-encoded; all four keys must be set) and GitLab builds `<repo web URL>/-/boards` from the origin remote (credentials and `.git` dropped, subgroups kept). A GitHub repo has no derived link: set `board.url`. `board.enabled: false` removes the part.
 - `TALOS_STATUSLINE_LINKS=0` prints the line without the link parts (and so without any escape byte); any other value or none shows them.
 
 OSC 8 links are clickable in iTerm2, Kitty, WezTerm and other OSC 8 terminals; Terminal.app shows the text with no link; tmux strips OSC 8 unless hyperlinks are allowed (`set -ga terminal-features "*:hyperlinks"`). A terminal that prints the escape codes literally needs `TALOS_STATUSLINE_LINKS=0`.
