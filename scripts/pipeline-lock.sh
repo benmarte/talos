@@ -22,13 +22,14 @@
 # Ownership token: an acquire writes "<pid>:<seq>" into "<lockdir>/pid", and a
 # release removes the lock dir only if that token is still on disk, so a stale
 # exit hook from an earlier acquisition can never destroy another holder's lock.
-# Staleness: a lock whose pid is no longer a running process is reclaimed,
-# atomically: the waiter renames the lock dir to a unique
-# "<lockdir>.reclaim.<pid>.<rand>", verifies the pid inside is the dead holder
-# it checked, deletes the renamed dir only then, and otherwise restores the lock
-# and keeps waiting (a live holder took it after the check). Residual window:
-# between the rename and the restore the lock dir is absent, so a third process
-# can mkdir it and the restored-over lock is dropped.
+# Staleness: a lock whose pid is no longer a running process is reclaimed
+# (#871, #923). The lock dir is never moved: a waiter that finds the holder
+# dead takes the gate "<lockdir>.reclaim" (mkdir), re-reads the pid file under
+# it, and deletes the lock only if it still holds the dead holder's token. Only
+# that holder (dead) or a gated reclaimer can remove a lock, so a stale reading
+# -- the lock changed hands after the check -- is a no-op, and a live lock is
+# never absent for a third process to mkdir. A gate over a minute old is left
+# by a reclaimer that died inside it and is cleared.
 # Only EXIT is trapped (it also fires on SIGINT/SIGTERM; a trap of their own
 # would stop bash terminating). The release hook uses _talos_on_exit from
 # pipeline-cfg-cache.sh when loaded, else a minimal registry defined below.
@@ -55,9 +56,10 @@ _LOCK_TOKEN_SEQ=0
 
 # _lock_acquire RESOURCE TIMEOUT_S
 _lock_acquire() {
-  local resource="$1" timeout="${2:-5}" lockdir pidfile tries max_tries holder holder_pid token reclaim
+  local resource="$1" timeout="${2:-5}" lockdir pidfile tries max_tries holder holder_pid token gate
   lockdir="$(_lock_dir_for "$resource")"
   pidfile="$lockdir/pid"
+  gate="$lockdir.reclaim"
   case "$timeout" in ''|*[!0-9]*) timeout=5 ;; esac
   max_tries=$((timeout * 5))   # spin at 0.2s intervals
   [ "$max_tries" -lt 1 ] && max_tries=1
@@ -77,28 +79,24 @@ _lock_acquire() {
       holder="$(cat "$pidfile" 2>/dev/null || true)"
       holder_pid="${holder%%:*}"
       if [ -n "$holder_pid" ] && ! kill -0 "$holder_pid" 2>/dev/null; then
-        # Atomic reclaim (#871): the lock may have changed hands since the
-        # holder was read, so never rm -rf "$lockdir" on that stale reading.
-        # Rename it to a unique name first (atomic on one filesystem; it fails
-        # if the lock is already gone), read the pid inside the renamed dir,
-        # and delete it only if that is the dead holder checked above.
-        reclaim="$lockdir.reclaim.$$.$RANDOM"
-        if ! mv "$lockdir" "$reclaim" 2>/dev/null; then
-          continue    # it changed or vanished: retry mkdir
-        fi
-        if [ "$(cat "$reclaim/pid" 2>/dev/null || true)" = "$holder" ]; then
-          rm -rf "$reclaim" 2>/dev/null || true
+        # Gated reclaim (#923): the lock may have changed hands since the
+        # holder was read, so act only under the gate and only if the pid file
+        # still holds that dead holder's token. Tokens are unique (pid:seq),
+        # nobody else can remove this lock meanwhile, and the lock dir is never
+        # moved, so it is never absent while a live process holds it.
+        if mkdir "$gate" 2>/dev/null; then
+          if [ "$(cat "$pidfile" 2>/dev/null || true)" = "$holder" ]; then
+            rm -rf "$lockdir" 2>/dev/null || true
+          fi
+          rmdir "$gate" 2>/dev/null || true
           continue    # retry mkdir immediately, doesn't count as a wait
         fi
-        # A live lock: put it back (only while "$lockdir" is absent; mv would
-        # otherwise nest it inside) and keep waiting. Residual window: between
-        # the rename and the restore "$lockdir" is absent, so a third process
-        # can mkdir it; the renamed lock is then dropped and its holder loses
-        # mutual exclusion (its release is a no-op).
-        if [ ! -e "$lockdir" ]; then
-          mv "$reclaim" "$lockdir" 2>/dev/null || true
+        # Another reclaimer holds the gate; clear it only when it is over a
+        # minute old (its owner died inside it -- a reclaim takes milliseconds).
+        if [ -n "$(find "$gate" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+          rmdir "$gate" 2>/dev/null || true
+          continue
         fi
-        rm -rf "$reclaim" 2>/dev/null || true
       fi
     fi
     tries=$((tries + 1))
