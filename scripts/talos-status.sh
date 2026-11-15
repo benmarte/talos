@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # talos-status.sh -- the harness status line (#385, simplified by #550).
 #
-#   talos #7 qa ●●●●◐○ 3.41M · cache read 48.20M · map · board
-#   talos idle · map · board
+#   talos #7 qa ●●●●◐○ 3.41M · cache read 48.20M · dashboard ↗ · board ↗
+#   talos idle · dashboard ↗ · board ↗
 #
 # Usage: talos-status.sh [--line]
 #
@@ -49,10 +49,11 @@
 # Which issue: the current branch (^(fix|feat)/issue-<N>), else the newest event's.
 # An issue with a `merged` event is no longer active: the idle line.
 #
-# Links (#883): the line ends with ` · map` and ` · board`, OSC 8 hyperlinks
-# (ESC ] 8 ; ; URL ESC \ text ESC ] 8 ; ; ESC \), on the issue line and the idle
-# line.
-#   map    file://<TALOS_HOME>/maps/<file>, the page talos-map.py renders for this
+# Links (#883): the line ends with ` · dashboard ↗` and ` · board ↗`, OSC 8
+# hyperlinks (ESC ] 8 ; ; URL ESC \ text ESC ] 8 ; ; ESC \), on the issue line
+# and the idle line. The arrow tells the reader the word is a link.
+#   dashboard (the project map)
+#          file://<TALOS_HOME>/maps/<file>, the page talos-map.py renders for this
 #          repo: <file> is the entry talos-map.py's locate() names in
 #          <TALOS_HOME>/maps/index.json, shown only when that file exists.
 #   board  board.url when it is an http(s) URL; else Azure DevOps
@@ -207,7 +208,7 @@ def role_on(role):
     return v if isinstance(v, bool) else DEFAULT_ON[role]
 
 
-# ── the links (#883): ` · map` and ` · board`, OSC 8, from local records only ─
+# ── the links (#883): ` · dashboard ↗` and ` · board ↗`, OSC 8, local records only ─
 def osc(url, text):
     return "\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\" % (url, text)
 
@@ -262,7 +263,7 @@ def link_parts():
     provider, repo = text(vcs.get("provider")), text(vcs.get("repo")) or text(cfg.get("repo"))
     az = vcs.get("azure") if isinstance(vcs.get("azure"), dict) else {}
     out = ""
-    for word, build in (("map", map_url), ("board", board_url)):
+    for word, build in (("dashboard ↗", map_url), ("board ↗", board_url)):
         try:
             url = build(provider, repo, az)
         except Exception as e:
