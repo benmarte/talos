@@ -195,6 +195,16 @@ claude plugin marketplace add benmarte/talos
 claude plugin install talos@talos
 ```
 
+### Upgrading from v0.22.1
+
+v0.22.2 is a patch with three fixes. Re-run `bash install.sh --global`. The Buzz plugin is unchanged, so it does not need to be loaded again.
+
+- `view-issue --spec` and `--since-stage` hand the issue and comment JSON to python on stdin (#920, #921, contributed by @rizqcon). On Linux, an issue whose comments passed 128 KiB failed with "Argument list too long", and the run stopped as `state-unavailable`. What they return is unchanged.
+- `pipeline-lock.sh` no longer moves a live lock while it reclaims a dead holder's lock (#923). A third process could get in beside the holder, which is the lost update `tests/test-lock.sh` kept showing after #871. Reclaimers now take a `<lockdir>.reclaim` gate. A gate left by a reclaimer that crashed is cleared after a minute.
+- The status line's links read `dashboard ↗` (was `map`) and `board ↗` (was `board`), so they look clickable (#922). Their targets are unchanged.
+
+Every change is listed in [CHANGELOG.md](../CHANGELOG.md).
+
 ### Upgrading from v0.22.0
 
 v0.22.1 fixes links on the Buzz plugin's Talos page (#917). Re-run `bash install.sh --global`, then load `~/.talos/buzz-plugin` again in Buzz (Settings → Plugins → Manage plugins → Load from folder).
