@@ -243,3 +243,9 @@ Three ideas taken from an agent-fleet guide (done-in-one-line per stage, per-rol
 
 - **A second failure of the same "flaky" test is a bug to investigate, not a rerun.** `tests/test-lock.sh` lost an update in CI on 2026-11-08 and I only reran it. It failed again on the v0.20.0 release PR; reading `pipeline-lock.sh` showed a real race in the dead-holder reclaim (#871). On the second failure of a test, read the code under test before rerunning.
 - **An issue found during a release goes back to the owner before the tag.** Ben's rule is that a release waits until every issue is closed. I filed #871 mid-release, judged it non-blocking because it was old, and tagged anyway. Ask first: release now with it open, or fix it first.
+
+## 2026-11-15: a Linux-limit test that only ran on macOS
+
+- **A test for a Linux-only limit must run on Linux before it is called verified.** For #920 (E2BIG past 128 KiB) I wrote `tests/test-view-issue-large-comments.sh` with a python3 shim that applies the limit, saw it pass on macOS and fail against main, and pushed it. On CI the fixture writer itself passed the 140 KB string as an argument to python and hit the real E2BIG, so the test failed. Run such tests in `docker run --rm -v <repo>:/repo:ro -w /repo python:3-slim bash tests/<file>` before pushing, and build large fixtures inside the interpreter, never via argv.
+- **A new test file needs a `tests/timings.txt` line** (`test-shard-weights.sh` W1 fails without it). Add it in name order in the same commit as the test.
+- **Approve a fork PR's CI runs only after reading every changed file**, and check no workflow file is in `gh pr diff <n> --name-only`.
