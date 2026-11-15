@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: `pipeline-lock.sh` no longer moves a live lock while reclaiming a dead holder's: reclaimers take a `<lockdir>.reclaim` gate, re-read the pid file under it and remove the lock only if the dead holder still owns it, so a third waiter can never enter beside the holder (the lost updates `tests/test-lock.sh` kept showing in CI after #871); a gate left by a crashed reclaimer is cleared after a minute (#923)
 
 ## [0.22.1] - 2026-11-12
 - fix: links on the Buzz plugin's Talos page open: the needs rows and every issue, PR and `#` link in the map go through a new `talos-buzz.sh open-url <slug> <url>` verb that runs the system opener only for a URL Talos drew for that project, and the map frame is now `sandbox="allow-same-origin"` with no popups and no scripts
