@@ -1052,9 +1052,12 @@ _vcs_ref_fail() {
 # _vcs_ref_checks_judge <required> <table>: <table> is the resolved sha's checks
 # in the pr-checks shape (name TAB pass|fail|pending|skipping|cancel TAB elapsed
 # TAB url). Prints the rows of required checks (exact names) and judges them as
-# pr-checks-required does (cancel is a fail, skipping is pending): 0, 1 or 2.
+# pr-checks-required does (cancel is a fail, skipping is pending): 0, 1 or 2,
+# returned as _VCS_REF_JUDGED + that verdict. Only this offset tells the dispatch
+# a verdict from a provider that could not start (exit 1, no judgement).
+_VCS_REF_JUDGED=10
 _vcs_ref_checks_judge() {
-  local _rows
+  local _rows _rc
   _rows="$(printf '%s\n' "$2" | python3 -I -c '
 import sys
 required = {l.strip() for l in sys.argv[1].splitlines() if l.strip()}
@@ -1066,6 +1069,9 @@ for line in sys.stdin:
   [ -z "$_rows" ] || printf '%s\n' "$_rows"
   printf '%s\n' "$_rows" | awk -F'\t' 'NF >= 2 { s = ($2 == "pass") ? "pass" : (($2 == "pending" || $2 == "skipping") ? "pending" : "fail"); print $1 "\t" s }' \
     | _eval_required_checks "$1"
+  _rc=$?
+  case "$_rc" in 0 | 1 | 2) return $((_VCS_REF_JUDGED + _rc)) ;; esac
+  _vcs_ref_fail "could not judge the checks (exit $_rc)"
 }
 
 # ── Retry-with-backoff (#173) ─────────────────────────────────────────────────
@@ -12294,11 +12300,25 @@ _vcs_pr_checks_required_dispatch() {
 # run here, before any provider's pre-flight: one valid ref, and a non-empty
 # merge.required_checks (unlike pr-checks-required there is no pipeline or policy
 # fallback). Either failing is exit 3. Then the provider's arm judges the ref.
+# Only a verdict of _vcs_ref_checks_judge is 0, 1 or 2, and only then is stdout
+# printed; any other exit (a provider that cannot start: no token, no CLI, an
+# unknown provider) is 3, never 1, which the queue would read as a red batch.
 _vcs_ref_checks_required_dispatch() {
+  local _rk_out _rk_rc
   [ "${#ARGS[@]}" -eq 1 ] || _vcs_ref_fail "usage: ref-checks-required <sha|branch>"
   _vcs_ref_valid "${ARGS[0]}" || _vcs_ref_fail "not a sha or a valid branch name"
   [ -n "$(cfg merge.required_checks)" ] || _vcs_ref_fail "merge.required_checks is empty: nothing to judge"
-  _vcs_dispatch_provider
+  _rk_out="$(_vcs_dispatch_provider)"; _rk_rc=$?
+  if [ "$DRY_RUN" = "true" ] && [ "$_rk_rc" -eq 0 ]; then
+    printf '%s\n' "$_rk_out"; exit 0
+  fi
+  case "$_rk_rc" in
+    $((_VCS_REF_JUDGED + 0)) | $((_VCS_REF_JUDGED + 1)) | $((_VCS_REF_JUDGED + 2)))
+      [ -z "$_rk_out" ] || printf '%s\n' "$_rk_out"
+      exit $((_rk_rc - _VCS_REF_JUDGED)) ;;
+    3) exit 3 ;;   # the arm has printed its reason
+  esac
+  _vcs_ref_fail "the $PROVIDER provider could not run (exit $_rk_rc): nothing judged"
 }
 
 # batch-members <lead> (#834): the numbers of the open issues whose body has a
