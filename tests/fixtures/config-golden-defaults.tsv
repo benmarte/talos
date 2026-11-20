@@ -89,6 +89,9 @@ merge.forbidden_files		empty	pipeline-vcs.sh
 merge.forbidden_files_allow		empty	pipeline-vcs.sh
 merge.forbidden_files_replace		equiv	pipeline-vcs.sh
 merge.method	squash	table	pipeline-vcs.sh
+merge.queue	off	table	docs (#928, new: nothing reads it yet)
+merge.queue_batch	3	table	docs (#928, new)
+merge.queue_branch_prefix	talos/queue/	table	docs (#928, new)
 merge.required_checks		empty	pipeline-status-file.sh,pipeline-vcs.sh
 merge.union_paths		empty	pipeline-mergebase.sh
 notifications.buzz_channel		empty	pipeline-notify.sh

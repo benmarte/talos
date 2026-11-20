@@ -16,6 +16,8 @@
 #   CONSUMER  the consumer already refuses or falls back with its own message
 #             (issues.max_parallel #120 in test-isolation.sh, limits.max_retries
 #             #194 in test-github-api.sh)
+#   RESERVED  registered, but nothing reads it yet (merge.queue_batch, #928);
+#             the change that first reads it moves it to BOUNDS (#929-#932)
 # The sandbox has its own TALOS_HOME and HOME: the real ~/.talos is never read.
 set -u
 . "$(dirname "$0")/helpers.sh"
@@ -40,6 +42,7 @@ agents.stage_timeout_s:60:86400 verify.e2e_artifacts.max_files:1:1000 verify.e2e
 BOUNDS="$(printf '%s' "$BOUNDS" | tr '\n' ' ')"
 OWN="limits.tokens_per_issue agents.provider_down_s agents.roles.*.stage_timeout_s"
 CONSUMER="issues.max_parallel limits.max_retries"
+RESERVED="merge.queue_batch"
 
 # ── Every int row is in a bucket ─────────────────────────────────────────────
 _int_rows=""
@@ -51,7 +54,7 @@ $(_talos_defaults_keys)
 EOF
 _unbucketed=""
 for _k in $_int_rows; do
-  case " $BOUNDS $OWN $CONSUMER " in
+  case " $BOUNDS $OWN $CONSUMER $RESERVED " in
     *" $_k "*|*" $_k:"*) ;;
     *) _unbucketed="$_unbucketed $_k" ;;
   esac

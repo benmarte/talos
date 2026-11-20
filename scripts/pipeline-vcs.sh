@@ -236,7 +236,19 @@
 #                                             base 10: 08 and 09 are valid, 0010
 #                                             is 10; #449) pass;
 #                                             github/github-api only (#355)
-#   merge-pr <n>                              Merge the PR (azure, #709: merge.method
+#   ref-checks-required <sha|branch>          The same judgement on a commit or
+#                                             branch head, not a PR (#928): one
+#                                             pr-checks line per required check
+#                                             reported on the resolved sha, and
+#                                             exit 0 / 1 / 2 as above. Exit 3
+#                                             when it cannot judge (a bad or
+#                                             unresolved ref, a failed or
+#                                             unparseable read, an empty
+#                                             merge.required_checks): one
+#                                             stderr line, nothing on stdout.
+#                                             file reads <git-common-dir>/
+#                                             talos-checks/<sha>.tsv. No --wait.
+#   merge-pr <n>                             Merge the PR (azure, #709: merge.method
 #                                             squash/unset --squash true with the PR
 #                                             title as commit message, merge --squash
 #                                             false, rebase no flag; create-pr
@@ -1015,6 +1027,45 @@ if pending:
 print('pr-checks-required: all required checks passed: ' + ', '.join(passed), file=sys.stderr)
 sys.exit(0)
 " "$_required"
+}
+
+# ── Shared: ref-checks-required (#928) ───────────────────────────────────────
+# A ref is a sha when it is 40 lowercase hex characters, else a branch name. The
+# character lists are spelled out: a range such as a-z follows the locale's
+# collation in bash 3.2.
+_VCS_REF_CHARS='0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ._/-'
+_vcs_ref_valid() {
+  case "$1" in
+    '' | -* | *..* | *[!$_VCS_REF_CHARS]*) return 1 ;;
+  esac
+}
+_vcs_ref_is_sha() {
+  [ "${#1}" -eq 40 ] || return 1
+  case "$1" in *[!0123456789abcdef]*) return 1 ;; esac
+}
+# _vcs_ref_fail <reason>: the verb could not judge. One line, nothing on stdout,
+# exit 3 (never 1: the queue reads 1 as a red batch).
+_vcs_ref_fail() {
+  echo "pipeline-vcs: ref-checks-required: $1" >&2
+  exit 3
+}
+# _vcs_ref_checks_judge <required> <table>: <table> is the resolved sha's checks
+# in the pr-checks shape (name TAB pass|fail|pending|skipping|cancel TAB elapsed
+# TAB url). Prints the rows of required checks (exact names) and judges them as
+# pr-checks-required does (cancel is a fail, skipping is pending): 0, 1 or 2.
+_vcs_ref_checks_judge() {
+  local _rows
+  _rows="$(printf '%s\n' "$2" | python3 -I -c '
+import sys
+required = {l.strip() for l in sys.argv[1].splitlines() if l.strip()}
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if line.split("\t", 1)[0] in required:
+        print(line)
+' "$1")" || _vcs_ref_fail "could not filter the checks"
+  [ -z "$_rows" ] || printf '%s\n' "$_rows"
+  printf '%s\n' "$_rows" | awk -F'\t' 'NF >= 2 { s = ($2 == "pass") ? "pass" : (($2 == "pending" || $2 == "skipping") ? "pending" : "fail"); print $1 "\t" s }' \
+    | _eval_required_checks "$1"
 }
 
 # ── Retry-with-backoff (#173) ─────────────────────────────────────────────────
@@ -5029,15 +5080,21 @@ json.dump({"headRefOid": (pr.get("head") or {}).get("sha", ""),
            "comments": json.loads(head)["comments"]}, sys.stdout)'
 }
 
-# _gh_check_table <pr> [<required names>] -- one "name TAB state TAB elapsed TAB
-# url" line per check on the PR's head commit: its check runs plus its legacy
-# commit statuses. State is pass | fail | pending | skipping | cancel. The
-# commit-status read is skipped when <required names> (newline separated) are
-# all check runs already. Non-zero when a read fails.
+# _gh_check_table <pr> [<required names>] -- _gh_sha_check_table for the PR's
+# head commit. Non-zero when a read fails.
 _gh_check_table() {
-  local _sha _runs _stat='{"statuses":[]}' _tbl _name
+  local _sha
   _sha="$(_gh_try GET "$_GH_API/pulls/$1" | _gh_field head.sha)" || return 1
   [ -n "$_sha" ] || return 1
+  _gh_sha_check_table "$_sha" "${2:-}"
+}
+# _gh_sha_check_table <sha> [<required names>] -- one "name TAB state TAB elapsed
+# TAB url" line per check on that commit: its check runs plus its legacy commit
+# statuses. State is pass | fail | pending | skipping | cancel. The commit-status
+# read is skipped when <required names> (newline separated) are all check runs
+# already. Non-zero when a read fails.
+_gh_sha_check_table() {
+  local _sha="$1" _runs _stat='{"statuses":[]}' _tbl _name
   _runs="$(_gh_pages "$_GH_API/commits/$_sha/check-runs?per_page=100" "" "check runs" check_runs)" || return 1
   _tbl="$(printf '%s\n%s' "$_runs" "$_stat" | _gh_check_table_py)"
   local _need=0
@@ -5912,6 +5969,20 @@ print(json.dumps({"body": sys.stdin.read(), "event": "APPROVE"}))')" >/dev/null 
       printf '%s\n' "$_tbl" | awk -F'\t' 'NF >= 2 { s = ($2 == "pass") ? "pass" : (($2 == "pending" || $2 == "skipping") ? "pending" : "fail"); print $1 "\t" s }' \
         | _eval_required_checks "$_required"
       ;;
+    ref-checks-required)
+      # ref-checks-required <sha|branch> (#928): commits/<ref> resolves the sha,
+      # then the table pr-checks reads for a PR head. Any failed or unparseable
+      # read exits 3 (_vcs_ref_fail), never a pass.
+      local _rk_ref="${1:-}" _rk_required _rk_raw _rk_sha _rk_tbl
+      _vcs_ref_valid "$_rk_ref" || _vcs_ref_fail "not a sha or a valid branch name"
+      _rk_required="$(cfg merge.required_checks)"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/commits/<ref>; GET $_GH_API/commits/<sha>/check-runs; evaluate against merge.required_checks"; return 0; }
+      _rk_raw="$(_gh_try GET "$_GH_API/commits/$(_gh_urlenc "$_rk_ref")")" || _vcs_ref_fail "could not resolve $_rk_ref"
+      _rk_sha="$(printf '%s' "$_rk_raw" | _gh_field sha 2>/dev/null)" || _vcs_ref_fail "could not parse the commit of $_rk_ref"
+      _vcs_ref_is_sha "$_rk_sha" || _vcs_ref_fail "could not parse the commit of $_rk_ref (no sha)"
+      _rk_tbl="$(_gh_sha_check_table "$_rk_sha" "$_rk_required")" || _vcs_ref_fail "could not read the checks of $_rk_sha"
+      _vcs_ref_checks_judge "$_rk_required" "$_rk_tbl"
+      ;;
     merge-pr)
       local n="${1:-}" _mm=merge _mp_pr _mp_ref _mp_same
       _gh_num "$verb" PR "$n"
@@ -6380,6 +6451,90 @@ open(out, "w").write(json.dumps({"branch": branch, "commit_message": "Prune QA e
 # ─────────────────────────────────────────────────────────────────────────────
 # GITLAB ADAPTER  (best-effort — requires glab authenticated)
 # ─────────────────────────────────────────────────────────────────────────────
+# The gitlab check reads of pr-checks-required (#737) and ref-checks-required
+# (#928), one script; argv[1] is the mode:
+#   mr          stdin: the MR. "<head pipeline id> TAB <status|stale>", or "none"
+#   pipelines   stdin: a pipeline list, newest first. Its first id, or "none"
+#   jobs <req>  stdin: the jobs pages. "<name> TAB <status>" per required job
+#   ref <req>   the same rows in the pr-checks shape: name, status, elapsed (from
+#               duration), url (web_url)
+# Exact names; of several jobs with one name (a retry) the highest id decides.
+# GitLab statuses: success passes; failed, canceled, canceling and anything
+# unknown fail; the rest below are pending. Any parse failure exits 1.
+IFS= read -r -d '' _GL_CHECKS_PY <<'TALOS_mW3nR8pXq2Lk' || true
+import json, sys
+STATUS = {"success": "pass", "failed": "fail", "canceled": "fail", "canceling": "fail"}
+for s in ("created", "waiting_for_resource", "preparing", "pending", "running",
+          "scheduled", "manual", "skipped"):
+    STATUS[s] = "pending"
+def status_of(raw):
+    return STATUS.get(raw, "fail") if isinstance(raw, str) else "fail"
+def pages(text):
+    dec, idx, out = json.JSONDecoder(), 0, []
+    while True:
+        while idx < len(text) and text[idx].isspace():
+            idx += 1
+        if idx >= len(text):
+            return out
+        page, idx = dec.raw_decode(text, idx)
+        out.append(page)
+def fmt(s):
+    h, rest = divmod(s, 3600)
+    m, sec = divmod(rest, 60)
+    return (str(h) + "h" if h else "") + (str(m) + "m" if h or m else "") + str(sec) + "s" if s else "0"
+if sys.argv[1] == "mr":
+    mr = json.load(sys.stdin)
+    pipe = mr.get("head_pipeline")
+    if not isinstance(pipe, dict):
+        print("none")
+        sys.exit(0)
+    pid = str(pipe.get("id"))
+    if not pid.isdigit():
+        sys.exit(1)
+    sha, want = pipe.get("sha"), mr.get("sha")
+    if sha is not None and want is not None and sha != want:
+        print(pid + "\tstale")
+    else:
+        print(pid + "\t" + status_of(pipe.get("status")))
+    sys.exit(0)
+if sys.argv[1] == "pipelines":
+    pipes = json.load(sys.stdin)
+    if not isinstance(pipes, list):
+        sys.exit(1)
+    if not pipes:
+        print("none")
+        sys.exit(0)
+    pid = str(pipes[0].get("id"))
+    if not pid.isdigit():
+        sys.exit(1)
+    print(pid)
+    sys.exit(0)
+required = [l.strip() for l in sys.argv[2].splitlines() if l.strip()]
+best = {}
+data = pages(sys.stdin.read())
+if not data:
+    sys.exit(1)
+for page in data:
+    if not isinstance(page, list):
+        sys.exit(1)
+    for job in page:
+        jid = job.get("id")
+        jid = jid if isinstance(jid, int) else -1
+        if job.get("name") in required and (job["name"] not in best or jid > best[job["name"]][0]):
+            best[job["name"]] = (jid, job)
+for name in required:
+    if name not in best:
+        continue
+    job = best[name][1]
+    if sys.argv[1] == "jobs":
+        print(name + "\t" + status_of(job.get("status")))
+        continue
+    dur = job.get("duration")
+    secs = int(dur) if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0 else 0
+    url = job.get("web_url") if isinstance(job.get("web_url"), str) else ""
+    print("\t".join([name, status_of(job.get("status")), fmt(secs), " ".join(url.split())]))
+TALOS_mW3nR8pXq2Lk
+
 _gitlab() {
   if ! command -v glab >/dev/null 2>&1; then
     echo "pipeline-vcs: 'glab' not found. Install from https://gitlab.com/gitlab-org/cli" >&2
@@ -7516,58 +7671,9 @@ print(p.get("id") or "")
         echo "[dry-run] glab api projects/$_glpc_proj/merge_requests/$n; glab api --paginate projects/$_glpc_proj/pipelines/<head pipeline of MR !$n>/jobs; evaluate against merge.required_checks, or the head pipeline's status when it is empty"
         return 0
       fi
-      local _glpc_py='
-import json, sys
-STATUS = {"success": "pass", "failed": "fail", "canceled": "fail", "canceling": "fail"}
-for s in ("created", "waiting_for_resource", "preparing", "pending", "running",
-          "scheduled", "manual", "skipped"):
-    STATUS[s] = "pending"
-def status_of(raw):
-    return STATUS.get(raw, "fail") if isinstance(raw, str) else "fail"
-def pages(text):
-    dec, idx, out = json.JSONDecoder(), 0, []
-    while True:
-        while idx < len(text) and text[idx].isspace():
-            idx += 1
-        if idx >= len(text):
-            return out
-        page, idx = dec.raw_decode(text, idx)
-        out.append(page)
-if sys.argv[1] == "mr":
-    mr = json.load(sys.stdin)
-    pipe = mr.get("head_pipeline")
-    if not isinstance(pipe, dict):
-        print("none")
-        sys.exit(0)
-    pid = str(pipe.get("id"))
-    if not pid.isdigit():
-        sys.exit(1)
-    sha, want = pipe.get("sha"), mr.get("sha")
-    if sha is not None and want is not None and sha != want:
-        print(pid + "\tstale")
-    else:
-        print(pid + "\t" + status_of(pipe.get("status")))
-    sys.exit(0)
-required = [l.strip() for l in sys.argv[2].splitlines() if l.strip()]
-best = {}
-data = pages(sys.stdin.read())
-if not data:
-    sys.exit(1)
-for page in data:
-    if not isinstance(page, list):
-        sys.exit(1)
-    for job in page:
-        jid = job.get("id")
-        jid = jid if isinstance(jid, int) else -1
-        if job.get("name") in required and (job["name"] not in best or jid > best[job["name"]][0]):
-            best[job["name"]] = (jid, status_of(job.get("status")))
-for name in required:
-    if name in best:
-        print(name + "\t" + best[name][1])
-'
       _glpc_mr="$(glab api "projects/$_glpc_proj/merge_requests/$n")" || {
         echo "pipeline-vcs: pr-checks-required: could not read MR !$n" >&2; exit 1; }
-      _glpc_head="$(printf '%s' "$_glpc_mr" | python3 -I -c "$_glpc_py" mr 2>/dev/null)" || {
+      _glpc_head="$(printf '%s' "$_glpc_mr" | python3 -I -c "$_GL_CHECKS_PY" mr 2>/dev/null)" || {
         echo "pipeline-vcs: pr-checks-required: could not parse MR !$n" >&2; exit 1; }
       if [ "$_glpc_head" = "none" ]; then
         echo "pr-checks-required: pending or missing: no head pipeline on MR !$n" >&2
@@ -7585,9 +7691,34 @@ for name in required:
       fi
       _glpc_jobs="$(glab api --paginate "projects/$_glpc_proj/pipelines/$_glpc_pid/jobs?per_page=100")" || {
         echo "pipeline-vcs: pr-checks-required: could not read the jobs of pipeline $_glpc_pid" >&2; exit 1; }
-      _glpc_norm="$(printf '%s' "$_glpc_jobs" | python3 -I -c "$_glpc_py" jobs "$_required" 2>/dev/null)" || {
+      _glpc_norm="$(printf '%s' "$_glpc_jobs" | python3 -I -c "$_GL_CHECKS_PY" jobs "$_required" 2>/dev/null)" || {
         echo "pipeline-vcs: pr-checks-required: could not parse the jobs of pipeline $_glpc_pid" >&2; exit 1; }
       printf '%s\n' "$_glpc_norm" | _eval_required_checks "$_required"
+      ;;
+    ref-checks-required)
+      # ref-checks-required <sha|branch> (#928): repository/commits/<ref> resolves
+      # the sha, then the newest pipeline of that sha (none: every check is
+      # missing, exit 2) and its jobs, every page, judged as pr-checks-required
+      # judges them (exact names, the highest id decides, the same status map).
+      # Any failed or unparseable read exits 3 (_vcs_ref_fail), never a pass.
+      local _grk_ref="${1:-}" _grk_required _grk_proj _grk_raw _grk_sha _grk_pid _grk_tbl=""
+      _vcs_ref_valid "$_grk_ref" || _vcs_ref_fail "not a sha or a valid branch name"
+      _grk_required="$(cfg merge.required_checks)"
+      _grk_proj="$(_gl_api_project)"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab api projects/$_grk_proj/repository/commits/<ref>; glab api projects/$_grk_proj/pipelines?sha=<sha>&order_by=id&sort=desc&per_page=1; glab api --paginate projects/$_grk_proj/pipelines/<id>/jobs; evaluate against merge.required_checks"
+        return 0
+      fi
+      _grk_raw="$(glab api "projects/$_grk_proj/repository/commits/$(_gh_urlenc "$_grk_ref")")" || _vcs_ref_fail "could not resolve $_grk_ref"
+      _grk_sha="$(printf '%s' "$_grk_raw" | _gh_field id 2>/dev/null)" || _vcs_ref_fail "could not parse the commit of $_grk_ref"
+      _vcs_ref_is_sha "$_grk_sha" || _vcs_ref_fail "could not parse the commit of $_grk_ref (no sha)"
+      _grk_raw="$(glab api "projects/$_grk_proj/pipelines?sha=$_grk_sha&order_by=id&sort=desc&per_page=1")" || _vcs_ref_fail "could not read the pipelines of $_grk_sha"
+      _grk_pid="$(printf '%s' "$_grk_raw" | python3 -I -c "$_GL_CHECKS_PY" pipelines 2>/dev/null)" || _vcs_ref_fail "could not parse the pipelines of $_grk_sha"
+      if [ "$_grk_pid" != none ]; then
+        _grk_raw="$(glab api --paginate "projects/$_grk_proj/pipelines/$_grk_pid/jobs?per_page=100")" || _vcs_ref_fail "could not read the jobs of pipeline $_grk_pid"
+        _grk_tbl="$(printf '%s' "$_grk_raw" | python3 -I -c "$_GL_CHECKS_PY" ref "$_grk_required" 2>/dev/null)" || _vcs_ref_fail "could not parse the jobs of pipeline $_grk_pid"
+      fi
+      _vcs_ref_checks_judge "$_grk_required" "$_grk_tbl"
       ;;
     *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;
   esac
@@ -9891,6 +10022,73 @@ TALOS_hQ4vNz8cXp1Rw
       fi
       printf '%s\n' "$_azpc_norm" | _eval_required_checks "$_required"
       ;;
+    ref-checks-required)
+      # ref-checks-required <sha|branch> (#928): a branch resolves through
+      # refs?filter=heads/<branch>, to the record named exactly refs/heads/<branch>
+      # (the filter is a prefix match; none is exit 3). Then the commit's latest
+      # statuses: each merge.required_checks name matches context.name or
+      # genre/name, case-insensitively, and several matches take the worst.
+      # succeeded passes; failed and error fail; pending and notSet are pending;
+      # notApplicable is skipping (pending); anything else fails. Any failed or
+      # unparseable read exits 3 (_vcs_ref_fail), never a pass.
+      local _ark_ref="${1:-}" _ark_required _ark_gb _ark_raw _ark_sha _ark_tbl
+      _vcs_ref_valid "$_ark_ref" || _vcs_ref_fail "not a sha or a valid branch name"
+      _ark_required="$(cfg merge.required_checks)"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az rest GET <git base>/refs?filter=heads/<branch>&api-version=7.1 (a branch only); az rest GET <git base>/commits/<sha>/statuses?latestOnly=true&api-version=7.1; evaluate against merge.required_checks"
+        return 0
+      fi
+      _ark_gb="$(_azure_git_base)" || _vcs_ref_fail "needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)"
+      if _vcs_ref_is_sha "$_ark_ref"; then
+        _ark_sha="$_ark_ref"
+      else
+        _ark_raw="$(az rest --method get --resource "$ADO_RESOURCE" \
+          --url "$_ark_gb/refs?filter=heads/$(_gh_urlenc "$_ark_ref")&api-version=7.1")" || _vcs_ref_fail "could not resolve $_ark_ref"
+        _ark_sha="$(printf '%s' "$_ark_raw" | python3 -I -c '
+import json, sys
+refs = json.load(sys.stdin)["value"]
+if not isinstance(refs, list):
+    sys.exit(1)
+for r in refs:
+    if isinstance(r, dict) and r.get("name") == "refs/heads/" + sys.argv[1]:
+        print(str(r.get("objectId") or "").lower())
+        break
+' "$_ark_ref" 2>/dev/null)" || _vcs_ref_fail "could not parse the refs of $_ark_ref"
+        [ -n "$_ark_sha" ] || _vcs_ref_fail "could not resolve $_ark_ref (no refs/heads/$_ark_ref)"
+        _vcs_ref_is_sha "$_ark_sha" || _vcs_ref_fail "could not parse the refs of $_ark_ref (no sha)"
+      fi
+      _ark_raw="$(az rest --method get --resource "$ADO_RESOURCE" \
+        --url "$_ark_gb/commits/$_ark_sha/statuses?latestOnly=true&api-version=7.1")" || _vcs_ref_fail "could not read the statuses of $_ark_sha"
+      _ark_tbl="$(printf '%s' "$_ark_raw" | python3 -I -c '
+import json, sys
+STATE = {"succeeded": "pass", "failed": "fail", "error": "fail", "pending": "pending",
+         "notset": "pending", "notapplicable": "skipping"}
+RANK = {"pass": 0, "skipping": 1, "pending": 1, "fail": 2}
+statuses = json.load(sys.stdin)["value"]
+if not isinstance(statuses, list) or not all(isinstance(s, dict) for s in statuses):
+    sys.exit(1)
+worst = {}
+for s in statuses:
+    ctx = s.get("context") if isinstance(s.get("context"), dict) else {}
+    name, genre = ctx.get("name"), ctx.get("genre")
+    if not isinstance(name, str) or not name.strip():
+        continue
+    keys = {name.casefold()}
+    if isinstance(genre, str) and genre.strip():
+        keys.add((genre + "/" + name).casefold())
+    state = STATE.get(str(s.get("state")).casefold(), "fail")
+    url = s.get("targetUrl") if isinstance(s.get("targetUrl"), str) else ""
+    for k in keys:
+        if k not in worst or RANK[state] > RANK[worst[k][0]]:
+            worst[k] = (state, url)
+for req in sys.argv[1].splitlines():
+    req = req.strip()
+    if req and req.casefold() in worst:
+        state, url = worst[req.casefold()]
+        print("\t".join([req, state, "0", " ".join(url.split())]))
+' "$_ark_required" 2>/dev/null)" || _vcs_ref_fail "could not parse the statuses of $_ark_sha"
+      _vcs_ref_checks_judge "$_ark_required" "$_ark_tbl"
+      ;;
     *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;
   esac
 }
@@ -9960,6 +10158,37 @@ _file() {
       # Fail closed, not open (#205) -- see the matching comment in _gitlab.
       echo "pipeline-vcs: pr-checks-required: not supported for provider file (fail closed)" >&2
       return 1
+      ;;
+    ref-checks-required)
+      # ref-checks-required <sha|branch> (#928): `git rev-parse --verify` peels
+      # the ref to a commit (unresolvable: exit 3). The states are the file
+      # <git-common-dir>/talos-checks/<sha>.tsv, one pr-checks-shaped line per
+      # check (name TAB pass|fail|pending|skipping|cancel TAB elapsed TAB url);
+      # nothing in Talos writes it yet. No file: every check is missing (exit 2).
+      # An unreadable file or a malformed line exits 3 (_vcs_ref_fail).
+      local _frk_ref="${1:-}" _frk_required _frk_sha _frk_dir _frk_file _frk_raw _frk_tbl=""
+      _vcs_ref_valid "$_frk_ref" || _vcs_ref_fail "not a sha or a valid branch name"
+      _frk_required="$(cfg merge.required_checks)"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] git rev-parse --verify <ref>^{commit}; read <git-common-dir>/talos-checks/<sha>.tsv; evaluate against merge.required_checks"; return 0; }
+      _frk_sha="$(git rev-parse --verify --quiet "$_frk_ref^{commit}" 2>/dev/null)" || _vcs_ref_fail "could not resolve $_frk_ref"
+      _vcs_ref_is_sha "$_frk_sha" || _vcs_ref_fail "could not resolve $_frk_ref (not a 40-character sha)"
+      _frk_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || _vcs_ref_fail "could not read the git directory"
+      _frk_file="$_frk_dir/talos-checks/$_frk_sha.tsv"
+      if [ -e "$_frk_file" ] || [ -L "$_frk_file" ]; then
+        _frk_raw="$(cat -- "$_frk_file" 2>/dev/null)" || _vcs_ref_fail "could not read $_frk_file"
+        _frk_tbl="$(printf '%s\n' "$_frk_raw" | python3 -I -c '
+import sys
+STATES = ("pass", "fail", "pending", "skipping", "cancel")
+for line in sys.stdin.read().splitlines():
+    if not line.strip():
+        continue
+    cols = line.split("\t")
+    if len(cols) != 4 or not cols[0].strip() or cols[1] not in STATES:
+        sys.exit(1)
+    print(line)
+' 2>/dev/null)" || _vcs_ref_fail "could not parse $_frk_file (a malformed line)"
+      fi
+      _vcs_ref_checks_judge "$_frk_required" "$_frk_tbl"
       ;;
     pr-mergeable)
       # No PR concept in file mode; report UNKNOWN (exit 2) rather than a
@@ -12061,6 +12290,17 @@ _vcs_pr_checks_required_dispatch() {
   return "$_rc"
 }
 
+# ref-checks-required <sha|branch> (#928): the checks that need no provider call
+# run here, before any provider's pre-flight: one valid ref, and a non-empty
+# merge.required_checks (unlike pr-checks-required there is no pipeline or policy
+# fallback). Either failing is exit 3. Then the provider's arm judges the ref.
+_vcs_ref_checks_required_dispatch() {
+  [ "${#ARGS[@]}" -eq 1 ] || _vcs_ref_fail "usage: ref-checks-required <sha|branch>"
+  _vcs_ref_valid "${ARGS[0]}" || _vcs_ref_fail "not a sha or a valid branch name"
+  [ -n "$(cfg merge.required_checks)" ] || _vcs_ref_fail "merge.required_checks is empty: nothing to judge"
+  _vcs_dispatch_provider
+}
+
 # batch-members <lead> (#834): the numbers of the open issues whose body has a
 # line `Batched into: #<lead>` (the number not followed by a digit) and that
 # carry an `epic:<n>` label (the planner sets it on every member; only a user
@@ -12188,6 +12428,7 @@ _DISPATCH_RC=0
 case "$VERB" in
   batch-members) _vcs_batch_members ;;
   pr-checks-required) _vcs_pr_checks_required_dispatch ;;
+  ref-checks-required) _vcs_ref_checks_required_dispatch ;;
   required-roles) _vcs_required_roles ;;
   pr-is-draft|pr-ci-runs|pr-closes-issue|ready-pr|draft-pr) _vcs_draft_gate_dispatch ;;
   create-pr) if [ "$_PR_DRAFT" = "true" ]; then _vcs_draft_gate_dispatch; else _vcs_dispatch_provider; fi ;;
