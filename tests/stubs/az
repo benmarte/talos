@@ -47,6 +47,20 @@ case "$args" in
     _page_var="STUB_AZURE_PR_CHANGES_SKIP_${_skip:-0}"
     if [ -n "${!_page_var:-}" ]; then printf '%s\n' "${!_page_var}"; exit 0; fi
     if [ -n "${STUB_AZURE_PR_CHANGES:-}" ]; then printf '%s\n' "$STUB_AZURE_PR_CHANGES"; exit 0; fi ;;
+  "rest "*"/refs"[?]"filter=heads/"*)
+    # ref-checks-required (#928): a branch's ref. STUB_AZURE_REFS is the raw REST
+    # body ({"value": [{"name", "objectId"}...]}); STUB_AZURE_REFS_FAIL=1 fails it.
+    # Unset falls through (attach-files' own refs read is unchanged).
+    [ "${STUB_AZURE_REFS_FAIL:-}" = "1" ] && _stub_fail "TF401019: The Git repository does not exist."
+    if [ -n "${STUB_AZURE_REFS:-}" ]; then printf '%s\n' "$STUB_AZURE_REFS"; exit 0; fi ;;
+  "rest "*"/commits/"*"/statuses"*)
+    # ref-checks-required (#928): a commit's statuses. STUB_AZURE_STATUSES is the
+    # raw REST body ({"count": n, "value": [...]}, unset: none);
+    # STUB_AZURE_STATUSES_FAIL=1 fails it. Must stay above the `/commits?` arm,
+    # whose `?` also matches the `/` after "commits".
+    [ "${STUB_AZURE_STATUSES_FAIL:-}" = "1" ] && _stub_fail "TF401175: The version descriptor could not be resolved."
+    if [ -n "${STUB_AZURE_STATUSES:-}" ]; then printf '%s\n' "$STUB_AZURE_STATUSES"; else printf '{"count": 0, "value": []}\n'; fi
+    exit 0 ;;
   "rest "*"/commits?"*)
     # list-default-commits (#800): STUB_AZURE_COMMITS is the {"value": [...]} page at
     # searchCriteria.$skip=0 (later pages are empty); STUB_AZURE_COMMITS_FULL=1 answers

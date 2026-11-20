@@ -278,7 +278,20 @@ if method == "GET":
     mm = re.fullmatch(r"/issues/(\d+)/labels", rest)
     if mm:
         reply(200, jenv("STUB_PR_LABELS_JSON", None) or jenv("STUB_ISSUE_LABELS_JSON", []))
+    # ref-checks-required (#928): the commit a sha or branch names.
+    # STUB_GH_COMMIT_SHA is its sha (unset: 404, as before); STUB_GH_COMMIT_RAW
+    # the body verbatim; STUB_GH_API_FAIL=commit fails the read.
+    if re.fullmatch(r"/commits/[^/]+", rest):
+        if E("STUB_GH_API_FAIL") == "commit":
+            reply(502, {"message": "Bad Gateway"})
+        if "STUB_GH_COMMIT_RAW" in os.environ:
+            reply_raw(200, E("STUB_GH_COMMIT_RAW"))
+        if E("STUB_GH_COMMIT_SHA"):
+            reply(200, {"sha": E("STUB_GH_COMMIT_SHA")})
+        reply(404, {"message": "Not Found"})
     if re.fullmatch(r"/commits/[^/]+/check-runs", rest):
+        if E("STUB_GH_API_FAIL") == "check-runs":   # (#928) the check-run read fails
+            reply(502, {"message": "Bad Gateway"})
         paged([{"total_count": len(pr_checks()), "check_runs": pr_checks()}])
     if re.fullmatch(r"/commits/[^/]+/status", rest):
         reply(200, {"state": "success", "statuses": []})
