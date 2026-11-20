@@ -492,6 +492,9 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `merge.approval_waiver_paths` | list | derived | - | repo |
 | `merge.union_paths` | list | derived | - | repo |
 | `merge.auto_sync` | bool | `true` | - | any |
+| `merge.queue` | enum | `off` | - | any |
+| `merge.queue_batch` | int | `3` | - | any |
+| `merge.queue_branch_prefix` | str | `talos/queue/` | - | any |
 
 #### issues.*
 
@@ -1260,6 +1263,22 @@ On `gitlab` the verb judges the MR's head pipeline (`head_pipeline` of the MR re
 
 On `azure` an empty `merge.required_checks` is not a refusal: the verb judges the PR's blocking policy evaluations (`isBlocking` true) instead, with the same exits (`approved` and `notApplicable` pass, `rejected` and `broken` fail, `queued` and `running` are pending). Non-blocking policies are ignored, and a PR with no blocking evaluation is pending (exit 2), never a pass. A policy-only project needs no `merge.required_checks` for this verb.
 
+`pipeline-vcs.sh ref-checks-required <sha|branch>` judges the same list on a commit or a branch head instead of a PR (the merge queue, #927, reads it). A ref of 40 lowercase hex characters is a sha; anything else is a branch. It prints one `pr-checks` line (`name TAB pass|fail|pending|skipping|cancel TAB elapsed TAB url`) per required check reported on the resolved sha, judges them as `pr-checks-required` does (cancel fails, skipping is pending) and prints the same stderr summary line:
+
+| Exit | Meaning |
+|---|---|
+| 0 | all passed on that sha |
+| 1 | one failed (`pr-checks-required: failed:` on stderr) |
+| 2 | pending or missing |
+| 3 | could not judge: an invalid ref (empty, a leading `-`, `..`, whitespace or a character outside `A-Za-z0-9._/-`, refused before any provider call), a ref that does not resolve, a failed read, an unparseable response, or an empty `merge.required_checks` (no pipeline or policy fallback). One `pipeline-vcs: ref-checks-required: <reason>` line on stderr, nothing on stdout. Never 0 or 1. |
+
+There is no `--wait`. Where each provider reads:
+
+- `github`, `github-api`: `commits/<ref>` gives the sha; then the check runs and commit statuses of that sha, as `pr-checks` reads them for a PR head.
+- `gitlab`: `repository/commits/<ref>` gives the sha (`id`); then its newest pipeline (`pipelines?sha=<sha>&order_by=id&sort=desc&per_page=1`; none is exit 2) and that pipeline's jobs, every page, judged as `pr-checks-required` judges them (exact names, the highest job id decides, the same status map). elapsed comes from `duration`, url from `web_url`.
+- `azure`: a branch resolves through `refs?filter=heads/<branch>` to the record named exactly `refs/heads/<branch>` (none is exit 3); then `commits/<sha>/statuses?latestOnly=true`. Each name matches `context.name` or `genre/name`, case-insensitively. `succeeded` passes; `failed` and `error` fail; `pending` and `notSet` are pending; `notApplicable` is skipping (pending); anything else fails.
+- `file`: `git rev-parse --verify` peels the ref to a commit (unresolvable is exit 3). The states come from `talos-checks/<sha>.tsv` under `git rev-parse --git-common-dir`, one line per check in the `pr-checks` shape. No file is exit 2; an unreadable file or a malformed line is exit 3. Nothing in Talos writes that file yet.
+
 ### Draft PRs
 
 `pr.draft` opens the PR as a draft so docs, review and fixes start no CI. Order: developer (local verify, draft PR), docs, reviewer, security, adversarial (one stage at a time under `talos.sh run`; in parallel only on the LLM loop), one fix round, re-stamps, `ready-pr` (the one CI run), QA, merge. A QA or CI failure runs `draft-pr` first, so a fix costs one run. QA and the CI wait start only when `pr-is-draft` exits 1 with stdout `ready`; `gate merge` reports `ci_runs` (`pr-ci-runs`, GitHub only). When the run marks the PR ready and `qa:pass` is already fresh at the head (after a local QA recovery, say), it skips QA and the CI wait and the next pass goes to `ci` / `merge`; a missing, stale or unreadable `qa:pass` dispatches QA.
@@ -1383,6 +1402,9 @@ Docs is decided by `talos.sh docs-gate <pr> --issue <N>`. With `docs:done` on th
 | `merge.method` | `squash` | `squash`, `merge` or `rebase` |
 | `merge.auto_sync` | `true` | `update-branch` on a stale base; sync sibling PRs after a merge |
 | `merge.union_paths` | `["CHANGELOG.md"]` | paths `pipeline-mergebase.sh` may union-merge |
+| `merge.queue` | `off` | `off`, `talos` or `github`; reserved for the merge queue (#927), no effect yet |
+| `merge.queue_batch` | `3` | reserved for the merge queue (#927), no effect yet |
+| `merge.queue_branch_prefix` | `talos/queue/` | reserved for the merge queue (#927), no effect yet |
 
 When `conflict-files <pr>` lists only `merge.union_paths` entries, `scripts/pipeline-mergebase.sh <pr>` resolves them with `git merge-file --union` (both sides kept, the PR's first) in a throwaway worktree and pushes, with no developer dispatch. Exit 0 pushed, 3 a path is not unionable (developer merge-base task), 1 setup error. Entries matching `scripts/**`, `tests/**`, pipeline config or forbidden patterns are rejected.
 

@@ -475,6 +475,26 @@ open(os.environ["F"], "w").write("".join(json.dumps(r) + "\n" for r in rows))
     if [ -n "${GH_LOG:-}" ] && [ -f "$_in" ]; then { printf 'GLAB BODY: '; cat "$_in"; printf '\n'; } >> "$GH_LOG"; fi
     printf '{}\n'
     exit 0 ;;
+  "api projects/"*"/repository/commits/"*)
+    # ref-checks-required (#928): the commit a sha or branch names.
+    # STUB_GITLAB_COMMIT is the raw answer (unset: 404); STUB_GITLAB_COMMIT_FAIL=1
+    # or STUB_GITLAB_API_FAIL=1 fails it.
+    if [ "${STUB_GITLAB_COMMIT_FAIL:-}" = "1" ] || [ "${STUB_GITLAB_API_FAIL:-}" = "1" ] || [ -z "${STUB_GITLAB_COMMIT:-}" ]; then
+      echo "ERROR: 404 Commit Not Found" >&2
+      exit 1
+    fi
+    printf '%s\n' "$STUB_GITLAB_COMMIT"
+    exit 0 ;;
+  "api projects/"*"/pipelines"[?]"sha="*)
+    # ref-checks-required (#928): the newest pipeline of a sha. STUB_GITLAB_PIPELINES
+    # is the raw answer (unset: no pipeline); STUB_GITLAB_PIPELINES_FAIL=1 or
+    # STUB_GITLAB_API_FAIL=1 fails it.
+    if [ "${STUB_GITLAB_PIPELINES_FAIL:-}" = "1" ] || [ "${STUB_GITLAB_API_FAIL:-}" = "1" ]; then
+      echo "ERROR: 500 Internal Server Error" >&2
+      exit 1
+    fi
+    printf '%s\n' "${STUB_GITLAB_PIPELINES:-[]}"
+    exit 0 ;;
   "api --paginate projects/"*"/pipelines/"*"/jobs"*)
     # A pipeline's jobs (#737): STUB_GITLAB_PIPELINE_JOBS is the raw output,
     # pages back-to-back as `glab api --paginate` prints them (unset = no
