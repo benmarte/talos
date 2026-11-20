@@ -32,6 +32,22 @@ _kind() {
   esac
 }
 _lines() { if [ -z "$1" ]; then echo 0; else printf '%s\n' "$1" | wc -l | tr -d ' '; fi; }
+# _path_without <cmd>: a PATH on which <cmd> is not found. Every PATH dir that
+# holds <cmd> is replaced by one shim dir linking its other entries (first wins).
+_path_without() {
+  local d f out="" shim="$SANDBOX/path-without-$1" IFS=:
+  mkdir -p "$shim"
+  for d in $PATH; do
+    if [ -x "$d/$1" ]; then
+      for f in "$d"/*; do
+        [ "${f##*/}" = "$1" ] || [ -e "$shim/${f##*/}" ] || ln -s "$f" "$shim/${f##*/}"
+      done
+    else
+      out="$out:$d"
+    fi
+  done
+  printf '%s%s' "$shim" "$out"
+}
 _no_calls() { cat "$GH_LOG" "$GH_LOG.rest" "$CURL_LOG" 2>/dev/null; }
 _reset_logs() { : > "$GH_LOG"; : > "$GH_LOG.rest"; : > "$CURL_LOG"; }
 
@@ -94,6 +110,10 @@ for ref in -x a..b "a b" "x;y" ""; do
   _run "$ref"
   assert_eq "3||" "$RC|$OUT|$(_no_calls)" "AC8 github ref '$ref' exits 3 with no stub call"
 done
+# A provider that cannot start (no gh login, no token) has judged nothing: 3, not 1.
+STUB_GH_AUTH=0 GITHUB_TOKEN="" GH_TOKEN="" STUB_PR_CHECKS="$GREEN_GH" _run "$SHA"
+assert_eq "3|" "$RC|$OUT" "AC7 github provider setup failure (no token) exits 3"
+assert_contains "$ERRS" "pipeline-vcs: ref-checks-required: " "AC7 github provider setup failure prints the reason line"
 unset STUB_GH_COMMIT_SHA
 
 # ── gitlab ───────────────────────────────────────────────────────────────────
@@ -147,6 +167,10 @@ for ref in -x a..b "a b" "x;y" ""; do
   _run "$ref"
   assert_eq "3||" "$RC|$OUT|$(_no_calls)" "AC8 gitlab ref '$ref' exits 3 with no stub call"
 done
+NOGLAB_PATH="$(_path_without glab)"
+STUB_GITLAB_PIPELINE_JOBS="$GREEN_GL" PATH="$NOGLAB_PATH" _run "$SHA"
+assert_eq "3|" "$RC|$OUT" "AC7 gitlab provider setup failure (glab missing) exits 3"
+assert_contains "$ERRS" "pipeline-vcs: ref-checks-required: " "AC7 gitlab provider setup failure prints the reason line"
 unset STUB_GITLAB_COMMIT STUB_GITLAB_PIPELINES
 
 # ── azure ────────────────────────────────────────────────────────────────────
@@ -208,6 +232,9 @@ for ref in -x a..b "a b" "x;y" ""; do
   _run "$ref"
   assert_eq "3||" "$RC|$OUT|$(_no_calls)" "AC8 azure ref '$ref' exits 3 with no stub call"
 done
+AZ_STUB_NO_EXT=1 STUB_AZURE_STATUSES="$GREEN_AZ" _run "$SHA"
+assert_eq "3|" "$RC|$OUT" "AC7 azure provider setup failure (extension missing) exits 3"
+assert_contains "$ERRS" "pipeline-vcs: ref-checks-required: " "AC7 azure provider setup failure prints the reason line"
 unset STUB_AZURE_REFS
 
 # ── file ─────────────────────────────────────────────────────────────────────
@@ -259,6 +286,11 @@ for ref in -x a..b "a b" "x;y" ""; do
   _run "$ref"
   assert_eq "3|" "$RC|$OUT" "AC8 file ref '$ref' exits 3"
 done
+printf '{"vcs": {"provider": "bogus"}, "merge": {"required_checks": ["build", "test"]}}\n' > talos.pipeline.json
+_run "$FSHA"
+assert_eq "3|" "$RC|$OUT" "AC7 an unknown provider exits 3"
+assert_contains "$ERRS" "pipeline-vcs: ref-checks-required: " "AC7 an unknown provider prints the reason line"
+_file_config '["build", "test"]'
 
 # ── AC10 (same): pr-checks and pr-checks-required are unchanged ──────────────
 # Green before and after the github check-table split and the gitlab script move.
