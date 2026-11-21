@@ -293,8 +293,10 @@ cp "$TALOS_ROOT/scripts/pipeline-mergebase.sh" "$GQ3/"
 q_reset
 q_pr 11 41 CHANGELOG.md "- pr11 entry"
 main_commit CHANGELOG.md "- main entry"
+printf '.github/workflows/*\n' > "$STUB_DIR/forbidden-files-patterns.out"
 QG="$GQ3" qr
-assert_line "AC10 a CHANGELOG-only conflict: conflict=11 action=mergebase" "conflict=11 action=mergebase"
+assert_eq_ctx "conflict=11 action=mergebase" "$(printf '%s\n' "$OUT" | grep '^conflict=')" \
+  "AC10 a CHANGELOG-only conflict: conflict=11 action=mergebase" "$(grep mergebase "$ERR" | head -n 5)"
 CL="$(git -C "$ORIGIN" show feat/issue-41-q:CHANGELOG.md 2>/dev/null)"
 assert_contains "$CL" "- pr11 entry" "AC10 the PR branch keeps its own line"
 assert_contains "$CL" "- main entry" "AC10 the PR branch gained the base's line (union merge)"

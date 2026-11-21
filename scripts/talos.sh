@@ -1617,44 +1617,263 @@ _talos_queue_enqueue() {
   _talos_verdict wait
 }
 
-# The open PR numbers of a list-prs array whose base is argv 1, one per line.
+# The open PRs of a list-prs array whose base is argv 1, one `<number> <head
+# branch>` line each; a head branch outside [A-Za-z0-9._/-] prints as `-`.
 _TALOS_QUEUE_PRS_PY='
-import json, sys
+import json, re, sys
 for p in json.load(sys.stdin):
     if isinstance(p, dict) and isinstance(p.get("number"), int) and p.get("baseRefName") == sys.argv[1]:
-        print(p["number"])
+        b = p.get("headRefName")
+        print(p["number"], b if isinstance(b, str) and re.fullmatch(r"[A-Za-z0-9._/-]+", b) else "-")
 '
 
-# queue list (#929): the queue read back from the provider. For every open PR on
-# the base branch whose trusted marker names its current head and the base, one
-# `queued pr=<n> head=<sha> eligible=<ts>` line, oldest eligible first, a tie by
-# PR number. Any failed read or a corrupt marker is one lone `stop
-# reason=queue-state-unverified` (exit 1): a partial queue is never printed.
-_talos_queue_verb() {
-  { [ "${1:-}" = list ] && [ "$#" -eq 1 ]; } || _talos_stop usage 2
-  local _base _prs _p _tag _qb _qh _qe _rows=""
-  _talos_prepare queue pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh
-  _base="$(_talos_base_branch)"
-  _talos_trust
+# _talos_queue_load <base>: the queue (#929), read back from the provider, in
+# _QROWS: for every open PR on the base whose trusted marker names its current
+# head and the base, one `<pr> <head> <eligible> <head branch>` line, oldest
+# eligible first, a tie by PR number. 1 on any failed read or a corrupt marker:
+# never a partial queue. _talos_trust runs first.
+_talos_queue_load() {
+  local _base="$1" _prs _p _b _tag _qb _qh _qe _rows=""
+  _QROWS=""
   _talos_cap _vcs list-prs
-  [ "$_RC" -eq 0 ] || _talos_stop queue-state-unverified
-  _prs="$(python3 -I -c "$_TALOS_QUEUE_PRS_PY" "$_base" <<< "$_OUT" 2>/dev/null)" || _talos_stop queue-state-unverified
-  for _p in $_prs; do
-    _talos_queue_head "$_p" || _talos_stop queue-state-unverified
-    _talos_queue_read "$_p" || _talos_stop queue-state-unverified
+  [ "$_RC" -eq 0 ] || return 1
+  _prs="$(python3 -I -c "$_TALOS_QUEUE_PRS_PY" "$_base" <<< "$_OUT" 2>/dev/null)" || return 1
+  while read -r _p _b <&3; do
+    [ -n "$_p" ] || continue
+    _talos_queue_head "$_p" || return 1
+    _talos_queue_read "$_p" || return 1
     case "$_QS" in
       none) continue ;;
       "ok "*) read -r _tag _qb _qh _qe <<< "$_QS" ;;
-      *) _talos_stop queue-state-unverified ;;
+      *) return 1 ;;
     esac
     { [ "$_qb" = "$_base" ] && [ "$_qh" = "$_QH" ]; } || continue
-    _rows="$_rows$_qe $_p $_qh"$'\n'
-  done
-  # Every value was validated by _TALOS_QUEUE_PY (a timestamp, digits, 40 hex).
-  printf '%s' "$_rows" | sort -k1,1 -k2,2n | while read -r _qe _p _qh; do
-    printf 'queued pr=%s head=%s eligible=%s\n' "$_p" "$_qh" "$_qe"
-  done
+    _rows="$_rows$_qe $_p $_qh $_b"$'\n'
+  done 3<<< "$_prs"
+  # Every value was validated (a timestamp, digits, 40 hex, a ref-safe name).
+  _QROWS="$(printf '%s' "$_rows" | sort -k1,1 -k2,2n | while read -r _qe _p _qh _b; do
+    printf '%s %s %s %s\n' "$_p" "$_qh" "$_qe" "$_b"
+  done)"
+}
+
+# queue list (#929): one `queued pr=<n> head=<sha> eligible=<ts>` line per
+# queued PR, in queue order. Any failed read or a corrupt marker is one lone
+# `stop reason=queue-state-unverified` (exit 1): a partial queue is never printed.
+_talos_queue_list() {
+  local _p _qh _qe _b
+  _talos_prepare queue pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh
+  _talos_trust
+  _talos_queue_load "$(_talos_base_branch)" || _talos_stop queue-state-unverified
+  while read -r _p _qh _qe _b; do
+    [ -z "$_p" ] || printf 'queued pr=%s head=%s eligible=%s\n' "$_p" "$_qh" "$_qe"
+  done <<< "$_QROWS"
   exit 0
+}
+
+_talos_queue_verb() {
+  case "${1:-}:$#" in
+    list:1) _talos_queue_list ;;
+    run:1) _talos_queue_run ;;
+    *) _talos_stop usage 2 ;;
+  esac
+}
+
+# ── queue run (#930) ─────────────────────────────────────────────────────────
+# One pass of the batch runner (see the header). The candidate branch it pushed
+# (_QR_CAND) and its throwaway worktree (_QR_WT) are removed on every exit: by
+# _talos_queue_end on a verdict, by the exit hook on a stop or a signal.
+_QR_CAND=""
+_QR_PUSHED=0
+_QR_WT=""
+_QR_LOCK=""
+
+# _talos_queue_wt_drop: remove the throwaway worktree, if any.
+_talos_queue_wt_drop() {
+  [ -n "$_QR_WT" ] || return 0
+  with_lock "$_QR_LOCK" 10 -- git worktree remove --force "$_QR_WT" >/dev/null 2>&1
+  rm -rf "${_QR_WT:?}" 2>/dev/null
+  _QR_WT=""
+}
+
+# _talos_queue_drop [warn]: delete the pushed candidate from origin; with an
+# argument, a failed delete is `warn reason=cleanup-failed branch=<b>`.
+_talos_queue_drop() {
+  [ "$_QR_PUSHED" -eq 1 ] || return 0
+  if git push -q origin --delete "$_QR_CAND" >/dev/null 2>&1; then
+    _QR_PUSHED=0
+  elif [ -n "${1:-}" ]; then
+    _QR_PUSHED=0
+    _talos_warn cleanup-failed "branch=$_QR_CAND"
+  fi
+}
+
+_talos_queue_exit_hook() { _talos_queue_wt_drop; _talos_queue_drop; }
+
+# _talos_queue_end <verdict> [<reason>]: clean up, then print the verdict.
+_talos_queue_end() {
+  [ -z "${2:-}" ] || _talos_emit reason "$2"
+  _talos_queue_wt_drop
+  _talos_queue_drop warn
+  _talos_verdict "$1"
+}
+
+# _talos_queue_cleanup <name prefix>: delete every origin branch named
+# <prefix><digits> (a pass deletes its own, so any left is a crashed pass's).
+_talos_queue_cleanup() {
+  local _pfx="$1" _out _sha _ref _b
+  if ! _out="$(git ls-remote --heads origin 2>/dev/null)"; then
+    _talos_warn cleanup-failed
+    return 0
+  fi
+  while read -r _sha _ref <&3; do
+    _b="${_ref#refs/heads/}"
+    case "$_b" in "$_pfx"*) ;; *) continue ;; esac
+    _talos_isnum "${_b#"$_pfx"}" || continue
+    if git push -q origin --delete "$_b" >/dev/null 2>&1; then
+      _talos_emit cleanup "$_b"
+    else
+      _talos_warn cleanup-failed "branch=$_b"
+    fi
+  done 3<<< "$_out"
+}
+
+# _talos_queue_origin_sha <branch>: the sha origin holds for the branch, or nothing.
+_talos_queue_origin_sha() {
+  git ls-remote origin "refs/heads/$1" 2>/dev/null | awk -v r="refs/heads/$1" '$2 == r { print $1 }'
+}
+
+# _talos_queue_apply <method> <base sha> <head> <pr>: apply the PR's queued head
+# on top of the worktree's HEAD by merge.method: squash (one commit), merge (a
+# merge commit), rebase (its own non-merge commits replayed). 1 when it does not
+# apply; the worktree is then back where it was.
+_talos_queue_apply() {
+  local _m="$1" _b="$2" _h="$3" _p="$4" _pre _c _rc=0
+  local _g=(git -C "$_QR_WT" -c user.name=talos-queue -c user.email=talos@local -c commit.gpgsign=false)
+  _pre="$(git -C "$_QR_WT" rev-parse HEAD)" || return 1
+  case "$_m" in
+    squash)
+      { "${_g[@]}" merge -q --squash "$_h" && "${_g[@]}" commit -q --allow-empty -m "queue: #$_p (squash)"; } >/dev/null 2>&1 || _rc=1 ;;
+    merge)
+      "${_g[@]}" merge -q --no-ff --no-edit -m "queue: merge #$_p" "$_h" >/dev/null 2>&1 || _rc=1 ;;
+    rebase)
+      for _c in $(git -C "$_QR_WT" rev-list --reverse --no-merges "$_b..$_h" 2>/dev/null); do
+        "${_g[@]}" cherry-pick --keep-redundant-commits "$_c" >/dev/null 2>&1 || { _rc=1; break; }
+      done ;;
+  esac
+  [ "$_rc" -eq 0 ] && return 0
+  git -C "$_QR_WT" merge --abort >/dev/null 2>&1
+  git -C "$_QR_WT" cherry-pick --abort >/dev/null 2>&1
+  git -C "$_QR_WT" reset -q --hard "$_pre" >/dev/null 2>&1
+  return 1
+}
+
+_talos_queue_run() {
+  local _base _prefix _batch _method _rows _p _qh _qe _br _n _rx _b _sha _osha _prc _t0 _scale _calls=0
+  local _picked="" _csv="" _size=0 _n1="" _branches=() _a
+  _talos_prepare queue pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-hooks.sh \
+                       pipeline-mergebase.sh pipeline-lock.sh
+  [ "$(cfg merge.queue)" = "talos" ] || _talos_verdict off
+  _base="$(_talos_base_branch)"
+  _prefix="$(cfg merge.queue_branch_prefix)"
+  _batch="$(cfg merge.queue_batch)"
+  _method="$(cfg merge.method)"
+  [ -n "$_prefix" ] && _talos_isnum "$_batch" && [ "$_batch" -gt 0 ] || _talos_stop config-unreadable
+  case "$_method" in squash | merge | rebase) ;; *) _talos_stop config-unreadable ;; esac
+  . "$SCRIPT_DIR/pipeline-lock.sh"
+  _QR_LOCK="$(git rev-parse --git-common-dir 2>/dev/null || echo .git)/talos-worktree"
+  _talos_on_exit _talos_queue_exit_hook
+
+  # 1. Stale candidates of this base.
+  _talos_queue_cleanup "$_prefix$_base-"
+  # 2-3. The queue, and its first merge.queue_batch PRs with their issues.
+  _talos_trust
+  _talos_queue_load "$_base" || _talos_queue_end wait queue-state-unverified
+  [ -n "$_QROWS" ] || _talos_queue_end empty
+  _rows="$(printf '%s\n' "$_QROWS" | head -n "$_batch")"
+  _rx='^(fix|feat)/issue-([0-9]+)(-|$)'
+  while read -r _p _qh _qe _br; do
+    [[ "$_br" =~ $_rx ]] || _talos_queue_end wait queue-state-unverified
+    _branches+=("$_br")
+  done <<< "$_rows"
+
+  # 4. The cut: base head B, then each PR's queued head in a detached worktree.
+  git fetch -q origin "+refs/heads/$_base:refs/remotes/origin/$_base" ${_branches[@]+"${_branches[@]}"} \
+    >/dev/null 2>&1 || _talos_queue_end wait candidate-unverified
+  _b="$(git rev-parse -q --verify "refs/remotes/origin/$_base^{commit}" 2>/dev/null)" || _talos_queue_end wait candidate-unverified
+  _QR_WT="$(mktemp -d "${TMPDIR:-/tmp}/talos-queue.XXXXXX" 2>/dev/null)" || _QR_WT=""
+  [ -n "$_QR_WT" ] && [ -d "$_QR_WT" ] || { _QR_WT=""; _talos_queue_end wait candidate-unverified; }
+  with_lock "$_QR_LOCK" 10 -- git worktree add -q --detach "$_QR_WT" "$_b" >/dev/null 2>&1 \
+    || _talos_queue_end wait candidate-unverified
+  while read -r _p _qh _qe _br <&3; do
+    [[ "$_br" =~ $_rx ]]
+    _n="${BASH_REMATCH[2]}"
+    if git cat-file -e "$_qh^{commit}" 2>/dev/null && _talos_queue_apply "$_method" "$_b" "$_qh" "$_p"; then
+      _picked="$_picked$_p $_qh $_n"$'\n'
+      _csv="$_csv${_csv:+,}$_p"
+      _size=$((_size + 1))
+      [ -n "$_n1" ] || _n1="$_n"
+      continue
+    fi
+    # 5. Left out: the merge-base task, never a resolution inside the candidate.
+    _talos_run_capture mergebase bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_p"
+    case "$_RC" in 0) _a=mergebase ;; 3) _a=developer ;; *) _a=unverified ;; esac
+    _talos_emit conflict "$_p action=$_a"
+  done 3<<< "$_rows"
+  [ "$_size" -gt 0 ] || _talos_queue_end wait no-candidate
+
+  # 6. Push the candidate; origin must hold exactly the cut sha.
+  _sha="$(git -C "$_QR_WT" rev-parse HEAD 2>/dev/null)"
+  [[ "$_sha" =~ ^[0-9a-f]{40}$ ]] || _talos_queue_end wait candidate-unverified
+  _QR_CAND="$_prefix$_base-$(date +%s)"
+  git -C "$_QR_WT" push -q origin "HEAD:refs/heads/$_QR_CAND" >/dev/null 2>&1
+  _prc=$?
+  _osha="$(_talos_queue_origin_sha "$_QR_CAND")"
+  { [ "$_prc" -eq 0 ] || [ -n "$_osha" ]; } && _QR_PUSHED=1
+  _talos_queue_wt_drop
+  { [ "$_prc" -eq 0 ] && [ "$_osha" = "$_sha" ]; } || _talos_queue_end wait candidate-unverified
+  _t0=$SECONDS
+  _talos_emit candidate "$_QR_CAND sha=$_sha prs=$_csv"
+  _talos_post_stage queue_batch_start orchestrator "$_n1" --sha "$_sha" --duration-s 0 --batch-size "$_size" < /dev/null
+
+  # 7. Its required checks: every 30 s (scaled), at most 120 calls.
+  _scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
+  case "$_scale" in '' | *[!0-9.]*) _scale=1 ;; esac
+  while :; do
+    _talos_cap _vcs ref-checks-required "$_sha"
+    _calls=$((_calls + 1))
+    case "$_RC" in
+      0) break ;;
+      1) _talos_queue_end block candidate-red ;;
+      2) [ "$_calls" -lt 120 ] || _talos_queue_end wait candidate-timeout
+         sleep "$(awk -v k="$_scale" 'BEGIN { print 30 * k }')" ;;
+      *) _talos_queue_end wait checks-unverified ;;
+    esac
+  done
+  _talos_post_stage queue_batch_pass orchestrator "$_n1" --sha "$_sha" --duration-s "$((SECONDS - _t0))" \
+    --batch-size "$_size" < /dev/null
+
+  # 8. Nothing moved since the cut.
+  [ "$(_talos_queue_origin_sha "$_base")" = "$_b" ] || _talos_queue_end wait base-moved
+  while read -r _p _qh _n <&3; do
+    [ -n "$_p" ] || continue
+    { _talos_queue_head "$_p" && [ "$_QH" = "$_qh" ]; } || _talos_queue_end wait head-moved
+  done 3<<< "$_picked"
+
+  # 9. Merge in queue order; post-merge for each.
+  while read -r _p _qh _n <&3; do
+    [ -n "$_p" ] || continue
+    _talos_cap _vcs merge-pr "$_p"
+    if [ "$_RC" -ne 0 ]; then
+      _talos_emit pr "$_p"
+      _talos_queue_end block merge-failed
+    fi
+    _talos_post_stage queue_merge orchestrator "$_n" --pr "$_p" --sha "$_qh" --duration-s "$((SECONDS - _t0))" \
+      --batch-size "$_size" < /dev/null
+    _talos_run_capture post-merge bash "$SCRIPT_DIR/talos.sh" post-merge "$_p" "$_n" < /dev/null
+    [ "$_RC" -eq 0 ] || _talos_warn post-merge-failed "pr=$_p"
+    _talos_emit merged "$_p issue=$_n"
+  done 3<<< "$_picked"
+  _talos_queue_end merged
 }
 
 # gate merge <pr> <issue>: Step 4 in its order, one verdict. It writes only what
@@ -2097,8 +2316,11 @@ _talos_sibling() {
 
 # _talos_siblings <merged-issue> <merged-pr>: the sync of every OTHER open
 # pipeline PR, in PR-number order, when merge.auto_sync is on (the default).
+# Under merge.queue talos or github (#930) there is no sweep: the queue tests
+# each PR on top of the base it merges onto, so a sibling never needs syncing.
 _talos_siblings() {
   local _prs _s _i _b
+  case "$(cfg merge.queue)" in talos | github) return 0 ;; esac
   [ "$(cfg merge.auto_sync)" = "true" ] || return 0
   _talos_cap _vcs list-prs
   if [ "$_RC" -ne 0 ] || ! _prs="$(_talos_pipeline_prs "$_OUT")"; then
@@ -5094,7 +5316,13 @@ _talos_run_loop() {
             # loop ends -- the next run re-reads the state. The answer is the
             # verdict line plus its detail lines (reason=, missing=, stale=),
             # relayed on the one stop line; a sanitiser warn line is not part
-            # of the answer.
+            # of the answer. A PR queued under merge.queue: talos (#930) gets
+            # one batch-runner pass first, and its answer is the stop line.
+            if [ "${_r%%$'\n'*}" = "verdict=wait" ] && grep -qx 'reason=queued' <<<"$_r"; then
+              _r="$(bash "$SCRIPT_DIR"/talos.sh queue run < /dev/null)"
+              _talos_emit stop "queue $(grep -v '^warn ' <<<"$_r" | tr '\n' ' ' | sed 's/ $//')"
+              _talos_flush; exit 0
+            fi
             _talos_emit stop "$(grep -v '^warn ' <<<"$_r" | tr '\n' ' ' | sed 's/ $//')"
             _talos_flush; exit 0 ;;
           *)
