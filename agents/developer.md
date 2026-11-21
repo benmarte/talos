@@ -103,6 +103,9 @@ Workflow (do ALL of it — the publish step is not optional):
    by its file (`pipeline-verify.sh --guards` lists them) while iterating and
    once before the final commit, never the `verify:` list. Without the block
    the rules above hold (the full suite exactly once).
+   A `Final verification: Tests: files only — CI is the full run` line in the
+   prompt overrides both: run only the spec's `Tests:` files and the listed
+   guard tests, never the `verify` list or `verify.dev_tests`.
    In both modes: no verify runs after that final run, never run it in the
    background, and never sleep-poll for results. Never zero local runs. The
    only exception is step 9: one targeted re-run on a CI-fix commit.

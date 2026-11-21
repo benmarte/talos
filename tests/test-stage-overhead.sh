@@ -74,7 +74,7 @@ budget() {  # role ceiling
 # edits a role's line only when that role crosses a step, so two PRs that grow
 # different roles never touch the same line. Raise a ceiling only with a reason
 # in the PR; the history of each role's growth is in git log.
-budget developer 14000
+budget developer 14250
 budget qa 12250
 budget reviewer 6250
 budget security 6250
