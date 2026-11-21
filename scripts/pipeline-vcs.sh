@@ -2939,6 +2939,16 @@ _vcs_assignee_want() {
   printf '%s\n' "$want"
 }
 
+# _vcs_unrouted_hint <verb> <n>
+#   The tail of an assignment warning for an issue (#949): with claiming on,
+#   Talos routes only issues assigned to the operator, so an issue left
+#   unassigned does not route until someone assigns it or runs `talos.sh claim`.
+#   Empty for a PR assignment, which has no such consequence.
+_vcs_unrouted_hint() {
+  [ "$1" = "assign-pr" ] && return 0
+  printf '; Talos routes only assigned issues, so #%s will not route until it is assigned (or run: talos.sh claim %s)' "$2" "$2"
+}
+
 # _vcs_assignee_id <verb> <n> <want> [self-resolver-cmd args...]
 #   The identity to assign: <want> itself, or for "self" identity.name (#560)
 #   when it is set -- the login this operator claims under -- else the
@@ -2951,7 +2961,7 @@ _vcs_assignee_id() {
     id="$(cfg identity.name | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
     [ -n "$id" ] || id="$(_vcs_shared_current_user fail-open "$@")"
     if [ -z "$id" ]; then
-      echo "pipeline-vcs: $verb: WARNING -- could not resolve the operator identity (issues.assignee: self); #$n left unassigned" >&2
+      echo "pipeline-vcs: $verb: WARNING -- could not resolve the operator identity (issues.assignee: self); #$n left unassigned$(_vcs_unrouted_hint "$verb" "$n")" >&2
       return 1
     fi
   fi
@@ -2965,13 +2975,13 @@ _vcs_assignee_id() {
 _vcs_assignee_write() {
   local verb="$1" n="$2" id="$3" get_fn="$4" add_fn="$5" add_err
   if ! add_err="$("$add_fn" "$n" "$id" 2>&1 >/dev/null)"; then
-    echo "pipeline-vcs: $verb: WARNING -- could not assign #$n to '$id': $(printf '%s' "$add_err" | tail -1)" >&2
+    echo "pipeline-vcs: $verb: WARNING -- could not assign #$n to '$id': $(printf '%s' "$add_err" | tail -1)$(_vcs_unrouted_hint "$verb" "$n")" >&2
     return 0
   fi
   if "$get_fn" "$n" 2>/dev/null | grep -qixF -- "$id"; then
     echo "$verb: #$n assigned to $id"
   else
-    echo "pipeline-vcs: $verb: WARNING -- '$id' is not #$n's assignee on read-back (not assignable in this project?); left unassigned" >&2
+    echo "pipeline-vcs: $verb: WARNING -- '$id' is not #$n's assignee on read-back (not assignable in this project?); left unassigned$(_vcs_unrouted_hint "$verb" "$n")" >&2
   fi
   return 0
 }

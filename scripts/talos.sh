@@ -310,7 +310,7 @@
 #                       open PR that names a pipeline.risk_areas entry in its title,
 #                       body or latest PM spec while the spec has no `## Threat model`)
 #           action=ask-owner issue=<N> question=<sanitised>
-#           action=wait reason=<draft|ci|human-merge|blocked|owner|lease|dependency|batched|cap|none>
+#           action=wait reason=<draft|ci|human-merge|blocked|owner|lease|dependency|batched|cap|unassigned|none>
 #                       [retry_after_s=<s>]
 #           The draft wait is key-carrying: action=wait reason=draft pr=<M> issue=<N>
 #         A planner or adversarial dispatch and the draft wait end in ` ref=<topic>`.
@@ -338,7 +338,7 @@
 #         max-total-dispatches budget-exceeded record-failed context-budget
 #         (exit 2 for usage; exit 0 for context-budget; else 1)
 #   warn: context-unknown
-#   wait: draft ci human-merge blocked owner lease none dependency batched cap
+#   wait: draft ci human-merge blocked owner lease none dependency batched cap unassigned
 #
 # map     The project map (#614): one self-contained HTML page for this repository
 #         and an index of every repository rendered under TALOS_HOME, from local
@@ -1065,7 +1065,7 @@ _talos_relay() {
 # in-flight list read and the passes' `next` share one collect instead of paying
 # one each. Only a successful read that is a JSON object is kept; a copy older than
 # two minutes is not used; and every verb that writes (done, gate, docs-gate,
-# post-merge, sweep, claim, and a claim made inside `next`) empties it first, so
+# post-merge, sweep, claim) empties it first, so
 # a pass after a stage's labels changed reads the state that stage left.
 _talos_collect_get() {  # prints the cached state; non-zero on a miss
   local _c="${TALOS_COLLECT_CACHE:-}"
@@ -4723,7 +4723,7 @@ print("" if n is None else n)' "$SCRIPT_DIR" "${TALOS_TRANSCRIPT_PATH:-}" 2>/dev
 # it (#522) and the wait it still causes reports the seconds until
 # reclaimable, never the TTL.
 _talos_next() {
-  local _issue="" _target _a _r _leased _roles="" _retry _skip _tries
+  local _issue="" _target _a _r _leased _roles="" _retry _skip
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --issue) _issue="${2:-}"; shift 2 ;;
@@ -4804,33 +4804,10 @@ _talos_next() {
   # carries only the action line.
   _issue="$(printf '%s\n' "$_a" | sed -n 's/.* issue=//p')"
 
-  # The claim (#560): the first dispatch on an issue nobody is assigned to
-  # (collect's `unclaimed`: a ready issue or a legacy in-flight one) assigns it
-  # to this operator before anything is answered, so two operators never both
-  # start it. A claim lost to a lower login re-routes from a fresh read -- the
-  # issue is the other operator's now and the walk moves to the next one (the
-  # re-route is a child `next`, bounded at five losses in a row); a target
-  # named with --issue answers `wait reason=theirs` the same way.
-  if python3 -I -c 'import json, sys; sys.exit(0 if int(sys.argv[2]) in (json.load(open(sys.argv[1])).get("unclaimed") or []) else 1)' \
-       "$_CFG_CACHE_DIR/state.json" "$_issue" 2>/dev/null; then
-    _talos_claim_one "$_issue"
-    case "$_CLAIM_RESULT" in
-      lost)
-        _tries="${TALOS_NEXT_CLAIM_TRIES:-0}"
-        _talos_isnum "$_tries" || _tries=0
-        if [ "$_tries" -ge 5 ]; then
-          _talos_emit_next_wait "action=wait reason=none"
-          _talos_flush; exit 0
-        fi
-        _a="$(TALOS_NEXT_CLAIM_TRIES=$((_tries + 1)) bash "$SCRIPT_DIR/talos.sh" next ${_target:+--issue "$_target"})"
-        _r=$?
-        printf '%s\n' "$_a"
-        exit "$_r" ;;
-      unreadable) _talos_stop claim-unreadable ;;
-      release-failed) _talos_stop claim-release-failed ;;
-    esac
-  fi
-
+  # No claim here (#949): with claiming on, collect leaves out every issue nobody
+  # is assigned to (listed as `unassigned`; `next --issue N` on one answers
+  # `wait reason=unassigned`), so what reaches this point is the operator's own.
+  # `talos.sh claim <N>` is the explicit way to take an unassigned issue.
   _talos_lease acquire "$_issue" > "$_CFG_CACHE_DIR/lease.line"
   case "$?" in
     0)

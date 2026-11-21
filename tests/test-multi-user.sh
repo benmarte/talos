@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# test-multi-user.sh -- several operators on one repo (#560): the ownership
-# filter of `collect`, `next`, `state --summary` and `run`, and the claim `next`
-# makes before its first dispatch.
+# test-multi-user.sh -- several operators on one repo (#560, #949): the ownership
+# filter of `collect`, `next`, `state --summary` and `run`: only issues assigned
+# to the operator (and their PRs) route; an unassigned issue is never routed or
+# claimed automatically, `talos.sh claim N` is the explicit way to take it.
 #
 # Two operators, A = alice and B = bob (the stub's current-user is $STUB_ME),
 # share one stub repo whose issues and PRs carry assignees:
@@ -11,8 +12,9 @@
 #
 #   - A's collect/next/run never routes anything of B's (queued, in flight,
 #     blocked, PRs, needs-owner) and B's items show up as `theirs`
-#   - an unassigned item is claimable: `next` claims it before the dispatch
-#     answer; a claim lost to a lower login moves on to the next issue
+#   - an unassigned item is not routed and not claimed by `next`/`run`
+#     (`unassigned: #N` in `state --summary`, `next --issue N` answers
+#     `wait reason=unassigned`); `claim N` takes it and the next `next` routes it
 #   - issues.claim: false, issues.assignee: none, an unresolvable identity and
 #     an unsupported provider each give today's unfiltered behaviour exactly
 #
@@ -151,11 +153,12 @@ collect_as() {  # <login>
 cfg_p; reset_repo
 collect_as alice
 assert_eq "0" "$RC" "collect as alice: exits 0"
-assert_eq '[2,3]' "$(J "d['queued']")" "A: only the issues assigned to A or unassigned are queued (not bob's #1)"
+assert_eq '[2]' "$(J "d['queued']")" "AC3 A: only the issues assigned to A are queued (not bob's #1, not the unassigned #3)"
 assert_eq '[]' "$(J "d['inflight']")" "A: bob's pipeline:dev issue #4 is not in flight for A"
 assert_eq '[]' "$(J "d['blocked']")" "A: bob's blocked issue and blocked PR are not A's to report"
 assert_eq '[]' "$(J "d['prs']")" "A: bob's pipeline PRs are not A's"
-assert_eq '[3]' "$(J "d['unclaimed']")" "A: the unassigned ready issue is claimable"
+assert_eq '[3]' "$(J "d['unassigned']")" "AC1 A: the unassigned ready issue is listed as unassigned, not queued"
+assert_eq 'false' "$(J "'unclaimed' in d")" "AC1 A: nothing is left for next to claim"
 assert_eq 'alice' "$(J "d['me']")" "A: the state names the operator"
 assert_eq '[[1,"bob"],[4,"bob"],[6,"bob"],[7,"bob"],[8,"bob"]]' "$(J "[[t['issue'], t['owner']] for t in d['theirs'] if t['kind'] == 'issue']")" "A: bob's issues are listed as theirs, with the owner"
 assert_eq '[[17,7,"bob"],[18,8,"bob"]]' "$(J "[[t['n'], t['issue'], t['owner']] for t in d['theirs'] if t['kind'] == 'PR']")" "A: bob's PRs are listed as theirs, with the issue and owner"
@@ -163,7 +166,7 @@ assert_eq "1" "$(count_calls list-assignees)" "A: one bulk read of the assignees
 assert_eq "0" "$(count_calls pr-head)" "A: no per-PR read is spent on bob's PRs"
 
 collect_as bob
-assert_eq '[1,3]' "$(J "d['queued']")" "B: queued is B's #1 and the unassigned #3"
+assert_eq '[1]' "$(J "d['queued']")" "B: queued is B's #1 only (the unassigned #3 is nobody's yet)"
 assert_eq '[4]' "$(J "d['inflight']")" "B: B's in-flight issue without a PR (7 and 8 have PRs)"
 assert_eq '[17,18]' "$(J "[p['n'] for p in d['prs']]")" "B: B's PRs are B's"
 assert_eq '[["issue",6],["PR",18]]' "$(J "d['blocked']")" "B: B's blocked items are B's"
@@ -202,42 +205,80 @@ me alice next
 assert_eq "0|action=wait reason=none" "$RC|$OUT" "A's next with only bob's work left is wait reason=none"
 assert_eq "0" "$(count_calls assign-issue)" "A claims nothing of bob's"
 
-# ═════ next: the claim before the first dispatch ═══════════════════════════
-cfg_p; reset_repo
-printf 'bob\n' > "$FX/as/2"      # only #3 is free for A
-me alice next
-assert_eq "0|action=dispatch stage=validator issue=3" "$RC|$OUT" "A's next picks the unassigned #3"
-assert_eq "alice" "$(as_state 3)" "A's next claimed #3 (assigned it to A) before answering"
-assert_eq "1" "$(count_calls assign-issue)" "exactly one claim write"
-
-# a claim lost to a lower login moves on: zed claims #3 while amy's write lands
+# ═════ an unassigned issue: never routed, never claimed by next/run (#949) ═══
+# AC1: #3 is the only free issue; A's next does not take it and does not assign it
 cfg_p; reset_repo
 printf 'bob\n' > "$FX/as/2"
-printf 'amy\n' > "$FX/racer"
-me zed next
-assert_eq "0|action=wait reason=none" "$RC|$OUT" "a claim lost to a lower login moves on (nothing else for zed): wait reason=none"
-assert_eq "amy" "$(as_state 3)" "exactly one owner of #3 after the race: the lower login"
+me alice next
+assert_eq "0|action=wait reason=none" "$RC|$OUT" "AC1 A's next does not dispatch the unassigned #3"
+assert_eq "0" "$(count_calls assign-issue)" "AC1 A's next does not assign the unassigned #3"
+assert_eq "" "$(as_state 3)" "AC1 #3 stays unassigned after next"
+rm -f "$FX/agent.log"
+me alice run
+assert_contains "$OUT" "stop action=wait reason=none" "AC1 A's run ends idle: the unassigned #3 is not dispatched"
+assert_eq "0" "$(count_calls assign-issue)" "AC1 A's run does not assign the unassigned #3"
+assert_eq "" "$(cat "$FX/agent.log" 2>/dev/null)" "AC1 A's run dispatches no agent on the unassigned #3"
+me alice state --summary
+assert_contains "$OUT" "where=unassigned: #3" "AC1 state --summary lists the unassigned #3 on its own line"
+assert_contains "$OUT" "where=next: nothing queued" "AC1 state --summary: the unassigned #3 is not A's next"
 
-# the loser moves on to the NEXT issue, not to a wait, when there is one
-cfg_p; reset_repo
-printf '%s' '[{"number":3,"title":"three","labels":[{"name":"pipeline:ready"}],"body":""},{"number":5,"title":"five","labels":[{"name":"pipeline:ready"}],"body":""}]' > "$FX/issues.json"
-printf '[]' > "$FX/prs.json"
-rm -f "$FX"/as/[0-9]*; : > "$FX/as/3"; : > "$FX/as/5"
-printf 'amy\n' > "$FX/racer"
-me zed next
-assert_eq "0|action=dispatch stage=validator issue=5" "$RC|$OUT" "after losing #3 zed's next moves on to #5"
-assert_eq "amy" "$(as_state 3)" "#3 belongs to amy alone"
-assert_eq "zed" "$(as_state 5)" "zed claimed #5"
+# AC2: a pin on an unassigned issue answers wait reason=unassigned and writes nothing
+me alice next --issue 3
+assert_eq "0|action=wait reason=unassigned" "$RC|$OUT" "AC2 next --issue 3 (unassigned) answers wait reason=unassigned"
+assert_eq "" "$(as_state 3)" "AC2 the pinned issue stays unassigned"
+assert_eq "0" "$(count_calls assign-issue)" "AC2 a pin writes no assignee"
 
-# a legacy unassigned in-flight issue is claimed like a ready one
+# an unassigned in-flight issue is not continued either
 cfg_p; reset_repo
 : > "$FX/as/4"; printf 'bob\n' > "$FX/as/2"; printf 'bob\n' > "$FX/as/3"
 me alice next --issue 4
-assert_eq "0|action=dispatch stage=developer issue=4" "$RC|$OUT" "A continues an unassigned in-flight issue"
-assert_eq "alice" "$(as_state 4)" "A claimed the unassigned in-flight issue #4 first"
+assert_eq "0|action=wait reason=unassigned" "$RC|$OUT" "AC2 an unassigned in-flight issue is not continued"
+me alice next
+assert_eq "0|action=wait reason=none" "$RC|$OUT" "AC2 the untargeted walk passes the unassigned in-flight issue over"
+
+# AC3: an issue assigned to A with others routes as today
+cfg_p; reset_repo
+printf 'bob\nalice\n' > "$FX/as/1"; printf 'bob\n' > "$FX/as/3"
+me alice next --issue 1
+assert_eq "0|action=dispatch stage=validator issue=1" "$RC|$OUT" "AC3 an issue assigned to A and bob routes to A"
+assert_eq "0" "$(count_calls assign-issue)" "AC3 a held issue needs no write"
+
+# AC4: claim N takes the unassigned issue, then next routes it
+cfg_p; reset_repo
+printf 'bob\n' > "$FX/as/2"
+me alice claim 3
+assert_eq "0|claim=taken owner=alice" "$RC|$OUT" "AC4 claim 3 takes the unassigned issue"
+assert_eq "alice" "$(as_state 3)" "AC4 #3 is assigned to A"
+me alice next
+assert_eq "0|action=dispatch stage=validator issue=3" "$RC|$OUT" "AC4 the next next routes the claimed #3"
+
+# a lost tie on claim: the lower login keeps the issue
+cfg_p; reset_repo
+printf 'bob\n' > "$FX/as/2"
+printf 'amy\n' > "$FX/racer"
+me zed claim 3
+assert_eq "0|claim=lost owner=amy" "$RC|$OUT" "AC4 claim 3 lost to a lower login that claimed at once"
+assert_eq "amy" "$(as_state 3)" "AC4 exactly one owner of #3: the lower login"
+
+# AC6: the rule is the same whichever provider the config names (the verb stub
+# stands in for each provider's list-assignees / assign-issue)
+for P in github github-api gitlab azure; do
+  printf '{"vcs": {"provider": "%s", "repo": "acme/widget"}, "base_branch": "main", "pr": {"draft": false}}\n' "$P" > talos.pipeline.json
+  reset_repo
+  printf 'bob\n' > "$FX/as/2"
+  me alice next
+  assert_eq "0|action=wait reason=none" "$RC|$OUT" "AC6 $P: the unassigned #3 is not dispatched"
+  me alice next --issue 3
+  assert_eq "0|action=wait reason=unassigned" "$RC|$OUT" "AC6 $P: next --issue 3 answers wait reason=unassigned"
+  assert_eq "0" "$(count_calls assign-issue)" "AC6 $P: nothing assigned by next"
+  me alice claim 3
+  assert_eq "0|claim=taken owner=alice" "$RC|$OUT" "AC6 $P: claim 3 takes it"
+  me alice next
+  assert_eq "0|action=dispatch stage=validator issue=3" "$RC|$OUT" "AC6 $P: the next next routes it"
+done
 
 # #582: a pinned next routes the pinned issue's own PR -- the issue carries no
-# pipeline label once its PR is open -- claiming first, and never another PR
+# pipeline label once its PR is open -- once the issue is the operator's
 cfg_p; reset_repo
 printf '%s' '[{"number":9,"title":"nine","labels":[],"body":""},{"number":10,"title":"ten","labels":[],"body":""}]' > "$FX/issues.json"
 printf '%s' '[{"number":19,"title":"PR 19","headRefName":"fix/issue-9-x","baseRefName":"main","isCrossRepository":false,"labels":[{"name":"pipeline:review"}]}]' > "$FX/prs.json"
@@ -245,10 +286,14 @@ printf '%040d\n' 19 > "$FX/head.19"
 rm -f "$FX"/as/[0-9]*; : > "$FX/as/9"; : > "$FX/as/10"
 me alice next --issue 10
 assert_eq "0|action=wait reason=none" "$RC|$OUT" "#582: A's pin on an issue without a PR never routes another issue's PR"
-assert_eq "0" "$(count_calls assign-issue)" "#582: nothing was claimed for the wrong issue"
 me alice next --issue 9
-assert_eq "0|action=dispatch stage=qa pr=19 issue=9" "$RC|$OUT" "#582: A's pin on #9 routes #9's own PR (unlabeled issue, claims on)"
-assert_eq "alice" "$(as_state 9)" "#582: the pinned dispatch claimed the unassigned issue first"
+assert_eq "0|action=wait reason=unassigned" "$RC|$OUT" "AC2 #582: the PR of an unassigned issue is not routed by A's pin"
+me alice next
+assert_eq "0|action=wait reason=none" "$RC|$OUT" "AC2 #582: the unpinned next does not route the PR of an unassigned issue"
+assert_eq "0" "$(count_calls assign-issue)" "AC2 #582: nothing was claimed"
+printf 'alice\n' > "$FX/as/9"
+me alice next --issue 9
+assert_eq "0|action=dispatch stage=qa pr=19 issue=9" "$RC|$OUT" "#582: A's pin on #9 routes #9's own PR once it is A's"
 me alice next
 assert_eq "0|action=dispatch stage=qa pr=19 issue=9" "$RC|$OUT" "#582: the unpinned next answers the same PR"
 printf 'bob\n' > "$FX/as/9"
@@ -314,7 +359,7 @@ assert_eq "0" "$(count_calls list-assignees)" "no identity: the assignees are no
 # identity.name stands in for the login
 cfg_p '"identity": {"name": "bob"}'; reset_repo
 collect_as alice
-assert_eq '[1,3]' "$(J "d['queued']")" "identity.name: the operator is bob whoever is logged in"
+assert_eq '[1]' "$(J "d['queued']")" "identity.name: the operator is bob whoever is logged in"
 assert_eq "0" "$(count_calls current-user)" "identity.name: no identity lookup"
 
 # a provider with no assignees (file mode answers 2): unfiltered

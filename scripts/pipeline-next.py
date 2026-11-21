@@ -353,14 +353,16 @@ def collect():
         capped.append('list-issues')
     issues = dict((_num(i), _label_set(i)) for i in raw_issues if _num(i))
 
-    # Multi-user claiming (#560): with --me (the operator's login), act only on
-    # what is assigned to the operator or to nobody. The assignees come from one
-    # bulk read; exit 2 is a provider with no assignees (file mode), which keeps
-    # today's unfiltered state, and any other failure fails the run: a guess
-    # here would route another operator's work. An issue is another operator's
-    # ("theirs") when it has assignees and the operator is not one of them.
+    # Multi-user claiming (#560, #949): with --me (the operator's login), act only
+    # on what is assigned to the operator. The assignees come from one bulk read;
+    # exit 2 is a provider with no assignees (file mode), which keeps today's
+    # unfiltered state, and any other failure fails the run: a guess here would
+    # route another operator's work. An issue is another operator's ("theirs")
+    # when it has assignees and the operator is not one of them; an issue with no
+    # assignee is nobody's: never routed and never claimed here (`talos.sh claim`
+    # is the explicit way), only listed in `unassigned` so it stays visible.
     me = opts.get('me', '')
-    amap, theirs, theirs_issues = {}, [], {}
+    amap, theirs, theirs_issues, unassigned_issues, unassigned_shown = {}, [], {}, set(), set()
     if me:
         rc, out, err = vcs('list-assignees')
         if rc == 2:
@@ -380,10 +382,15 @@ def collect():
     if me:
         for n in sorted(issues):
             who = amap.get(n) or []
-            if who and me.lower() not in [w.lower() for w in who]:
+            if not who:
+                unassigned_issues.add(n)
+            elif me.lower() not in [w.lower() for w in who]:
                 theirs_issues[n] = min(who, key=lambda w: w.lower())
                 theirs.append({'kind': 'issue', 'n': n, 'issue': n, 'owner': theirs_issues[n]})
-        issues = dict((n, l) for n, l in issues.items() if n not in theirs_issues)
+        # Shown: the unassigned issues Talos would otherwise act on (a Talos label
+        # or an open pipeline PR), not every open issue of the repo.
+        unassigned_shown = set(n for n in unassigned_issues if issues[n] & talos_labels)
+        issues = dict((n, l) for n, l in issues.items() if n not in theirs_issues and n not in unassigned_issues)
 
     # list-needs-owner: exit 2 is an unsupported provider (no Owner lines); any
     # other failure is a failed read and fails the run like list-prs does.
@@ -421,6 +428,11 @@ def collect():
             theirs.append({'kind': 'PR', 'n': n, 'issue': int(m.group(1)),
                            'owner': theirs_issues[int(m.group(1))]})
             continue
+        # ... and one whose issue nobody holds is not routed either (#949): not
+        # blocked-listed, not looked up; its issue shows under `unassigned`.
+        if pipeline_pr and int(m.group(1)) in unassigned_issues:
+            unassigned_shown.add(int(m.group(1)))
+            continue
         if BLOCKED_LABEL in labels:
             blocked.append(('PR', n))
         if not m or it.get('baseRefName') != base:
@@ -430,7 +442,7 @@ def collect():
             continue
         eligible.append((n, labels, int(m.group(1))))
     if me:
-        gone = set(theirs_issues) | set(t['n'] for t in theirs if t['kind'] == 'PR')
+        gone = set(theirs_issues) | unassigned_issues | set(t['n'] for t in theirs if t['kind'] == 'PR')
         if owners is not None:
             owners = [o for o in owners if o['n'] not in gone]
     blocked += [('issue', n) for n in issues if BLOCKED_LABEL in issues[n]]
@@ -496,14 +508,12 @@ def collect():
              'inflight': inflight, 'owners': owners, 'capped': capped,
              'priority': priority}
     if me:
-        # The items `talos.sh next` must claim before it dispatches: open
-        # issues of the operator's queue, in flight or behind a PR that no one
-        # has been assigned to (#560). Added only while claiming is on, so the
-        # unfiltered state is byte-for-byte today's.
-        pending = set(queued) | set(inflight) | set(e[2] for e in eligible)
+        # Added only while claiming is on, so the unfiltered state is
+        # byte-for-byte today's. `unassigned` (#949): open issues Talos would act
+        # on that nobody is assigned to; they are not routed and not claimed.
         state['me'] = me
         state['theirs'] = sorted(theirs, key=lambda t: (t['n'], t['kind']))
-        state['unclaimed'] = sorted(n for n in pending if n in issues and not amap.get(n))
+        state['unassigned'] = sorted(unassigned_shown)
     cache_titles(raw_issues)
     sys.stdout.write(json.dumps(state))
 
@@ -624,6 +634,7 @@ def issue_side(data, o):
     owners = data.get('owners') or []
     blocked = set(n for _, n in (data.get('blocked') or []))
     theirs = set(t['issue'] for t in (data.get('theirs') or []) if isinstance(t, dict) and isinstance(t.get('issue'), int))
+    unassigned = set(n for n in (data.get('unassigned') or []) if isinstance(n, int) and not isinstance(n, bool))
     by_owner = dict((x['n'], x) for x in owners if isinstance(x, dict))
     answered = answered_owner_prs(data)
     roles = set(x for x in o.get('roles', '').split(',') if x)
@@ -826,6 +837,9 @@ def issue_side(data, o):
         # An issue of another operator (#560): never routed, whatever its labels say.
         if n in theirs:
             say('wait', reason='theirs')
+        # An issue nobody is assigned to (#949) is never routed, nor claimed here.
+        if n in unassigned:
+            say('wait', reason='unassigned')
         if n in held or n in by_owner:
             ask_owner(n)
         # The issue's open pipeline PR is the PR side's, as in the unpinned
@@ -998,6 +1012,10 @@ def where(data):
             mine.setdefault(num(t.get('issue')), o if isinstance(o, str) and re.fullmatch(r'[A-Za-z0-9._@+\[\]-]{1,64}', o) else '?')
     if mine:
         print('theirs: ' + ', '.join(some(sorted(mine.items()), '#%d (@%s)', 5)))
+    # Issues nobody is assigned to (#949): not routed, kept visible on their own line.
+    free = sorted(set(num(n) for n in data.get('unassigned') or [] if num(n)))
+    if free:
+        print('unassigned: ' + ', '.join(some(free, '#%d', 5)))
 
 
 # ── entry point ──────────────────────────────────────────────────────────────

@@ -136,4 +136,11 @@ for P in github github-api gitlab azure; do
 done
 unset STUB_CURRENT_USER
 
+# #949: an assignment that does not land says the issue will not route until it
+# is assigned or claimed (a PR assignment says nothing of the kind)
+cfg_p github; setstate 7
+STUB_ASSIGN_DROP=1 STUB_CURRENT_USER=operator1 run assign-issue 7
+assert_contains "$err" "talos.sh claim 7" "#949 github: a failed assign-issue names talos.sh claim <N>"
+assert_eq "" "$(state 7)" "#949 github: the failed assignment left #7 unassigned"
+
 finish

@@ -25,6 +25,9 @@ TALOS="$TALOS_ROOT/scripts/talos.sh"
 ERR="$SANDBOX/stderr"
 N=7
 PR=12
+# The operator's own issue: with claiming on Talos routes only assigned issues (#949).
+OPERATOR="operator1"
+export STUB_CURRENT_USER="$OPERATOR"
 HEAD_SHA="1111111111111111111111111111111111111111"
 
 # A small transcript keeps next's context-budget check (#605) quiet.
@@ -43,7 +46,7 @@ LEASE_RESET() { rm -f "$LEASE" "${LEASE:?}.lock.d"; }
 # issue_state <labels json> : the open issue, as the listing and the single read serve it.
 issue_state() {
   export STUB_ISSUE_LABELS_JSON="$1"
-  export STUB_ISSUE_LIST="[{\"number\": $N, \"title\": \"routing e2e\", \"labels\": $1, \"body\": \"\"}]"
+  export STUB_ISSUE_LIST="[{\"number\": $N, \"title\": \"routing e2e\", \"labels\": $1, \"assignees\": [{\"login\": \"$OPERATOR\"}], \"body\": \"\"}]"
   export STUB_PR_LIST='[]'
 }
 # pr_state <labels json> <approval roles...> : the issue's open non-draft PR with
@@ -55,7 +58,7 @@ pr_state() {
     _c="$_c{\"body\": \"<!-- talos:approval sha=$HEAD_SHA role=$_r -->\"},"
   done
   export STUB_ISSUE_LABELS_JSON='[]'
-  export STUB_ISSUE_LIST="[{\"number\": $N, \"title\": \"routing e2e\", \"labels\": [], \"body\": \"\"}]"
+  export STUB_ISSUE_LIST="[{\"number\": $N, \"title\": \"routing e2e\", \"labels\": [], \"assignees\": [{\"login\": \"$OPERATOR\"}], \"body\": \"\"}]"
   export STUB_PR_LIST="[{\"number\": $PR, \"state\": \"OPEN\", \"title\": \"fix\", \"headRefName\": \"fix/issue-$N-routing\", \"baseRefName\": \"main\", \"isCrossRepository\": false, \"labels\": $_labels}]"
   export STUB_PR_LABELS_JSON="$_labels"
   export STUB_PR_COMMENTS_JSON="[${_c%,}]"

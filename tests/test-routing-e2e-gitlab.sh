@@ -50,7 +50,7 @@ LEASE_RESET() { rm -f "$LEASE" "${LEASE:?}.lock.d"; }
 issue_state() {
   local _labels="[]"
   [ -z "$1" ] || _labels="[\"$1\"]"
-  export STUB_GITLAB_ISSUE_LIST="[{\"iid\": $N, \"title\": \"routing e2e\", \"state\": \"opened\", \"labels\": $_labels, \"description\": \"\"}]"
+  export STUB_GITLAB_ISSUE_LIST="[{\"iid\": $N, \"title\": \"routing e2e\", \"state\": \"opened\", \"labels\": $_labels, \"assignees\": [{\"username\": \"$BOT\"}], \"description\": \"\"}]"
   export STUB_GITLAB_ISSUE_VIEW="{\"id\": 9007, \"iid\": $N, \"title\": \"routing e2e\", \"state\": \"opened\", \"labels\": $_labels, \"description\": \"just prose\", \"assignees\": []}"
   export STUB_GITLAB_MR_LIST='[]'
 }

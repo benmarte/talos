@@ -42,7 +42,7 @@ Run once; keep the answer for the whole run. It replaces every config read (proj
 - `warn reason=<r>`: relay once, continue; `resolve-failed role=<role>`: do not spawn it.
 - `stop reason=<r>` (non-zero exit): abort, print it, process no issues.
 
-Then `bash scripts/talos.sh state --summary` (read-only; three `where=` lines, plus `theirs:` when claiming); a new session resumes by starting this skill. On a `stop`, report it and continue. VCS mode: `bash scripts/pipeline-vcs.sh assert-sync`; non-zero means print the error output and halt before the driver (or the loop's Step 1) starts. `VCS_PROVIDER = file`: `ref=file-mode` replaces the loop's Steps 1, 3 and 4.
+Then `bash scripts/talos.sh state --summary` (read-only; three `where=` lines, `theirs:`, `unassigned:` when claiming); a new session resumes by starting this skill. On a `stop`, report it and continue. VCS mode: `bash scripts/pipeline-vcs.sh assert-sync`; non-zero means print the error output and halt before the driver (or the loop's Step 1) starts. `VCS_PROVIDER = file`: `ref=file-mode` replaces the loop's Steps 1, 3 and 4.
 
 **`ISOLATION`:** `worktree` (default; per-stage worktree, tagged and removed at merge) | `branch` (the orchestrator's checkout, `max_parallel: 1`) | else refused. `max_parallel > 1` with compose `verify:` needs concurrency-safe scripts (Talos manages no compose names, ports or scratch dirs).
 
