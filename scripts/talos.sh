@@ -110,7 +110,12 @@
 #         reason=queue-state-unverified` (exit 1), never a partial queue.
 # queue run  One pass of the batch runner (#930), exit 0. Output: `verdict=off|
 #         empty|merged|ejected|wait|block` first, then key=value lines. Not talos (unset,
-#         off, github): verdict=off, no provider call, no push. Else:
+#         off, github): verdict=off, no provider call, no push. Else, one runner
+#         per base branch (#965): a pass first takes the lock
+#         <git common dir>/talos-queue-<base>.lock.d (pipeline-lock.sh, a dead
+#         holder's lock is reclaimed) and holds it to its end; with another
+#         runner holding it the answer is wait reason=queue-busy, with no
+#         candidate cut, nothing pushed and nothing deleted. Then:
 #         1. every origin branch <merge.queue_branch_prefix><base>-<digits> is a
 #            crashed pass's candidate and is deleted (`cleanup=<b>`; a failed
 #            delete is `warn reason=cleanup-failed branch=<b>`);
@@ -133,7 +138,11 @@
 #            (default 3600 s: 120; a value outside 30-86400 is stop
 #            reason=config-unreadable before step 1): 0 green, 1 red, 2 at
 #            the last call wait reason=candidate-timeout, anything else wait
-#            reason=checks-unverified. Red (#931): the red set S (k PRs) is
+#            reason=checks-unverified. While a candidate's check answer is 2
+#            (pending), a candidate gone stale (origin's base is not B, or a PR
+#            of it is no longer an open PR of the base) is deleted without
+#            waiting for its CI (`stale=<branch>`) and the pass goes back to 2
+#            with a fresh cut, at most 5 times (then wait reason=base-moved). Red (#931): the red set S (k PRs) is
 #            bisected: k=1 is its PR; else a binary search for the shortest red
 #            prefix, each step a cut of B plus the first m PRs of S pushed and
 #            polled as in 6-7 (the previous candidate deleted first; a failed cut
@@ -157,7 +166,7 @@
 #         (--pr, --sha the PR head), each with --duration-s (since the first
 #         push) and --batch-size; queue_eject per ejected PR (its issue, --pr,
 #         --sha its cut head, --batch-size the red set it was isolated from).
-# queue-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable trust-unverified queue-state-unverified no-candidate candidate-unverified candidate-timeout checks-unverified base-moved head-moved merge-failed cleanup-failed post-merge-failed
+# queue-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable trust-unverified queue-state-unverified no-candidate candidate-unverified candidate-timeout checks-unverified base-moved head-moved merge-failed cleanup-failed post-merge-failed queue-busy
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         trust-unverified (exit 2 for usage; else 1), and queue list's
 #         queue-state-unverified
@@ -1797,6 +1806,9 @@ _QR_CAND=""
 _QR_PUSHED=0
 _QR_WT=""
 _QR_LOCK=""
+_QR_BASE=""
+_QR_B=""
+_QR_PICKED=""
 _QR_SHA=""
 _QR_RED=""
 _QR_BAD=""
@@ -1928,9 +1940,28 @@ _talos_queue_push() {
   _talos_emit candidate "$_QR_CAND sha=$_QR_SHA prs=$2"
 }
 
-# _talos_queue_poll: step 7 for the candidate _QR_SHA: ref-checks-required every
+# _talos_queue_stale (#965): 0 when the candidate cut from the base sha _QR_B with
+# the rows _QR_PICKED can no longer merge: origin's base is not _QR_B, or a PR of
+# it is no longer an open PR of the base (merged or closed). 1 when it is still
+# good, or when a read fails (a read that fails never discards a candidate).
+_talos_queue_stale() {
+  local _o _open _p _qh _n
+  _o="$(_talos_queue_origin_sha "$_QR_BASE")"
+  [ -z "$_o" ] || [ "$_o" = "$_QR_B" ] || return 0
+  _talos_cap _vcs list-prs
+  [ "$_RC" -eq 0 ] || return 1
+  _open="$(python3 -I -c "$_TALOS_QUEUE_PRS_PY" "$_QR_BASE" <<< "$_OUT" 2>/dev/null)" || return 1
+  while read -r _p _qh _n <&4; do
+    [ -n "$_p" ] || continue
+    case $'\n'"$_open" in *$'\n'"$_p "*) ;; *) return 0 ;; esac
+  done 4<<< "$_QR_PICKED"
+  return 1
+}
+
+# _talos_queue_poll [restart]: step 7 for the candidate _QR_SHA: ref-checks-required every
 # 30 s (times TALOS_RETRY_SLEEP_SCALE), at most _QR_POLLS calls (merge.queue_timeout_s
-# / 30, 120 by default). 0 green; 1 red, its stdout in _QR_RED. Exit 2 at the
+# / 30, 120 by default). 0 green; 1 red, its stdout in _QR_RED; 3 (only with
+# `restart`) stale while pending, see _talos_queue_stale. Exit 2 at the
 # last call is wait reason=candidate-timeout,
 # any other exit wait reason=checks-unverified: the pass ends there, on the
 # batch or on any bisection step, with nothing merged and nothing more ejected.
@@ -1944,6 +1975,8 @@ _talos_queue_poll() {
       0) return 0 ;;
       1) _QR_RED="$_OUT"; return 1 ;;
       2) [ "$_calls" -lt "$_QR_POLLS" ] || _talos_queue_end wait candidate-timeout
+         # With `restart` (#965), a candidate gone stale is 3: the caller re-cuts.
+         [ "${1:-}" != restart ] || ! _talos_queue_stale || return 3
          sleep "$(awk -v k="$_scale" 'BEGIN { print 30 * k }')" ;;
       *) _talos_queue_end wait checks-unverified ;;
     esac
@@ -2005,8 +2038,8 @@ _talos_queue_eject() {
 }
 
 _talos_queue_run() {
-  local _base _prefix _batch _method _tmo _rows _p _qh _qe _br _n _rx _b _t0
-  local _picked="" _csv="" _size=0 _n1="" _branches=() _a
+  local _base _prefix _batch _method _tmo _rows _p _qh _qe _br _n _rx _b _t0=""
+  local _picked="" _csv="" _size=0 _n1="" _branches=() _a _recuts=0 _stale=0 _prc=0
   _talos_prepare queue pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-hooks.sh \
                        pipeline-mergebase.sh pipeline-lock.sh
   [ "$(cfg merge.queue)" = "talos" ] || _talos_verdict off
@@ -2028,8 +2061,18 @@ _talos_queue_run() {
   _QR_LOCK="$(git rev-parse --git-common-dir 2>/dev/null || echo .git)/talos-worktree"
   _talos_on_exit _talos_queue_exit_hook
 
+  # 0. One runner per base branch (#965): the lock is held from here to the end
+  # of the pass (released by an exit hook, after the candidate is deleted), so
+  # step 1 never deletes a live runner's candidate. A dead holder's lock is
+  # reclaimed; with a live holder the answer is queue-busy and nothing is touched.
+  _QR_BASE="$_base"
+  _lock_acquire "$(git rev-parse --git-common-dir 2>/dev/null || echo .git)/talos-queue-${_base//[!A-Za-z0-9._-]/_}" 0 2>/dev/null \
+    || _talos_queue_end wait queue-busy
+
   # 1. Stale candidates of this base.
   _talos_queue_cleanup "$_prefix$_base-"
+  while :; do
+  _picked=""; _csv=""; _size=0; _n1=""; _branches=()
   # 2-3. The queue, and its first merge.queue_batch PRs with their issues.
   _talos_trust
   _talos_queue_load "$_base" || _talos_queue_end wait queue-state-unverified
@@ -2065,18 +2108,31 @@ _talos_queue_run() {
 
   # 6. Push the candidate; origin must hold exactly the cut sha.
   _talos_queue_push "$_prefix$_base-" "$_csv"
-  _t0=$SECONDS
+  [ -n "$_t0" ] || _t0=$SECONDS
   _talos_post_stage queue_batch_start orchestrator "$_n1" --sha "$_QR_SHA" --duration-s 0 --batch-size "$_size" < /dev/null
 
   # 7. Its required checks. Red (#931): bisect the red set to one PR, eject it,
-  # re-cut the rest from B and poll again; none left is verdict=ejected.
-  while ! _talos_queue_poll; do
+  # re-cut the rest from B and poll again; none left is verdict=ejected. A
+  # candidate gone stale while pending (#965) is deleted unwaited and the pass
+  # goes back to step 2 for a fresh cut from the current queue.
+  _QR_B="$_b"; _QR_PICKED="$_picked"; _stale=0
+  while :; do
+    _talos_queue_poll restart && break
+    _prc=$?
+    if [ "$_prc" -eq 3 ]; then _stale=1; break; fi
     _talos_queue_bisect "$_b" "$_method" "$_prefix$_base-" "$_picked"
     _talos_queue_eject "$_base" "$(printf '%s\n' "$_picked" | grep -c .)" "$_t0"
     _picked="$(printf '%s\n' "$_picked" | awk -v p="${_QR_BAD%% *}" 'NF && $1 != p')"
     [ -n "$_picked" ] || _talos_queue_end ejected
     _talos_queue_cut "$_b" "$_method" "$_picked"
     _talos_queue_push "$_prefix$_base-" "$(_talos_queue_csv "$_picked")"
+    _QR_PICKED="$_picked"
+  done
+  [ "$_stale" -eq 1 ] || break
+  _recuts=$((_recuts + 1))
+  [ "$_recuts" -le 5 ] || _talos_queue_end wait base-moved
+  _talos_emit stale "$_QR_CAND"
+  _talos_queue_drop warn
   done
   _talos_post_stage queue_batch_pass orchestrator "$_n1" --sha "$_QR_SHA" --duration-s "$((SECONDS - _t0))" \
     --batch-size "$_size" < /dev/null
