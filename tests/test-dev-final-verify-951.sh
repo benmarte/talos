@@ -131,6 +131,6 @@ assert_contains "$(cat "$TALOS_ROOT/docs/reference.md")" "Final verification: Te
 assert_contains "$(grep '^| `verify.dev_tests` | none' "$TALOS_ROOT/docs/reference.md")" "merge.required_checks" "AC3 the verify.dev_tests row names merge.required_checks"
 assert_contains "$(grep '^| `verify.qa_mode` | derived' "$TALOS_ROOT/docs/reference.md")" "developer" "AC3 the verify.qa_mode row names the developer"
 assert_contains "$(grep '^| developer | LLM' "$TALOS_ROOT/docs/reference.md")" "Tests:" "AC3 the developer role row describes the rule"
-assert_contains "$(sed -n '/^## \[Unreleased\]/,/^## \[/p' "$TALOS_ROOT/CHANGELOG.md" | sed -n 2p)" "Tests:" "AC3 the CHANGELOG top line names the rule"
+assert_contains "$(sed -n '/^## \[Unreleased\]/,/^## \[/p' "$TALOS_ROOT/CHANGELOG.md" | grep -F 'Final verification: Tests: files only')" "Tests:" "AC3 the CHANGELOG Unreleased section names the rule"
 
 finish

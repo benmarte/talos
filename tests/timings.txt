@@ -233,6 +233,7 @@
 33 test-required-when-835.sh
 57 test-resolve-all.sh
 0 test-restamp-dispatch.sh
+25 test-revise-body-spec.sh
 48 test-role-profile-override.sh
 6 test-role-profile-quoting.sh
 42 test-routing-e2e-azure.sh

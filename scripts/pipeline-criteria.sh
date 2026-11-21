@@ -248,8 +248,13 @@
 #       by `**PM spec:** revised by the driver after red-check: ...` (the driver posts
 #       it). A `to-prose` criterion's marker becomes `(prose: <f> must pass at head)`;
 #       a `drop-file` file leaves the `Tests:` line (or its bullet) for a `**Regression:**`
-#       line of the dropped files in backticks, right after it (#773). Exit 1 when the spec is unreadable, a listed
-#       criterion is not a flippable line, or a dropped file is not on the Tests: line.
+#       line of the dropped files in backticks, right after it (#773). Ids are read as
+#       qa-run reads them: on a spec with no `AC<n>` ids (an issue body) by 1-based
+#       position of the checklist line, an unmarked line counting as `(test)`; a flip
+#       there inserts the marker right after the checkbox (#954). Exit 1 when no
+#       finding is given, a listed criterion is not a flippable line, or a dropped file
+#       is not on the Tests: line (a `revise-spec: ...` line on stderr); exit 5 when the
+#       spec is unreadable.
 #
 # Exit codes: 0 ok, 1 a failing report or an unreadable/empty input, 2 usage, 3 no usable runner, 4 an unusable spec, 5 a broken environment (qa-run).
 set -uo pipefail
@@ -2003,6 +2008,7 @@ EOF
 # it. The spec's leading `**PM spec:**` is followed by a line saying the driver
 # revised it. Every other byte is unchanged. Exit 1 when a listed criterion is
 # not a flippable line of the spec or a dropped file is not on the Tests: line.
+# A spec with no `AC<n>` ids numbers its checklist lines by position (#954).
 _REVISE_PY='
 import re, sys
 text = open(sys.argv[1], encoding="utf-8", newline="").read()
@@ -2020,34 +2026,52 @@ for ln in sys.stdin:
     if m and m.group(1) not in drops:
         drops.append(m.group(1))
 if not want and not prose and not drops:
+    sys.stderr.write("revise-spec: no finding to apply\n")
     sys.exit(1)
 item = re.compile(r"^[ \t]*[-*][ \t]+\[[ xX]\][ \t]+[*`]*(AC[0-9]+)")
+box = re.compile(r"^[ \t]*[-*][ \t]+\[[ xX]\][ \t]+")
 marker = re.compile(r"\((test|prose|same)[:)]")
 done = set()
 lines = text.split("\n")
-for i, ln in enumerate(lines):
-    m = item.match(ln)
-    if not m or (m.group(1) not in want and m.group(1) not in prose) or m.group(1) in done:
+# The ids as qa-run and spec-usable read them: the explicit AC<n> of a checklist line
+# when any line has one; else (a body spec) the 1-based position, an unmarked line (test).
+boxes = [i for i, ln in enumerate(lines) if box.match(ln)]
+positional = not any(item.match(lines[i]) for i in boxes)
+if positional:
+    ids = [("AC%d" % (k + 1), i) for k, i in enumerate(boxes)]
+else:
+    ids = [(item.match(lines[i]).group(1), i) for i in boxes if item.match(lines[i])]
+for aid, i in ids:
+    ln = lines[i]
+    if (aid not in want and aid not in prose) or aid in done:
         continue
     ms = list(marker.finditer(ln))
     if not ms:
+        # Only a positional line may lack a marker: it is read as (test), and the
+        # flip inserts the new marker right after the checkbox.
+        if not positional or (aid in want and want[aid] != "same"):
+            continue
+        new = "(prose: %s must pass at head)" % prose[aid] if aid in prose else "(same: green at the red commit, found by red-check)"
+        at = box.match(ln).end()
+        lines[i] = ln[:at] + new + " " + ln[at:]
+        done.add(aid)
         continue
     start = ms[-1].start()
     end = ln.find(")", start)
     if end < 0:
         continue
-    if m.group(1) in prose:
+    if aid in prose:
         # A (test) or (same) whose evidence was only in a dropped file is prose.
         if ms[-1].group(1) == "prose":
             continue
-        new = "(prose: %s must pass at head)" % prose[m.group(1)]
+        new = "(prose: %s must pass at head)" % prose[aid]
     else:
         # (test) is flipped to (same), (same...) to (test); anything else is not a kind to flip.
-        if ms[-1].group(1) != ("test" if want[m.group(1)] == "same" else "same"):
+        if ms[-1].group(1) != ("test" if want[aid] == "same" else "same"):
             continue
-        new = "(same: green at the red commit, found by red-check)" if want[m.group(1)] == "same" else "(test)"
+        new = "(same: green at the red commit, found by red-check)" if want[aid] == "same" else "(test)"
     lines[i] = ln[:start] + new + ln[end + 1:]
-    done.add(m.group(1))
+    done.add(aid)
 if len(done) != len(order) + len(prose):
     sys.stderr.write("revise-spec: not a flippable criterion line: " + " ".join(a for a in order + list(prose) if a not in done) + "\n")
     sys.exit(1)
@@ -2107,11 +2131,11 @@ cmd_revise_spec() {
   [ $# -eq 1 ] || usage
   case "$issue" in ''|*[!0-9]*) usage ;; esac
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/talos-revise-spec.XXXXXX")" && [ -d "$tmp" ] \
-    || { echo "pipeline-criteria: revise-spec: no scratch directory" >&2; return 1; }
+    || { echo "pipeline-criteria: revise-spec: no scratch directory" >&2; return 5; }
   if bash "$SCRIPT_DIR/pipeline-vcs.sh" view-issue "$issue" --spec 2>/dev/null | python3 -I -c "$_QA_SPEC_PY" > "$tmp/spec.md" && [ -s "$tmp/spec.md" ]; then
     python3 -I -c "$_REVISE_PY" "$tmp/spec.md" || rc=$?
   else
-    echo "pipeline-criteria: revise-spec: spec unreadable for issue #$issue" >&2; rc=1
+    echo "pipeline-criteria: revise-spec: spec unreadable for issue #$issue" >&2; rc=5
   fi
   rm -rf "${tmp:?}"
   return "$rc"
