@@ -959,6 +959,7 @@ Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azu
 | `assign-issue` | yes | yes | yes | exception: local-only |
 | `assign-pr` | yes | yes (merge requests) | yes (no-op: a pull request has no assignee, its creator is the account user) | exception: local-only |
 | `comment-pr`, `pr-head`, `pr-head-ref`, `check-approval-sha` | yes | yes | yes | exception: no PRs |
+| `enqueue-pr` | yes (GitHub's merge queue) | exception: exits 2 | exception: exits 2 | exception: exits 2 |
 
 The file provider supports `list-issues`, `view-issue`, `comment-issue` and `close-issue`.
 
@@ -1402,7 +1403,7 @@ Docs is decided by `talos.sh docs-gate <pr> --issue <N>`. With `docs:done` on th
 | `merge.method` | `squash` | `squash`, `merge` or `rebase` |
 | `merge.auto_sync` | `true` | `update-branch` on a stale base; sync sibling PRs after a merge (never under `merge.queue` `talos` or `github`) |
 | `merge.union_paths` | `["CHANGELOG.md"]` | paths `pipeline-mergebase.sh` may union-merge |
-| `merge.queue` | `off` | `off`, `talos` or `github`. `talos`: a PR that passes every merge gate is queued, not merged, and `talos.sh queue run` merges it ([Merge queue](#merge-queue)); `github` only turns the sibling sync off for now (#927) |
+| `merge.queue` | `off` | `off`, `talos` or `github`. `talos`: a PR that passes every merge gate is queued, not merged, and `talos.sh queue run` merges it ([Merge queue](#merge-queue)); `github`: the PR is enqueued in GitHub's merge queue instead of merged ([`merge.queue: github`](#mergequeue-github)) |
 | `merge.queue_batch` | `3` | the most queued PRs one `queue run` candidate holds |
 | `merge.queue_branch_prefix` | `talos/queue/` | the candidate branch name: `<prefix><base>-<epoch seconds>` |
 
@@ -1423,7 +1424,7 @@ The two built-in paths are not configurable. The table is regenerated only when 
 
 #### Merge queue
 
-With `merge.queue: talos`, `gate merge` runs every gate as before; where it would answer `verdict=merge`, it queues the PR instead and answers `verdict=wait reason=queued`. The batch runner, `talos.sh queue run` (below), merges from the queue. `merge.auto: false` still hands off first, and `off`, `github` or no key leave the gate as it was.
+With `merge.queue: talos`, `gate merge` runs every gate as before; where it would answer `verdict=merge`, it queues the PR instead and answers `verdict=wait reason=queued`. The batch runner, `talos.sh queue run` (below), merges from the queue. `merge.auto: false` still hands off first, and `off` or no key leave the gate as it was. `github` hands the PR to GitHub's own merge queue instead ([below](#mergequeue-github)).
 
 The queue lives on the provider, one marker comment per PR, so it survives a restart and is the same on every machine: never in the working tree. `gate merge` writes it with `upsert-pr-comment <pr> --marker queue` (GitHub, GitLab, Azure DevOps):
 
@@ -1493,6 +1494,27 @@ Under `merge.queue` `talos` or `github`, post-merge does no sibling sync: no `li
 `talos.sh run` drives it: a `gate merge` answer of `verdict=wait reason=queued` runs `talos.sh queue run` once, and the run ends with one line, `stop queue <queue run's lines>` (its `warn` lines dropped), exit 0. Any other wait ends the run as before.
 
 The pass logs four events (role `orchestrator`; the batch events carry the first PR's issue), each with `duration_s` (seconds since the first push) and `batch_size` (the PRs in the batch): `queue_batch_start` at the first push (`duration_s` 0), `queue_batch_pass` when the checks are green, `queue_merge` for each merged PR, with its `pr` and `sha` (the PR head), and `queue_eject` for each ejected PR, with its own issue, `pr`, `sha` (its cut head) and as `batch_size` the red set it was isolated from. See [Hooks](#hooks).
+
+##### `merge.queue: github`
+
+With `merge.queue: github`, GitHub's own merge queue merges the PR. GitHub's merge queue must be enabled on the base branch (a branch protection rule or ruleset with "Require merge queue"), and `vcs.provider` must be `github` or `github-api`. `gate merge` runs every gate as before, and `merge.auto: false` still hands off first. Where it would answer `verdict=merge`, it runs `pipeline-vcs.sh enqueue-pr <pr>`, which enqueues the PR through the GraphQL `enqueuePullRequest` mutation (the PR head as `expectedHeadOid`). Talos never merges the PR directly in this mode and never falls back to a direct merge. `talos.sh run` ends with `stop verdict=wait reason=provider-queued`: no `queue run`, no `merge-pr`. Post-merge does no sibling sync, as under `talos`.
+
+| Verdict | Reason | Meaning |
+|---|---|---|
+| `wait` | `provider-queued` | the PR is in GitHub's merge queue (enqueued now, or already in it) |
+| `block` | `merge-queue-disabled` | the base branch has no merge queue (`enqueue-pr` exit 3); enable it or set `merge.queue` to `off` |
+| `block` | `merge-queue-unsupported` | `vcs.provider` is not GitHub (`enqueue-pr` exit 2): GitLab merge trains and Azure have no equivalent here |
+| `wait` | `enqueue-failed` | the queue read or the mutation failed or was refused (`enqueue-pr` exit 1, e.g. GraphQL unavailable); the next run tries again |
+
+GitHub runs the required checks on its own `gh-readonly-queue/<base>/...` branch before it merges, so the workflow behind `merge.required_checks` needs a `merge_group:` trigger next to `pull_request:`, or every queued PR waits until GitHub's queue times out:
+
+```yaml
+on:
+  pull_request:
+  merge_group:
+```
+
+Talos documents this trigger but does not write it. Add it to your workflow files yourself.
 
 ### Forbidden-files gate
 
@@ -1928,6 +1950,10 @@ Start with `bash scripts/pipeline-config.sh --show` (each key, its value and lay
 | `verdict=wait reason=queued` | `merge.queue: talos`: every gate passed and the PR is in the merge queue (its `talos:queue` marker). `talos.sh run` then runs one `talos.sh queue run` pass and ends `stop queue verdict=...`; `talos.sh queue list` shows the order. See [Merge queue](#merge-queue). |
 | `queue verdict=ejected` | `merge.queue: talos`: the merge-queue pass found a red candidate and ejected every PR in it (`ejected=<pr> issue=<n>` lines); nothing merged. Each ejected PR's `talos:queue` comment names the check that failed and links to it. Run again: the merge gate answers `redispatch reason=queue-ejected` and the developer fix round runs; its push puts the PR back in the queue. |
 | `verdict=wait reason=queue-state-unverified` | `merge.queue: talos`: the PR's trusted queue marker is corrupt, or writing it failed; nothing was merged or written. Fix or delete the marker comment, then run again. `talos.sh queue list` answers `stop reason=queue-state-unverified` for the same causes and for any failed read. |
+| `verdict=wait reason=provider-queued` | `merge.queue: github`: every gate passed and the PR is in GitHub's merge queue; GitHub merges it once its required checks pass on the `gh-readonly-queue/...` branch. Nothing to do. If the PR never leaves the queue, check that the workflow behind `merge.required_checks` has an `on: merge_group:` trigger. See [`merge.queue: github`](#mergequeue-github). |
+| `verdict=block reason=merge-queue-disabled` | `merge.queue: github`, but the base branch has no merge queue. Turn on "Require merge queue" in its branch protection rule or ruleset, or set `merge.queue` to `off`, then run again. |
+| `verdict=block reason=merge-queue-unsupported` | `merge.queue: github` with a `vcs.provider` other than `github` or `github-api`. Set `merge.queue` to `talos` or `off`. |
+| `verdict=wait reason=enqueue-failed` | `merge.queue: github`: reading the PR's queue state or the `enqueuePullRequest` mutation failed or was refused (stderr names why); nothing was merged. Run again. |
 | `trust-unverified` | The login lookup was refused (an Actions or GitHub App token) and `markers.trusted_authors` is empty, so marker authors cannot be checked. Set `markers.trusted_authors`. |
 
 A `pipeline:blocked` issue or PR is skipped until a human removes the label. After a token-budget block, removing it grants one more limit (or raise `limits.tokens_per_issue`).

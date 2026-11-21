@@ -76,16 +76,23 @@
 #                                 | ci-failed | base-synced | conflict-check-unverified
 #                                 | awaiting-human-merge | closing-keyword-unverified
 #                                 | queued | queue-state-unverified
+#                                 | provider-queued | enqueue-failed
 #            verdict=block      reason=forbidden-files | closing-keyword | pr-body-checklist | siblings-capped
-#                                 | roles-decision-mismatch
+#                                 | roles-decision-mismatch | merge-queue-disabled
+#                                 | merge-queue-unsupported
 #            Under merge.queue: talos (#929) a PR that passes every gate is not
 #            merged: it is recorded in its `talos:queue` marker comment (see
 #            queue below) and waits with reason=queued; a corrupt trusted
 #            marker or a failed write waits with reason=queue-state-unverified.
 #            A PR the batch runner ejected at its current head (#931) is
 #            redispatch reason=queue-ejected, with nothing written.
-#            Unset, off and github: as before.
-# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict queue-ejected blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge closing-keyword-unverified forbidden-files closing-keyword pr-body-checklist siblings-capped roles-decision-mismatch queued queue-state-unverified
+#            Under merge.queue: github (#932) it is not merged either: it goes
+#            into GitHub's merge queue through `pipeline-vcs.sh enqueue-pr` and
+#            waits with reason=provider-queued. A base branch with no merge
+#            queue is block reason=merge-queue-disabled, a provider other than
+#            GitHub block reason=merge-queue-unsupported, a failed enqueue wait
+#            reason=enqueue-failed. Unset and off: merged as before.
+# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict queue-ejected blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge closing-keyword-unverified forbidden-files closing-keyword pr-body-checklist siblings-capped roles-decision-mismatch queued queue-state-unverified provider-queued enqueue-failed merge-queue-disabled merge-queue-unsupported
 #   stop: usage unknown-verb scripts-missing python-missing scratch-unavailable config-unreadable
 #         draft-resolve-failed view-failed labels-unreadable approval-sha-failed
 #         unsupported-verb:<verb> draft-unverified ci-unverified head-unresolved
@@ -1698,6 +1705,22 @@ _talos_queue_enqueue() {
   _talos_verdict wait
 }
 
+# _talos_provider_enqueue <pr>: gate merge's last step under merge.queue: github
+# (#932), reached only when every gate passed. The PR goes into GitHub's merge
+# queue through `enqueue-pr`, which merges it later; this never answers merge.
+# enqueue-pr's exit: 0 queued (or already), 3 no queue on the base, 2 not a
+# GitHub provider, anything else a failed call (the next pass tries again).
+_talos_provider_enqueue() {
+  local _r=0
+  _vcs enqueue-pr "$1" > /dev/null || _r=$?
+  case "$_r" in
+    0) _talos_emit reason provider-queued; _talos_verdict wait ;;
+    3) _talos_emit reason merge-queue-disabled; _talos_verdict block ;;
+    2) _talos_emit reason merge-queue-unsupported; _talos_verdict block ;;
+    *) _talos_emit reason enqueue-failed; _talos_verdict wait ;;
+  esac
+}
+
 # The open PRs of a list-prs array whose base is argv 1, one `<number> <head
 # branch>` line each; a head branch outside [A-Za-z0-9._/-] prints as `-`.
 _TALOS_QUEUE_PRS_PY='
@@ -2291,8 +2314,12 @@ _talos_gate_merge() {
     _vcs label-pr "$_pr" --add pipeline:approved > /dev/null || _talos_stop handoff-label-failed
     _talos_verdict handoff
   fi
-  # 8b. merge.queue: talos (#929): every gate passed, so the PR is queued, not merged.
-  [ "$(cfg merge.queue)" != "talos" ] || _talos_queue_enqueue "$_pr" "$_n"
+  # 8b. merge.queue talos (#929) or github (#932): every gate passed, so the PR
+  # is queued, not merged.
+  case "$(cfg merge.queue)" in
+    talos) _talos_queue_enqueue "$_pr" "$_n" ;;
+    github) _talos_provider_enqueue "$_pr" ;;
+  esac
   if [ "$_draft" = "true" ]; then
     _talos_cap _vcs pr-ci-runs "$_pr"
     if [ "$_RC" -eq 0 ] && _talos_isnum "$_OUT"; then

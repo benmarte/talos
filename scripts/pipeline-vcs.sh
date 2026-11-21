@@ -253,6 +253,17 @@
 #                                             title as commit message, merge --squash
 #                                             false, rebase no flag; create-pr
 #                                             passes the same --squash)
+#   enqueue-pr <n>                           Put the PR into its base branch's
+#                                             GitHub merge queue (#932, the queue's
+#                                             github mode): GraphQL enqueuePullRequest
+#                                             with the head sha as expectedHeadOid;
+#                                             never a merge, no REST fallback.
+#                                             Exit 0 = `Queued PR #<n>` or `PR #<n>
+#                                             already queued`; 1 = the read or the
+#                                             mutation failed or was refused; 2 = a
+#                                             provider other than github/github-api
+#                                             (no provider call); 3 = the base
+#                                             branch has no merge queue.
 #   update-branch <n>                        Update the PR's head branch by
 #                                             merging its base into it
 #                                             server-side (#289): GitHub
@@ -6008,6 +6019,61 @@ print('yes' if ((d.get('head') or {}).get('repo') or {}).get('full_name') == ((d
       fi
       echo "Merged PR #$n"
       ;;
+    enqueue-pr)
+      # (#932) the merge queue's github mode: the PR goes into its base branch's merge
+      # queue. GraphQL only (REST has no merge-queue route) and never a merge:
+      # no queue on the base is exit 3; a refused or failed call is exit 1, with
+      # no REST fallback, no PUT .../merge and no branch delete.
+      local _eq_n="${1:-}" _eq_vals _eq_node _eq_sha _eq_base _eq_repo _eq_q _eq_body _eq_resp _eq_state
+      _gh_num "$verb" PR "$_eq_n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$_eq_n (node id, head sha, base); POST graphql mergeQueue(branch: <base>) and isInMergeQueue; POST graphql enqueuePullRequest(pullRequestId, expectedHeadOid) unless the base has no queue or the PR is in it"; return 0; }
+      _eq_vals="$(_gh_req GET "$_GH_API/pulls/$_eq_n" | python3 -I -c '
+import json, sys
+d = json.load(sys.stdin)
+base = d.get("base") or {}
+vals = [d.get("node_id"), (d.get("head") or {}).get("sha"), base.get("ref"), (base.get("repo") or {}).get("full_name")]
+if not all(isinstance(v, str) and v and "\n" not in v for v in vals) or "/" not in vals[3]:
+    sys.exit(1)
+print("\n".join(vals))' 2>/dev/null)" \
+        || { echo "pipeline-vcs: enqueue-pr: could not read PR #$_eq_n (node id, head sha, base)" >&2; exit 1; }
+      { read -r _eq_node; read -r _eq_sha; read -r _eq_base; read -r _eq_repo; } <<< "$_eq_vals"
+      # The payloads are built first: bash 3.2 misparses a quoted script nested
+      # in two levels of "$( )".
+      _eq_q='query($owner: String!, $name: String!, $branch: String!, $id: ID!) { repository(owner: $owner, name: $name) { mergeQueue(branch: $branch) { id } } node(id: $id) { ... on PullRequest { isInMergeQueue } } }'
+      _eq_body="$(python3 -I -c '
+import json, sys
+owner, name = sys.argv[2].split("/", 1)
+print(json.dumps({"query": sys.argv[1], "variables": {"owner": owner, "name": name, "branch": sys.argv[3], "id": sys.argv[4]}}))' \
+        "$_eq_q" "$_eq_repo" "$_eq_base" "$_eq_node")" || exit 1
+      _eq_resp="$(_gh_try POST graphql "$_eq_body")" \
+        || { echo "pipeline-vcs: enqueue-pr: could not read the merge queue of '$_eq_base' for PR #$_eq_n" >&2; exit 1; }
+      _eq_state="$(printf '%s' "$_eq_resp" | python3 -I -c '
+import json, sys
+d = json.load(sys.stdin)
+data = d.get("data") or {}
+repo, node = data.get("repository"), data.get("node")
+if d.get("errors") or not isinstance(repo, dict) or not isinstance(node, dict):
+    sys.exit(1)
+print("off" if repo.get("mergeQueue") is None else "queued" if node.get("isInMergeQueue") is True else "on")' 2>/dev/null)" \
+        || { echo "pipeline-vcs: enqueue-pr: GitHub refused the merge-queue read for PR #$_eq_n" >&2; exit 1; }
+      case "$_eq_state" in
+        off) echo "pipeline-vcs: enqueue-pr: base branch '$_eq_base' has no merge queue" >&2; exit 3 ;;
+        queued) echo "PR #$_eq_n already queued"; return 0 ;;
+      esac
+      _eq_q='mutation($id: ID!, $sha: GitObjectID!) { enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $sha}) { mergeQueueEntry { id } } }'
+      _eq_body="$(python3 -I -c '
+import json, sys
+print(json.dumps({"query": sys.argv[1], "variables": {"id": sys.argv[2], "sha": sys.argv[3]}}))' \
+        "$_eq_q" "$_eq_node" "$_eq_sha")" || exit 1
+      _eq_resp="$(_gh_try POST graphql "$_eq_body")" \
+        || { echo "pipeline-vcs: enqueue-pr: could not enqueue PR #$_eq_n" >&2; exit 1; }
+      printf '%s' "$_eq_resp" | python3 -I -c '
+import json, sys
+d = json.load(sys.stdin)
+sys.exit(0 if not d.get("errors") and ((d.get("data") or {}).get("enqueuePullRequest") or {}).get("mergeQueueEntry") else 1)' 2>/dev/null \
+        || { echo "pipeline-vcs: enqueue-pr: GitHub refused to enqueue PR #$_eq_n" >&2; exit 1; }
+      echo "Queued PR #$_eq_n"
+      ;;
     comment-pr)
       # PRs are issues for commenting purposes on GitHub
       local n="$1" body="$2"
@@ -10705,6 +10771,13 @@ fi
 case "$VERB" in
   mark-needs-owner|list-needs-owner|upsert-pr-comment|attach-files|evidence-prune|list-merged-prs)
     if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ] && [ "$PROVIDER" != "gitlab" ] && [ "$PROVIDER" != "azure" ]; then
+      echo "pipeline-vcs: $VERB: not implemented for provider '$PROVIDER'" >&2
+      exit 2
+    fi
+    ;;
+  enqueue-pr)
+    # (#932) GitHub's merge queue only: no GitLab merge train or Azure equivalent.
+    if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ]; then
       echo "pipeline-vcs: $VERB: not implemented for provider '$PROVIDER'" >&2
       exit 2
     fi
