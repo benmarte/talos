@@ -546,11 +546,11 @@ assert_eq "" "$out" "#171 github: list-issues prints no partial list on a failed
 _449_raw='[{"number":3,"title":"t3","body":"Body text","labels":[{"name":"p1"}]},{"number":4,"title":"t4","body":null,"labels":[]}]'
 out="$(STUB_GH_ISSUES_RAW="$_449_raw" bash "$VCS" list-issues --no-body)"; rc=$?
 assert_eq "0" "$rc" "#449 github: list-issues --no-body exits 0"
-assert_eq "number,title,labels|2" "$(printf '%s' "$out" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(','.join(d[0].keys()) + '|' + str(len(d)))")" \
+assert_eq "number,title,labels,author|2" "$(printf '%s' "$out" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(','.join(d[0].keys()) + '|' + str(len(d)))")" \
   "#449 github: --no-body keeps number/title/labels and omits body on every item"
 assert_not_contains "$out" "Body text" "#449 github: --no-body output carries no body text"
 out="$(STUB_GH_ISSUES_RAW="$_449_raw" bash "$VCS" list-issues)"
-assert_eq "number,title,labels,body" "$(printf '%s' "$out" | python3 -I -c "import json,sys; print(','.join(json.load(sys.stdin)[0].keys()))")" \
+assert_eq "number,title,labels,body,author" "$(printf '%s' "$out" | python3 -I -c "import json,sys; print(','.join(json.load(sys.stdin)[0].keys()))")" \
   "#449 github: the default list-issues output is unchanged (body still last)"
 assert_contains "$out" "Body text" "#449 github: the default output still carries the body"
 

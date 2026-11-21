@@ -104,7 +104,7 @@ issue_json() {  # number "labels,..." [body] -> one list-issues item
   local n="$1" out="" l body="${3:-}"
   local IFS=,
   for l in $2; do out="${out:+$out,}{\"name\":\"$l\"}"; done
-  printf '{"number":%s,"title":"t","labels":[%s],"body":%s}' "$n" "$out" "$(python3 -I -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$body")"
+  printf '{"number":%s,"title":"t","labels":[%s],"author":{"login":"bot"},"body":%s}' "$n" "$out" "$(python3 -I -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$body")"
 }
 pr_json() {  # number branch base "labels,..." cross
   local out="" l
@@ -594,7 +594,7 @@ assert_out "epics (close failed)" "sweep=done"
 # Dependency unblocking.
 reset_stubs
 cfg_json '{"vcs": {"provider": "github"}, "roles": {"planner": true}}'
-set_stub list-issues 0 "[$(issue_json 30 pipeline:confirmed 'x
+set_stub list-issues 0 "[$(issue_json 30 bug 'x
 Depends on: #29'),$(issue_json 31 pipeline:confirmed 'Depends on: #28'),$(issue_json 28 pipeline:dev),$(issue_json 32 pipeline:ready 'Depends on: #29'),$(issue_json 33 bug 'Depends on: #29, #28'),$(issue_json 34 bug 'no deps')]"
 sw 3
 assert_eq "unblocked=30" "$(printf '%s\n' "$OUT" | grep '^unblocked=')" "unblock: only an issue whose every dependency is no longer open is unblocked"
@@ -603,7 +603,7 @@ assert_eq "1" "$(called label-issue)" "unblock: no other issue is labeled (31 an
 cfg_json '{"vcs": {"provider": "github"}}'
 rm -f "$STUB_DIR/journal"
 sw 3
-assert_eq "0" "$(called label-issue)" "unblock: roles.planner off: no epic or dependency sweep"
+assert_eq "1" "$(called label-issue)" "unblock: roles.planner off: the dependency unblock still runs (#961)"
 assert_eq "0" "$(called check-epic-acceptance)" "epics: roles.planner off: no acceptance check"
 
 # Item 8 (needs-owner clearing) went with the status file (#550): the sweep never reads the list.

@@ -287,6 +287,7 @@
 3 test-statusline-links-883.sh
 5 test-sweep-branch-safety.sh
 10 test-sweep-squash-head.sh
+3 test-sweep-unblock-code-driver.sh
 9 test-talos-docs-gate.sh
 28 test-talos-done.sh
 54 test-talos-env.sh
