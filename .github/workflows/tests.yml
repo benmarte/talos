@@ -14,8 +14,8 @@ name: tests
 
 on:
   push:
-    # talos/queue/** : the merge queue's candidate branches (merge.queue: talos); the
-    # required check must run on them or every candidate times out.
+    # talos/queue/** : the merge queue's candidate branches (queue mode talos, see
+    # docs/reference.md); the required check must run on them or every candidate times out.
     branches: [main, 'talos/queue/**']
     paths-ignore:
       - '**.md'
