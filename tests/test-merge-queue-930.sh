@@ -137,7 +137,7 @@ jc() { journal | grep -c -E "$1"; }
 cand_pushes() { grep -c -E '^refs/heads/talos/queue/main-[0-9]+ 0{40} ' "$UPD"; }
 queue_left() { git -C "$ORIGIN" for-each-ref --format='%(refname:short)' refs/heads/talos/queue/ | grep -c .; }
 line1() { printf '%s\n' "$OUT" | sed -n 1p; }
-has_line() { printf '%s\n' "$OUT" | grep -qx -- "$1"; }
+has_line() { grep -qx -- "$1" <<< "$OUT"; }
 assert_line() { if has_line "$2"; then pass "$1"; else fail "$1" "no line '$2' in: $(printf '%s' "$OUT" | tr '\n' '|')"; fi; }
 merge_order() { journal | grep -oE '^vcs merge-pr [0-9]+|^worktree to-base [0-9]+' | tr '\n' '>' | sed 's/>$//'; }
 
@@ -184,7 +184,7 @@ assert_eq "verdict=merged" "$(line1)" "AC4 the first line is verdict=merged"
 assert_eq "1" "$(cand_pushes)" "AC4 exactly one talos/queue/main-<n> candidate was pushed"
 CAND="$(cut -d' ' -f1 "$STUB_DIR/cand.refs" 2>/dev/null)"
 CSHA="$(cut -d' ' -f2 "$STUB_DIR/cand.refs" 2>/dev/null)"
-printf '%s\n' "$CAND" | grep -Eqx 'talos/queue/main-[0-9]+' \
+grep -Eqx 'talos/queue/main-[0-9]+' <<< "$CAND" \
   && pass "AC4 the candidate is named ^talos/queue/main-[0-9]+\$" || fail "AC4 the candidate is named ^talos/queue/main-[0-9]+\$" "$CAND"
 assert_eq "CHANGELOG.md a11.txt a12.txt a13.txt base.txt " "$(cat "$STUB_DIR/cand.tree" 2>/dev/null)" "AC4 the candidate tree is the base plus the 3 PRs"
 assert_eq "3" "$(cat "$STUB_DIR/cand.count" 2>/dev/null)" "AC4 the candidate is 3 commits on the base head"

@@ -98,13 +98,52 @@
 #         base, sorted by eligible time, then PR number; nothing when the queue
 #         is empty. A failed read or a corrupt marker is one lone `stop
 #         reason=queue-state-unverified` (exit 1), never a partial queue.
-# queue-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable trust-unverified queue-state-unverified
-#   stop: all of them (exit 2 for usage; else 1)
+# queue run  One pass of the batch runner (#930), exit 0. Output: `verdict=off|
+#         empty|merged|wait|block` first, then key=value lines. Not talos (unset,
+#         off, github): verdict=off, no provider call, no push. Else:
+#         1. every origin branch <merge.queue_branch_prefix><base>-<digits> is a
+#            crashed pass's candidate and is deleted (`cleanup=<b>`; a failed
+#            delete is `warn reason=cleanup-failed branch=<b>`);
+#         2. the queue, as `queue list` reads it: a failed read or a corrupt
+#            marker is wait reason=queue-state-unverified; none is verdict=empty;
+#         3. the first merge.queue_batch PRs, the issue from the fix|feat/issue-<N>
+#            head branch (another head branch: queue-state-unverified);
+#         4. base head B, then each PR's queued head applied in queue order in a
+#            throwaway detached worktree by merge.method (squash: one commit;
+#            merge: a merge commit; rebase: its own commits replayed);
+#         5. a PR that does not apply is left out and goes to
+#            pipeline-mergebase.sh <pr>: `conflict=<pr> action=mergebase|developer|
+#            unverified` (exit 0, 3, other); nothing is resolved in the candidate;
+#            none left is wait reason=no-candidate;
+#         6. the candidate <prefix><base>-<epoch s> is pushed: `candidate=<b>
+#            sha=<40 hex> prs=<a,b,c>`; a failed push or an origin ref that is not
+#            the cut sha is wait reason=candidate-unverified;
+#         7. `pipeline-vcs.sh ref-checks-required <sha>` every 30 s (times
+#            TALOS_RETRY_SLEEP_SCALE), at most 120 calls: 0 green, 1 block
+#            reason=candidate-red, 2 at the last call wait reason=candidate-timeout,
+#            anything else wait reason=checks-unverified;
+#         8. green: origin's base is not B, wait reason=base-moved (the next pass
+#            rebuilds); a PR's pr-head is not its cut head, wait reason=head-moved;
+#         9. for each PR in order: merge-pr, `talos.sh post-merge <pr> <issue>`,
+#            `merged=<pr> issue=<n>`; a failed merge-pr is block
+#            reason=merge-failed with `pr=<pr>` and stops the merges; a failed
+#            post-merge is `warn reason=post-merge-failed pr=<pr>`. verdict=merged.
+#         The candidate is deleted on every exit. Events (post_stage, role
+#         orchestrator, the first PR's issue for a batch): queue_batch_start at
+#         the push, queue_batch_pass when green, queue_merge per merged PR (--pr,
+#         --sha the PR head), each with --duration-s (since the push) and
+#         --batch-size.
+# queue-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable trust-unverified queue-state-unverified no-candidate candidate-unverified candidate-red candidate-timeout checks-unverified base-moved head-moved merge-failed cleanup-failed post-merge-failed
+#   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
+#         trust-unverified (exit 2 for usage; else 1), and queue list's
+#         queue-state-unverified
+#   warn: cleanup-failed post-merge-failed (queue run)
 #
 # post-merge, sweep, summary   Bookkeeping; each item is non-fatal (a `warn` line,
 #         the next item still runs). First line `post_merge=done|handoff`,
 #         `sweep=done` or `summary=done`, or a lone `stop`. post-merge is idempotent
-#         per item; --heal skips the sibling sync and releases no lease; --handoff
+#         per item; --heal skips the sibling sync and releases no lease;
+#         merge.queue talos or github skips the sibling sync too (#930); --handoff
 #         only posts approved.md. An open issue is closed (and set to Done) only
 #         when `pr-closes-issue` answers `closes`; `part-of` leaves it open with a
 #         part-of comment and board `In progress`; any other answer closes
@@ -307,6 +346,8 @@
 #         A gate `redispatch reason=merge-conflict` is the developer's merge-base
 #         round in the same run (`gate fix-round`, fix-round dispatch; a round that
 #         pushes nothing blocks, `stop reason=fix-round-unchanged-head`) (#850).
+#         A gate `wait reason=queued` (merge.queue: talos) runs `queue run` once
+#         and ends `stop queue <its lines, warns dropped>` (exit 0, #930).
 #         An untargeted run drains the queue: once `post-merge` reports the
 #         checkout `returned`, `synced` or `kept`, it flushes its output, runs its
 #         exit hooks and execs `$SCRIPT_DIR/talos.sh run` for the next pass (same
@@ -693,6 +734,13 @@ verbs:
                                      line per queued PR at its current head,
                                      oldest first; a failed read or a corrupt
                                      marker is `stop reason=queue-state-unverified`
+  queue run                          one pass of the batch runner (merge.queue:
+                                     talos): cut a candidate branch from the base
+                                     and the next merge.queue_batch queued PRs,
+                                     wait on its required checks, merge the PRs in
+                                     queue order when green and nothing moved;
+                                     verdict=off|empty|merged|wait|block, then
+                                     key=value lines (see the header)
   evidence prune [--merged] [--older-than <days>] [--dry-run]
                                      removes the pr-<n>/ folders of finished PRs
                                      from the talos-evidence branch in one commit
