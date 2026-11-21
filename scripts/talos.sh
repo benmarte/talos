@@ -68,11 +68,6 @@
 #            re-apply or an evidence read that failed: the next run tries again.
 #            verdict=merge      [ci_runs=<n>]
 #            verdict=handoff                    merge.auto is off: pipeline:approved is set
-#            Under merge.queue: talos (#929) a PR that passes every gate is not
-#            merged: it is recorded in its `talos:queue` marker comment (see
-#            queue below) and the answer is `verdict=wait reason=queued`; a
-#            corrupt trusted marker or a failed write is `verdict=wait
-#            reason=queue-state-unverified`. Unset, off and github: as before.
 #            verdict=redispatch reason=stale-approvals stale=<roles> | draft-pr | ci-failed | merge-conflict
 #            verdict=wait       reason=blocked-label | approvals-missing missing=<labels>
 #                                 [never_approved=<roles>]
@@ -82,6 +77,11 @@
 #                                 | queued | queue-state-unverified
 #            verdict=block      reason=forbidden-files | closing-keyword | pr-body-checklist | siblings-capped
 #                                 | roles-decision-mismatch
+#            Under merge.queue: talos (#929) a PR that passes every gate is not
+#            merged: it is recorded in its `talos:queue` marker comment (see
+#            queue below) and waits with reason=queued; a corrupt trusted
+#            marker or a failed write waits with reason=queue-state-unverified.
+#            Unset, off and github: as before.
 # gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge closing-keyword-unverified forbidden-files closing-keyword pr-body-checklist siblings-capped roles-decision-mismatch queued queue-state-unverified
 #   stop: usage unknown-verb scripts-missing python-missing scratch-unavailable config-unreadable
 #         draft-resolve-failed view-failed labels-unreadable approval-sha-failed
