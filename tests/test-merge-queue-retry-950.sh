@@ -181,7 +181,8 @@ assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c '^rerun=')" "AC1 one rerun= line
 # Never settling is the candidate timeout (merge.queue_timeout_s / 30 asks), not an eject.
 q_reset; q_pr 11 41 a11.txt x11; q_cfg talos ', "queue_timeout_s": 90'; red_always > "$STUB_DIR/hook.ref-checks-required"; rerun_busy 99
 qr
-assert_eq "wait reason=candidate-timeout" "$(line1)" "AC1 jobs that never settle: wait reason=candidate-timeout"
+assert_eq "verdict=wait" "$(line1)" "AC1 jobs that never settle: verdict=wait"
+assert_line "AC1 jobs that never settle: reason=candidate-timeout" "reason=candidate-timeout"
 assert_eq "3|0|0" "$(jc '^vcs rerun-ci ')|$(jc '^hooks post_stage queue_eject ')|$(jc '^vcs merge-pr ')" "AC1 the timeout bounds the asks: three, no eject, no merge"
 
 # The provider needs a moment to reset the re-run jobs: the next read is after a pause.

@@ -384,7 +384,10 @@
 #                                             runs of a commit that is no PR (#950,
 #                                             the merge queue's candidate). github
 #                                             only; every other provider exits 1
-#                                             with one stderr line.
+#                                             with one stderr line. Exit 0 only when
+#                                             a re-run started; 2 when no run has
+#                                             failed yet but one is in progress
+#                                             (ask again); 1 for no failed run.
 #   pr-head <n>                               Print the current head SHA for a PR
 #   pr-head-ref <n>                           Print the PR's head branch name (#607).
 #                                             Exits 1 with nothing on stdout when it
@@ -6238,6 +6241,20 @@ for r in json.load(sys.stdin)['workflow_runs']:
     if r.get('conclusion') in ('failure', 'timed_out', 'cancelled'):
         print(r['id'])")"
       if [ -z "$_rr_ids" ]; then
+        if [ -n "$_MERGE_SHA" ]; then
+          # --sha (#950) answers for the queue, which reads a started re-run as
+          # exit 0: nothing re-run is never 0. A run still in progress has no
+          # failed conclusion yet (rerun-failed-jobs needs a finished run), so 2
+          # is "ask again"; no run at all is 1.
+          if printf '%s' "$_rr_runs" | python3 -I -c "
+import json, sys
+sys.exit(0 if any(r.get('status') != 'completed' for r in json.load(sys.stdin)['workflow_runs']) else 1)"; then
+            echo "rerun-ci: runs of $_rr_what ($_rr_sha) are still in progress; nothing to re-run yet"
+            return 2
+          fi
+          echo "rerun-ci: no failed runs found for $_rr_what ($_rr_sha)" >&2
+          return 1
+        fi
         echo "rerun-ci: no failed runs found for $_rr_what ($_rr_sha)"
         return 0
       fi

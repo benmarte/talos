@@ -146,7 +146,9 @@
 #            Red (#950): first up to merge.queue_retry (0-3, default 1; any
 #            other value is stop reason=config-unreadable before step 1)
 #            re-runs: `pipeline-vcs.sh rerun-ci --sha <candidate sha>`, then the
-#            check answer again, `rerun=<n> sha=<sha>`; no new cut, no push, no
+#            check answer again after 30 s (a rerun-ci answer of 2, runs still in
+#            progress, is asked again every 30 s within the same poll budget and
+#            spends no retry), `rerun=<n> sha=<sha>`; no new cut, no push, no
 #            approval touched. Green goes on to 8; a re-run that cannot start,
 #            or red with the retries used up, is the bisection below. A
 #            bisection step is not retried. Red (#931): the red set S (k PRs) is
@@ -1972,9 +1974,13 @@ _talos_queue_stale() {
 # last call is wait reason=candidate-timeout,
 # any other exit wait reason=checks-unverified: the pass ends there, on the
 # batch or on any bisection step, with nothing merged and nothing more ejected.
-_talos_queue_poll() {
-  local _calls=0 _scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
+_talos_queue_nap() {
+  local _scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
   case "$_scale" in '' | *[!0-9.]*) _scale=1 ;; esac
+  sleep "$(awk -v k="$_scale" 'BEGIN { print 30 * k }')"
+}
+_talos_queue_poll() {
+  local _calls=0
   while :; do
     _talos_cap _vcs ref-checks-required "$_QR_SHA"
     _calls=$((_calls + 1))
@@ -1984,7 +1990,7 @@ _talos_queue_poll() {
       2) [ "$_calls" -lt "$_QR_POLLS" ] || _talos_queue_end wait candidate-timeout
          # With `restart` (#965), a candidate gone stale is 3: the caller re-cuts.
          [ "${1:-}" != restart ] || ! _talos_queue_stale || return 3
-         sleep "$(awk -v k="$_scale" 'BEGIN { print 30 * k }')" ;;
+         _talos_queue_nap ;;
       *) _talos_queue_end wait checks-unverified ;;
     esac
   done
@@ -2139,11 +2145,24 @@ _talos_queue_run() {
     # Red (#950): up to merge.queue_retry re-runs of this candidate's failed jobs
     # at the same sha before the bisection and the eject. No new cut, no push,
     # no approval touched. A re-run the provider cannot start ejects as today.
+    # The red can come while other jobs still run, and a run in progress cannot be
+    # re-run yet: rerun-ci answers 2 and is asked again every 30 s, as the check
+    # poll is (a wait spends no retry; the poll budget bounds it). Only a re-run
+    # that started counts, and the provider gets 30 s to reset its jobs before the
+    # check is read again, or the old red is read back.
     if [ "$_rt" -lt "$_retry" ]; then
-      _talos_cap _vcs rerun-ci --sha "$_QR_SHA"
+      _ra=0
+      while :; do
+        _talos_cap _vcs rerun-ci --sha "$_QR_SHA"
+        [ "$_RC" -eq 2 ] || break
+        _ra=$((_ra + 1))
+        [ "$_ra" -lt "$_QR_POLLS" ] || _talos_queue_end wait candidate-timeout
+        _talos_queue_nap
+      done
       if [ "$_RC" -eq 0 ]; then
         _rt=$((_rt + 1))
         _talos_emit rerun "$_rt sha=$_QR_SHA"
+        _talos_queue_nap
         continue
       fi
       _rt=$_retry
