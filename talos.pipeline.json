@@ -51,6 +51,7 @@
   },
   "merge": {
     "method": "squash",
+    "queue": "talos",
     "required_checks": [
       "test (ubuntu-latest)"
     ],
