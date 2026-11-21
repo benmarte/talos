@@ -1377,6 +1377,8 @@ def item(w):
     w['state'] = f.get('System.State')
     w['body'] = f.get('System.Description') or ''
     w['labels'] = [{'name': t} for t in tags if t]
+    by = f.get('System.CreatedBy')
+    w['author'] = {'login': (by.get('uniqueName') or '') if isinstance(by, dict) else (by or '')}
     return w
 
 def branch(ref):
@@ -5655,7 +5657,8 @@ import json, os, sys
 items = json.load(sys.stdin)
 out = [{'number': i.get('number'), 'title': i.get('title', ''),
         'labels': [{'name': l.get('name')} for l in (i.get('labels') or [])],
-        'body': i.get('body') or ''}
+        'body': i.get('body') or '',
+        'author': {'login': (i.get('user') or {}).get('login', '')}}
        for i in items if 'pull_request' not in i]
 if os.environ.get('NO_BODY') == '1':
     for i in out:
@@ -6911,6 +6914,9 @@ def item(i):
     i["number"] = i.get("iid")
     i["body"] = i.get("description") or ""
     i["labels"] = labels(i.get("labels"))
+    a = i.get("author")
+    if isinstance(a, dict) and "login" not in a:
+        i["author"] = dict(a, login=a.get("username", ""))
     return i
 
 def pr(m):
@@ -9121,7 +9127,7 @@ print(json.dumps(rows))
       fi
       local _azli_out
       _azli_out="$(az boards query $ORG_ARG $PROJ_ARG \
-        --wiql "SELECT [System.Id], [System.Title], [System.State], [System.Tags], [System.Description] FROM WorkItems WHERE [System.State] NOT IN ('Closed', 'Done', 'Removed') ORDER BY [System.ChangedDate] DESC" \
+        --wiql "SELECT [System.Id], [System.Title], [System.State], [System.Tags], [System.Description], [System.CreatedBy] FROM WorkItems WHERE [System.State] NOT IN ('Closed', 'Done', 'Removed') ORDER BY [System.ChangedDate] DESC" \
         --output json)" || exit 1
       local _azli_count
       _azli_count="$(printf '%s' "$_azli_out" | _json_array_count)"
