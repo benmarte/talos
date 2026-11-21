@@ -166,6 +166,7 @@
 0 test-marker-contract.sh
 45 test-merge-queue-929.sh
 60 test-merge-queue-930.sh
+60 test-merge-queue-931.sh
 19 test-mergebase.sh
 0 test-mergesync-skill.sh
 4 test-mergesync.sh

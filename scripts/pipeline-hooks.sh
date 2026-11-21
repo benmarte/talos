@@ -149,7 +149,8 @@
 # pipeline-events.sh cost.
 # --batch-size N (#930) is the number of PRs in a merge-queue batch (the
 # queue_batch_start, queue_batch_pass and queue_merge events of `talos.sh queue
-# run`). It follows the ci_runs rule: a "batch_size" key right before ts, only
+# run`; for queue_eject, #931, the red set the ejected PR was isolated from). It
+# follows the ci_runs rule: a "batch_size" key right before ts, only
 # when supplied and a valid integer (one stderr note otherwise).
 # model comes from agents.roles.<role>.model, falling back to agents.model;
 # runner from agents.runner. ts is UTC ISO-8601.
