@@ -73,6 +73,7 @@ printf '{"prs":[{"n":12,"issue":9,"head":"a4f9","owner":false,"stage":"merge"}],
 printf '{"labels": [{"name": "qa:pass"}, {"name": "docs:done"}, {"name": "review:approved"}, {"name": "security:approved"}], "state": "open"}' > "$STUB_DIR/view-pr.12"
 printf '{"number": 9, "title": "t", "labels": [], "body": "body", "state": "open"}' > "$STUB_DIR/view-issue.9"
 printf ready > "$STUB_DIR/pr-is-draft.12"; printf 1 > "$STUB_DIR/pr-is-draft.12.rc"
+printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' > "$STUB_DIR/pr-head.12"  # the merge arm's head read (#941)
 printf 'talos:checkout state=returned\n' > "$STUB_DIR/worktree.out"
 printf "pipeline-vcs: merge-pr: PR #12 merged, but its branch 'fix/issue-9-x' could not be deleted\n" > "$STUB_DIR/merge-pr.err"
 export CLAUDE_CONFIG_DIR="$SANDBOX/cc"

@@ -248,11 +248,21 @@
 #                                             stderr line, nothing on stdout.
 #                                             file reads <git-common-dir>/
 #                                             talos-checks/<sha>.tsv. No --wait.
-#   merge-pr <n>                             Merge the PR (azure, #709: merge.method
+#   merge-pr <n> [--sha <sha>]               Merge the PR (azure, #709: merge.method
 #                                             squash/unset --squash true with the PR
 #                                             title as commit message, merge --squash
 #                                             false, rebase no flag; create-pr
 #                                             passes the same --squash)
+#                                             --sha (#941) merges only while the PR
+#                                             head is still <sha>, which must match
+#                                             ^[0-9a-f]{40}$ (anything else: exit 1,
+#                                             no provider call, --dry-run too).
+#                                             github: the merge PUT's `sha` (a moved
+#                                             head is a 409, exit 1, branch kept);
+#                                             gitlab: `glab mr merge --sha`; azure:
+#                                             az rest PATCH with lastMergeSourceCommit
+#                                             and the same completionOptions; file:
+#                                             ignored. Without it: unchanged.
 #   enqueue-pr <n>                           Put the PR into its base branch's
 #                                             GitHub merge queue (#932, the queue's
 #                                             github mode): GraphQL enqueuePullRequest
@@ -892,6 +902,29 @@ if [ "$VERB" = "create-pr" ] && [ "${#ARGS[@]}" -gt 3 ]; then
   done
   ARGS=("${_cp_args[@]}")
   unset _cp_args _cp_a
+fi
+
+# merge-pr --sha <sha> (#941): the head the gates approved. Pulled out of ARGS
+# into _MERGE_SHA here, before the config reads and the repo auto-detect, so a
+# bad value is a usage error (exit 1) with no provider call, --dry-run included.
+_MERGE_SHA=""
+if [ "$VERB" = "merge-pr" ]; then
+  _ms_args=() _ms_i=0
+  while [ "$_ms_i" -lt "${#ARGS[@]}" ]; do
+    if [ "${ARGS[$_ms_i]}" = "--sha" ]; then
+      _MERGE_SHA="${ARGS[$((_ms_i + 1))]-}"
+      if ! [[ "$_MERGE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "pipeline-vcs: merge-pr: --sha needs a 40-character lowercase hex commit sha (got '$_MERGE_SHA'); nothing merged" >&2
+        exit 1
+      fi
+      _ms_i=$((_ms_i + 2))
+    else
+      _ms_args+=("${ARGS[$_ms_i]}")
+      _ms_i=$((_ms_i + 1))
+    fi
+  done
+  ARGS=(${_ms_args[@]+"${_ms_args[@]}"})
+  unset _ms_args _ms_i
 fi
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -6001,12 +6034,14 @@ print(json.dumps({"body": sys.stdin.read(), "event": "APPROVE"}))')" >/dev/null 
       _vcs_ref_checks_judge "$_rk_required" "$_rk_tbl"
       ;;
     merge-pr)
-      local n="${1:-}" _mm=merge _mp_pr _mp_ref _mp_same
+      local n="${1:-}" _mm=merge _mp_pr _mp_ref _mp_same _mp_body
       _gh_num "$verb" PR "$n"
       case "$MERGE_METHOD" in squash) _mm=squash ;; rebase) _mm=rebase ;; esac
-      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$n; PUT $_GH_API/pulls/$n/merge merge_method=$_mm; DELETE the head branch ref"; return 0; }
+      # --sha (#941): GitHub refuses the merge (409) when the head is no longer it.
+      _mp_body="{\"merge_method\": \"$_mm\"${_MERGE_SHA:+, \"sha\": \"$_MERGE_SHA\"}}"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$n; PUT $_GH_API/pulls/$n/merge merge_method=$_mm${_MERGE_SHA:+ sha=$_MERGE_SHA}; DELETE the head branch ref"; return 0; }
       _mp_pr="$(_gh_req GET "$_GH_API/pulls/$n")" || exit 1
-      _gh_req PUT "$_GH_API/pulls/$n/merge" "{\"merge_method\": \"$_mm\"}" >/dev/null || exit 1
+      _gh_req PUT "$_GH_API/pulls/$n/merge" "$_mp_body" >/dev/null || exit 1
       # --delete-branch: the merge endpoint does not delete it. A fork's branch is not ours to delete.
       _mp_ref="$(printf '%s' "$_mp_pr" | _gh_field head.ref)"
       _mp_same="$(printf '%s' "$_mp_pr" | python3 -I -c "
@@ -7352,7 +7387,8 @@ print((d.get('sha') or (d.get('diff_refs') or {}).get('head_sha') or '').lower()
       _run glab mr ci status "$1" $RARG
       ;;
     merge-pr)
-      _run glab mr merge "$1" $RARG
+      # --sha (#941): glab merges only while the source branch HEAD is it.
+      _run glab mr merge "$1" ${_MERGE_SHA:+--sha "$_MERGE_SHA"} $RARG
       ;;
     update-branch)
       # update-branch <n> (#289) — GitLab's equivalent of the server-side base
@@ -9544,7 +9580,39 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
              _mp_title="$(az repos pr show --id "$1" $ORG_ARG --query title --output tsv 2>/dev/null)" || _mp_title=""
            fi ;;
       esac
-      if [ -n "$_mp_title" ]; then
+      if [ -n "$_MERGE_SHA" ]; then
+        # --sha (#941): `az repos pr update` has no source-commit flag, so the PR is
+        # completed through REST with lastMergeSourceCommit = the sha (ADO refuses a
+        # moved head) and completionOptions mapped as the flags above map today.
+        local _mp_gitbase _mp_url _mp_tf
+        _mp_gitbase="$(_azure_git_base)" || { echo "pipeline-vcs: azure merge-pr needs org/project/repo" >&2; exit 1; }
+        _mp_url="$_mp_gitbase/pullRequests/$1?api-version=7.1"
+        if [ "$DRY_RUN" = "true" ]; then
+          echo "[dry-run] az rest PATCH $_mp_url {\"status\":\"completed\",\"lastMergeSourceCommit\":{\"commitId\":\"$_MERGE_SHA\"},\"completionOptions\":<merge.method>}"
+          return 0
+        fi
+        _mp_tf="$(mktemp)" && [ -n "$_mp_tf" ] \
+          || { echo "pipeline-vcs: merge-pr: could not create a temp file; nothing merged" >&2; exit 1; }
+        python3 -I -c '
+import json, sys
+path, sha, method, title = sys.argv[1:5]
+opts = {}
+if method == "merge":
+    opts["squashMerge"] = False
+elif method != "rebase":
+    opts["squashMerge"] = True
+    if title:
+        opts["mergeCommitMessage"] = title
+with open(path, "w") as f:
+    json.dump({"status": "completed", "lastMergeSourceCommit": {"commitId": sha}, "completionOptions": opts}, f)
+' "$_mp_tf" "$_MERGE_SHA" "$MERGE_METHOD" "$_mp_title" \
+          || { rm -f "${_mp_tf:?}"; echo "pipeline-vcs: merge-pr: could not build the request body; nothing merged" >&2; exit 1; }
+        az rest --method patch --url "$_mp_url" --resource "$ADO_RESOURCE" \
+          --headers "Content-Type=application/json" --body "@$_mp_tf" >/dev/null \
+          || { rm -f "${_mp_tf:?}"; echo "pipeline-vcs: merge-pr: az rest PATCH failed for PR $1 (head moved from $_MERGE_SHA?)" >&2; exit 1; }
+        rm -f "${_mp_tf:?}"
+        echo "Merged PR #$1"
+      elif [ -n "$_mp_title" ]; then
         _run az repos pr update --id "$1" --status completed $_mp_args --merge-commit-message "$_mp_title" $ORG_ARG --output json
       else
         _run az repos pr update --id "$1" --status completed $_mp_args $ORG_ARG --output json

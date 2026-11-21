@@ -164,6 +164,7 @@
 10 test-map-registry-903.sh
 23 test-marker-author-trust.sh
 0 test-marker-contract.sh
+30 test-merge-pr-sha-941.sh
 45 test-merge-queue-929.sh
 60 test-merge-queue-930.sh
 60 test-merge-queue-931.sh
