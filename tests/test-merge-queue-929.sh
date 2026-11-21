@@ -173,7 +173,7 @@ CASES="happy blocked-label approvals-missing stale-approvals forbidden-files ci-
 for c in $CASES; do
   gate_case "$c"; cfg_queue -; gm
   base_out="$OUT"; base_rc="$RC"; base_j="$(journal_norm)"
-  for q in off github; do
+  for q in off; do
     gate_case "$c"; cfg_queue "$q"; gm
     assert_eq "$base_rc|$base_out" "$RC|$OUT" "AC1 merge.queue=$q, $c: gate merge prints what it prints with the key unset"
     assert_eq "$base_j" "$(journal_norm)" "AC1 merge.queue=$q, $c: the same pipeline-vcs call journal"

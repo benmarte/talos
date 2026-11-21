@@ -225,6 +225,7 @@ assert_contains "$out" "STALE gitlab never-called" "an exception for a verb nobo
 # slice of #753 adds the verb and deletes its line.
 read -r -d '' PARITY_EXCEPTIONS <<'TABLE' || true
 # provider verb PARITY-EXCEPTION: reason
+azure enqueue-pr PARITY-EXCEPTION: GitHub merge queue only (#932), exits 2 before any call
 file assign-issue PARITY-EXCEPTION: local-only by design
 file assign-pr PARITY-EXCEPTION: local-only by design (no PRs)
 file attach-files PARITY-EXCEPTION: local-only by design (no PRs)
@@ -232,6 +233,7 @@ file check-approval-sha PARITY-EXCEPTION: local-only by design (no PRs, no appro
 file comment-pr PARITY-EXCEPTION: local-only by design (no PRs)
 file conflict-files PARITY-EXCEPTION: local-only by design (no PRs)
 file edit-pr-body PARITY-EXCEPTION: local-only by design (no PRs)
+file enqueue-pr PARITY-EXCEPTION: GitHub merge queue only (#932), exits 2 before any call
 file evidence-prune PARITY-EXCEPTION: local-only by design (no PRs)
 file list-merged-prs PARITY-EXCEPTION: local-only by design (no PRs)
 file list-needs-owner PARITY-EXCEPTION: local-only by design
@@ -242,6 +244,7 @@ file read-attempt PARITY-EXCEPTION: local-only by design (no comments)
 file read-comments PARITY-EXCEPTION: local-only by design (no comments)
 file record-attempt PARITY-EXCEPTION: local-only by design (no comments)
 file upsert-pr-comment PARITY-EXCEPTION: local-only by design (no PRs)
+gitlab enqueue-pr PARITY-EXCEPTION: GitHub merge queue only (#932), exits 2 before any call
 TABLE
 printf '%s\n' "$PARITY_EXCEPTIONS" >"$FIX/exceptions"
 
