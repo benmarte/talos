@@ -34,7 +34,7 @@ Paths such as `scripts/talos.sh` are relative to the Talos install (`~/.talos` a
 
 `run --issue <N>` works one issue and ends after its merge with `stop merged pr=<M>`.
 
-Verbs: `env`, `state [--summary]`, `next [--issue N]`, `prompt`, `done`, `gate fix-round|merge`, `docs-gate`, `post-merge`, `sweep`, `summary`, `claim`, `lease prune`, `evidence prune`, `map`, `run`. (`map --refresh` is described under Project map.)
+Verbs: `env`, `state [--summary]`, `next [--issue N]`, `prompt`, `done`, `gate fix-round|merge`, `docs-gate`, `post-merge`, `sweep`, `summary`, `claim`, `lease prune`, `evidence prune`, `queue list`, `map`, `run`. (`map --refresh` is described under Project map.)
 
 ### Stages
 
@@ -1402,7 +1402,7 @@ Docs is decided by `talos.sh docs-gate <pr> --issue <N>`. With `docs:done` on th
 | `merge.method` | `squash` | `squash`, `merge` or `rebase` |
 | `merge.auto_sync` | `true` | `update-branch` on a stale base; sync sibling PRs after a merge |
 | `merge.union_paths` | `["CHANGELOG.md"]` | paths `pipeline-mergebase.sh` may union-merge |
-| `merge.queue` | `off` | `off`, `talos` or `github`; reserved for the merge queue (#927), no effect yet |
+| `merge.queue` | `off` | `off`, `talos` or `github`. `talos`: a PR that passes every merge gate is queued, not merged ([Merge queue](#merge-queue)); `github` is reserved (#927), no effect yet |
 | `merge.queue_batch` | `3` | reserved for the merge queue (#927), no effect yet |
 | `merge.queue_branch_prefix` | `talos/queue/` | reserved for the merge queue (#927), no effect yet |
 
@@ -1420,6 +1420,26 @@ Every config or feature PR appends to a few shared files, so a sibling PR's merg
 | everything else | the developer merge-base task |
 
 The two built-in paths are not configurable. The table is regenerated only when the file merges cleanly with the block between the `config-table:start` and `config-table:end` markers replaced by a placeholder in the merge base, the PR and the base branch (the block is the only conflicting part), and only with a `tests/gen-config-table.py` identical to the base branch's, so a PR's own code is never run by the orchestrator; a PR that changed the generator, a conflict in `scripts/pipeline-defaults.sh` or missing markers exit 3. The same regeneration runs when the merge is clean but the table is stale. After a merge, the sync of the other open PRs (`merge.auto_sync`) tries `pipeline-mergebase.sh` first, then `update-branch`, then a developer.
+
+#### Merge queue
+
+With `merge.queue: talos`, `gate merge` runs every gate as before; where it would answer `verdict=merge`, it queues the PR instead and answers `verdict=wait reason=queued`. Nothing merges from the queue yet (the batch runner is #930), so a queued PR waits. `merge.auto: false` still hands off first, and `off`, `github` or no key leave the gate as it was.
+
+The queue lives on the provider, one marker comment per PR, so it survives a restart and is the same on every machine: never in the working tree. `gate merge` writes it with `upsert-pr-comment <pr> --marker queue` (GitHub, GitLab, Azure DevOps):
+
+```
+**Merge queue:**
+
+queue: base=<base_branch> head=<40-hex PR head> eligible=<UTC YYYY-MM-DDTHH:MM:SSZ>
+
+<!-- talos:queue -->
+```
+
+`eligible` is when the PR became eligible at that head; the queue is FIFO by it. A PR's state is the newest comment of a trusted author (`markers.trusted_authors` and the authenticated login, as for every marker) whose last line, past the cloud-session footer, is the marker; anyone else's copy is ignored. A marker at the current head and base is left alone (no write, no event); a missing one, or one for another head or base, is written with a new `eligible` time and logged as a `queue_enqueue` event (role `orchestrator`, with the PR and the head sha) through `hooks.post_stage` and the events log.
+
+The queue fails closed. A trusted marker without exactly one well-formed `queue:` line (none, two, a head that is not 40 lowercase hex, a time that does not parse) or a failed write (`upsert-pr-comment` exit 1) is `verdict=wait reason=queue-state-unverified`, with nothing written. A failed comment read is `stop reason=comments-unreadable`, an unresolvable trust set `stop reason=trust-unverified`, and a provider without the verb `stop reason=unsupported-verb:upsert-pr-comment`. None of them merges.
+
+`talos.sh queue list` reads the queue back: the open PRs on `base_branch` (`list-prs`), then `pr-head` and `read-comments` for each. It prints one `queued pr=<n> head=<sha> eligible=<ts>` line per PR whose trusted marker names its current head and the base, oldest `eligible` first and a tie by PR number, and nothing for an empty queue. A PR with no marker or a marker for an older head is left out. Any failed read or a corrupt marker prints one lone `stop reason=queue-state-unverified` (exit 1), never part of the queue.
 
 ### Forbidden-files gate
 
@@ -1852,6 +1872,8 @@ Start with `bash scripts/pipeline-config.sh --show` (each key, its value and lay
 | `scratch-unavailable` | A scratch file or directory (`TMPDIR`, default `/tmp`) could not be created or written. Free space or fix `TMPDIR`, then run again. |
 | `config-unreadable` | The pipeline config file could not be read or parsed. Fix the file (`talos.sh env` prints what it reads) and run again. |
 | `map-failed` | Updating the project map failed. It is a `warn` line: the first failure turns the map off for the rest of the run and the run goes on. Run the map verb by hand to see why. |
+| `verdict=wait reason=queued` | `merge.queue: talos`: every gate passed and the PR is in the merge queue (its `talos:queue` marker); nothing merges from the queue yet. `talos.sh queue list` shows the order. See [Merge queue](#merge-queue). |
+| `verdict=wait reason=queue-state-unverified` | `merge.queue: talos`: the PR's trusted queue marker is corrupt, or writing it failed; nothing was merged or written. Fix or delete the marker comment, then run again. `talos.sh queue list` answers `stop reason=queue-state-unverified` for the same causes and for any failed read. |
 | `trust-unverified` | The login lookup was refused (an Actions or GitHub App token) and `markers.trusted_authors` is empty, so marker authors cannot be checked. Set `markers.trusted_authors`. |
 
 A `pipeline:blocked` issue or PR is skipped until a human removes the label. After a token-budget block, removing it grants one more limit (or raise `limits.tokens_per_issue`).

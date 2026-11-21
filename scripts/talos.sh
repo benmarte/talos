@@ -4,7 +4,7 @@
 #
 # Usage: talos.sh <verb> [args]; `talos.sh help` prints every flag.
 # Verbs: env gate docs-gate post-merge sweep summary prompt done state next claim
-#        run lease map help
+#        run lease map queue help
 #
 # Output (stdout): one line each, nothing else.
 #   KEY=value              a result. Keys are [A-Za-z][A-Za-z0-9_.]*.
@@ -68,15 +68,21 @@
 #            re-apply or an evidence read that failed: the next run tries again.
 #            verdict=merge      [ci_runs=<n>]
 #            verdict=handoff                    merge.auto is off: pipeline:approved is set
+#            Under merge.queue: talos (#929) a PR that passes every gate is not
+#            merged: it is recorded in its `talos:queue` marker comment (see
+#            queue below) and the answer is `verdict=wait reason=queued`; a
+#            corrupt trusted marker or a failed write is `verdict=wait
+#            reason=queue-state-unverified`. Unset, off and github: as before.
 #            verdict=redispatch reason=stale-approvals stale=<roles> | draft-pr | ci-failed | merge-conflict
 #            verdict=wait       reason=blocked-label | approvals-missing missing=<labels>
 #                                 [never_approved=<roles>]
 #                                 | ci-pending | ci-rerun attempt=<k> | rerun-unsupported
 #                                 | ci-failed | base-synced | conflict-check-unverified
 #                                 | awaiting-human-merge | closing-keyword-unverified
+#                                 | queued | queue-state-unverified
 #            verdict=block      reason=forbidden-files | closing-keyword | pr-body-checklist | siblings-capped
 #                                 | roles-decision-mismatch
-# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge closing-keyword-unverified forbidden-files closing-keyword pr-body-checklist siblings-capped roles-decision-mismatch
+# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge closing-keyword-unverified forbidden-files closing-keyword pr-body-checklist siblings-capped roles-decision-mismatch queued queue-state-unverified
 #   stop: usage unknown-verb scripts-missing python-missing scratch-unavailable config-unreadable
 #         draft-resolve-failed view-failed labels-unreadable approval-sha-failed
 #         unsupported-verb:<verb> draft-unverified ci-unverified head-unresolved
@@ -84,6 +90,16 @@
 #   warn: ci-runs-unrecorded budget-check-failed
 #         area-check-failed unblock-failed comment-failed label-failed value-truncated
 #         board-failed
+#
+# queue list  The merge queue (#929, merge.queue: talos), read back from the
+#         provider: list-prs (base = base_branch), then pr-head and read-comments
+#         per PR. One `queued pr=<n> head=<sha> eligible=<ts>` line for each PR
+#         whose trusted `talos:queue` marker names its current head and the
+#         base, sorted by eligible time, then PR number; nothing when the queue
+#         is empty. A failed read or a corrupt marker is one lone `stop
+#         reason=queue-state-unverified` (exit 1), never a partial queue.
+# queue-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable trust-unverified queue-state-unverified
+#   stop: all of them (exit 2 for usage; else 1)
 #
 # post-merge, sweep, summary   Bookkeeping; each item is non-fatal (a `warn` line,
 #         the next item still runs). First line `post_merge=done|handoff`,
@@ -672,6 +688,11 @@ verbs:
                                      pipeline-lock.sh; one `pruned issue=<N>`
                                      line per removed line, nothing when there
                                      is nothing to remove (a silent no-op)
+  queue list                         the merge queue (merge.queue: talos): one
+                                     `queued pr=<n> head=<sha> eligible=<ts>`
+                                     line per queued PR at its current head,
+                                     oldest first; a failed read or a corrupt
+                                     marker is `stop reason=queue-state-unverified`
   evidence prune [--merged] [--older-than <days>] [--dry-run]
                                      removes the pr-<n>/ folders of finished PRs
                                      from the talos-evidence branch in one commit
@@ -1486,6 +1507,156 @@ _talos_closing_check() {
   esac
 }
 
+# ── merge queue (#929) ───────────────────────────────────────────────────────
+# Under merge.queue: talos the queue is one `talos:queue` marker comment per PR,
+# kept on the provider (never in the working tree), so it survives a restart:
+#   **Merge queue:**
+#
+#   queue: base=<base branch> head=<40 hex> eligible=<UTC YYYY-MM-DDTHH:MM:SSZ>
+#
+#   <!-- talos:queue -->
+# A PR's state is the newest comment of a trusted author whose last non-blank
+# line (the cloud footer stripped, as for the other markers) is the marker;
+# other authors are ignored. Prints `none`, `corrupt` (not exactly one
+# well-formed data line) or `ok <base> <head> <eligible>`. argv: 1 or 0 for
+# "only trusted authors count", the trusted logins one per line. An answer that
+# is not read-comments JSON exits non-zero.
+_TALOS_QUEUE_PY='
+import json, re, sys
+from datetime import datetime
+enforce, trusted = sys.argv[1] == "1", set(sys.argv[2].splitlines())
+MARK = "<!-- talos:queue -->"
+FOOT = "_Generated by [Claude Code](https://claude.ai/code)_"
+DATA = re.compile(r"queue: base=(\S+) head=([0-9a-f]{40}) eligible=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)\Z")
+def lines(b):
+    ls = b.replace("\r\n", "\n").rstrip().split("\n")
+    if len(ls) >= 2 and ls[-1].strip() == FOOT:
+        i = len(ls) - 2
+        while i >= 0 and not ls[i].strip():
+            i -= 1
+        if i >= 0 and ls[i].strip() == "---":
+            ls = "\n".join(ls[:i]).rstrip().split("\n")
+    return ls
+def login(c):
+    a = c.get("author")
+    return a.get("login") if isinstance(a, dict) else None
+found = None
+for c in json.load(sys.stdin)["comments"]:
+    if not isinstance(c, dict) or not isinstance(c.get("body"), str):
+        continue
+    if enforce and login(c) not in trusted:
+        continue
+    ls = lines(c["body"])
+    if ls[-1].strip() == MARK:
+        found = ls
+if found is None:
+    print("none")
+    sys.exit(0)
+data = [l.strip() for l in found if l.strip().startswith("queue:")]
+m = DATA.match(data[0]) if len(data) == 1 else None
+try:
+    ok = m and datetime.strptime(m.group(3), "%Y-%m-%dT%H:%M:%SZ")
+except ValueError:
+    ok = None
+print("ok %s %s %s" % m.groups() if ok else "corrupt")
+'
+
+# _talos_queue_head <pr>: the PR's head sha in _QH; 1 when it cannot be read.
+_talos_queue_head() {
+  _QH=""
+  _talos_cap _vcs pr-head "$1"
+  [ "$_RC" -eq 0 ] && [[ "$_OUT" =~ ^[0-9a-f]{40}$ ]] || return 1
+  _QH="$_OUT"
+}
+
+# _talos_queue_read <pr>: the PR's queue state (_TALOS_QUEUE_PY's line) in _QS;
+# 1 when the comments cannot be read or parsed. _talos_trust runs first.
+_talos_queue_read() {
+  _QS=""
+  _talos_cap _vcs read-comments "$1"
+  [ "$_RC" -eq 0 ] || return 1
+  _QS="$(python3 -I -c "$_TALOS_QUEUE_PY" "$_TRUST_ON" "$_TRUST_SET" <<< "$_OUT" 2>/dev/null)" || return 1
+}
+
+# _talos_queue_enqueue <pr> <issue>: gate merge's last step under merge.queue:
+# talos, reached only when every gate passed. No marker, or one for another head
+# or base: one is written (eligible = now) and, on comment=created|updated, a
+# queue_enqueue event follows. The same head and base writes nothing. It ends in
+# `verdict=wait` (reason=queued, or queue-state-unverified for a corrupt marker
+# or a failed write) or a stop, never a merge: the batch runner (#930) merges.
+_talos_queue_enqueue() {
+  local _pr="$1" _n="$2" _head _base _tag _qb _qh _qe
+  _talos_queue_head "$_pr" || _talos_stop head-unresolved
+  _head="$_QH"
+  _base="$(_talos_base_branch)"
+  _talos_trust
+  _talos_queue_read "$_pr" || _talos_stop comments-unreadable
+  case "$_QS" in
+    none) : ;;
+    "ok "*)
+      read -r _tag _qb _qh _qe <<< "$_QS"
+      if [ "$_qb" = "$_base" ] && [ "$_qh" = "$_head" ]; then
+        _talos_emit reason queued
+        _talos_verdict wait
+      fi ;;
+    *) _talos_emit reason queue-state-unverified; _talos_verdict wait ;;
+  esac
+  printf '**Merge queue:**\n\nqueue: base=%s head=%s eligible=%s\n' \
+    "$_base" "$_head" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$_CFG_CACHE_DIR/queue" || _talos_stop scratch-unavailable
+  _talos_cap _vcs upsert-pr-comment "$_pr" --marker queue --body-file - < "$_CFG_CACHE_DIR/queue"
+  case "$_RC" in
+    0) : ;;
+    2) _talos_stop "unsupported-verb:upsert-pr-comment" ;;
+    *) _talos_emit reason queue-state-unverified; _talos_verdict wait ;;
+  esac
+  case "$_OUT" in
+    *"comment=created"* | *"comment=updated"*)
+      _talos_post_stage queue_enqueue orchestrator "$_n" --pr "$_pr" --sha "$_head" < /dev/null ;;
+  esac
+  _talos_emit reason queued
+  _talos_verdict wait
+}
+
+# The open PR numbers of a list-prs array whose base is argv 1, one per line.
+_TALOS_QUEUE_PRS_PY='
+import json, sys
+for p in json.load(sys.stdin):
+    if isinstance(p, dict) and isinstance(p.get("number"), int) and p.get("baseRefName") == sys.argv[1]:
+        print(p["number"])
+'
+
+# queue list (#929): the queue read back from the provider. For every open PR on
+# the base branch whose trusted marker names its current head and the base, one
+# `queued pr=<n> head=<sha> eligible=<ts>` line, oldest eligible first, a tie by
+# PR number. Any failed read or a corrupt marker is one lone `stop
+# reason=queue-state-unverified` (exit 1): a partial queue is never printed.
+_talos_queue_verb() {
+  { [ "${1:-}" = list ] && [ "$#" -eq 1 ]; } || _talos_stop usage 2
+  local _base _prs _p _tag _qb _qh _qe _rows=""
+  _talos_prepare queue pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh
+  _base="$(_talos_base_branch)"
+  _talos_trust
+  _talos_cap _vcs list-prs
+  [ "$_RC" -eq 0 ] || _talos_stop queue-state-unverified
+  _prs="$(python3 -I -c "$_TALOS_QUEUE_PRS_PY" "$_base" <<< "$_OUT" 2>/dev/null)" || _talos_stop queue-state-unverified
+  for _p in $_prs; do
+    _talos_queue_head "$_p" || _talos_stop queue-state-unverified
+    _talos_queue_read "$_p" || _talos_stop queue-state-unverified
+    case "$_QS" in
+      none) continue ;;
+      "ok "*) read -r _tag _qb _qh _qe <<< "$_QS" ;;
+      *) _talos_stop queue-state-unverified ;;
+    esac
+    { [ "$_qb" = "$_base" ] && [ "$_qh" = "$_QH" ]; } || continue
+    _rows="$_rows$_qe $_p $_qh"$'\n'
+  done
+  # Every value was validated by _TALOS_QUEUE_PY (a timestamp, digits, 40 hex).
+  printf '%s' "$_rows" | sort -k1,1 -k2,2n | while read -r _qe _p _qh; do
+    printf 'queued pr=%s head=%s eligible=%s\n' "$_p" "$_qh" "$_qe"
+  done
+  exit 0
+}
+
 # gate merge <pr> <issue>: Step 4 in its order, one verdict. It writes only what
 # the prose wrote (labels, comments, the notice, the update push) and never
 # merges: on `merge` the orchestrator runs `merge-pr`.
@@ -1705,6 +1876,8 @@ _talos_gate_merge() {
     _vcs label-pr "$_pr" --add pipeline:approved > /dev/null || _talos_stop handoff-label-failed
     _talos_verdict handoff
   fi
+  # 8b. merge.queue: talos (#929): every gate passed, so the PR is queued, not merged.
+  [ "$(cfg merge.queue)" != "talos" ] || _talos_queue_enqueue "$_pr" "$_n"
   if [ "$_draft" = "true" ]; then
     _talos_cap _vcs pr-ci-runs "$_pr"
     if [ "$_RC" -eq 0 ] && _talos_isnum "$_OUT"; then
@@ -5843,6 +6016,7 @@ case "$verb" in
   run) _talos_run_loop "$@" ;;
   lease) _talos_lease_verb "$@" ;;
   evidence) _talos_evidence_verb "$@" ;;
+  queue) _talos_queue_verb "$@" ;;
   help | -h | --help) _talos_help ;;
   "") _talos_help >&2; exit 2 ;;
   *) printf 'stop reason=unknown-verb\n'; exit 2 ;;
