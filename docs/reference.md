@@ -34,7 +34,7 @@ Paths such as `scripts/talos.sh` are relative to the Talos install (`~/.talos` a
 
 `run --issue <N>` works one issue and ends after its merge with `stop merged pr=<M>`.
 
-Verbs: `env`, `state [--summary]`, `next [--issue N]`, `prompt`, `done`, `gate fix-round|merge`, `docs-gate`, `post-merge`, `sweep`, `summary`, `claim`, `lease prune`, `evidence prune`, `queue list`, `map`, `run`. (`map --refresh` is described under Project map.)
+Verbs: `env`, `state [--summary]`, `next [--issue N]`, `prompt`, `done`, `gate fix-round|merge`, `docs-gate`, `post-merge`, `sweep`, `summary`, `claim`, `lease prune`, `evidence prune`, `queue list|run`, `map`, `run`. (`map --refresh` is described under Project map; `queue` under [Merge queue](#merge-queue).)
 
 ### Stages
 
@@ -1419,7 +1419,7 @@ Every config or feature PR appends to a few shared files, so a sibling PR's merg
 | the generated config table of `docs/reference.md` | regeneration with `python3 -I tests/gen-config-table.py --write docs/reference.md` from the merged `scripts/pipeline-defaults.sh` |
 | everything else | the developer merge-base task |
 
-The two built-in paths are not configurable. The table is regenerated only when the file merges cleanly with the block between the `config-table:start` and `config-table:end` markers replaced by a placeholder in the merge base, the PR and the base branch (the block is the only conflicting part), and only with a `tests/gen-config-table.py` identical to the base branch's, so a PR's own code is never run by the orchestrator; a PR that changed the generator, a conflict in `scripts/pipeline-defaults.sh` or missing markers exit 3. The same regeneration runs when the merge is clean but the table is stale. After a merge, the sync of the other open PRs (`merge.auto_sync`) tries `pipeline-mergebase.sh` first, then `update-branch`, then a developer.
+The two built-in paths are not configurable. The table is regenerated only when the file merges cleanly with the block between the `config-table:start` and `config-table:end` markers replaced by a placeholder in the merge base, the PR and the base branch (the block is the only conflicting part), and only with a `tests/gen-config-table.py` identical to the base branch's, so a PR's own code is never run by the orchestrator; a PR that changed the generator, a conflict in `scripts/pipeline-defaults.sh` or missing markers exit 3. The same regeneration runs when the merge is clean but the table is stale. After a merge, the sync of the other open PRs (`merge.auto_sync`) tries `pipeline-mergebase.sh` first, then `update-branch`, then a developer (no sync runs under `merge.queue` `talos` or `github`, see [Merge queue](#merge-queue)).
 
 #### Merge queue
 
