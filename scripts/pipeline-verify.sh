@@ -119,6 +119,11 @@ if [ "$_guards" -eq 1 ]; then
   fi
   _groot="${_worktree:-.}"
   _gre='filepath\.(Walk|WalkDir)|go/parser|go/ast|packages\.Load|os\.walk\(|os\.Walk\(|rglob\(|glob\.glob\(|ast\.parse\(|ts\.createProgram|readdirSync\(.*recursive|git ls-files'
+  # Shell walkers (#959): a `for v in <words>` loop whose word list holds a glob
+  # (`*` or `?`) in a token that also holds a `/`, and `find <path>` piped into a
+  # loop or read through `<(...)` / `$(...)`. A plain `for x in a b c` is not one.
+  _gre="$_gre"'|for +[A-Za-z_][A-Za-z0-9_]* +in +([^ ;#]+ +)*([^ ;#,<>]*/[^ ;#,<>]*[*?]|[^ ;#,<>]*[*?][^ ;#,<>]*/)'
+  _gre="$_gre"'|(^|[;&|(]) *find +[^|]*\| *(while|for|xargs)|<\(find +|for +[A-Za-z_][A-Za-z0-9_]* +in +\$\(find +'
   {
     while IFS= read -r -d '' _gf; do
       case "${_gf##*/}" in
