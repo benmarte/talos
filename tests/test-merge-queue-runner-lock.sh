@@ -112,7 +112,10 @@ HOLDER=""
 hold_lock() {  # <pid>: a lock held by <pid>
   rm -rf "${QLOCK:?}"; mkdir "$QLOCK"; printf '%s:1\n' "$1" > "$QLOCK/pid"
 }
-stop_holder() { [ -z "$HOLDER" ] || kill "$HOLDER" 2>/dev/null; HOLDER=""; rm -rf "${QLOCK:?}"; }
+stop_holder() {
+  [ -z "$HOLDER" ] || { kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; }
+  HOLDER=""; rm -rf "${QLOCK:?}"
+}
 cands() { grep -c '^candidate=' <<< "$OUT"; }
 locked() { if [ -e "$QLOCK" ]; then echo yes; else echo no; fi; }
 merged_prs() { journal | sed -n 's/^vcs merge-pr \([0-9]*\) .*/\1/p' | tr '\n' ' ' | sed 's/ $//'; }
