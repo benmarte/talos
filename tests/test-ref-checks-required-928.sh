@@ -328,12 +328,12 @@ STUB_GITLAB_MR_API="$(_mr failed)" _pr pr-checks-required 9
 assert_eq "1" "$RC" "AC10 gitlab pr-checks-required a failed head pipeline exits 1"
 
 # ── AC11 (same): outside the defaults table and docs only scripts/talos.sh reads
-# merge.queue (#929); merge.queue_batch and merge.queue_branch_prefix stay unread ─
+# merge.queue (#929), and merge.queue_batch / merge.queue_branch_prefix (#930) ─
 _readers="$(git -C "$TALOS_ROOT" grep -l -e 'merge\.queue' -- . ':(exclude)docs' ':(exclude)tests' ':(exclude)*.md' \
   ':(exclude)scripts/pipeline-defaults.sh' ':(exclude)talos.pipeline.json.example')"; _grc=$?
 assert_eq "0|scripts/talos.sh" "$_grc|$_readers" "AC11 only scripts/talos.sh reads merge.queue outside scripts/pipeline-defaults.sh"
 _readers="$(git -C "$TALOS_ROOT" grep -l -e 'merge\.queue_' -- . ':(exclude)docs' ':(exclude)tests' ':(exclude)*.md' \
   ':(exclude)scripts/pipeline-defaults.sh' ':(exclude)talos.pipeline.json.example')"; _grc=$?
-assert_eq "1|" "$_grc|$_readers" "AC11 no script reads merge.queue_batch or merge.queue_branch_prefix (git grep finds none)"
+assert_eq "0|scripts/talos.sh" "$_grc|$_readers" "AC11 only scripts/talos.sh reads merge.queue_batch or merge.queue_branch_prefix"
 
 finish
