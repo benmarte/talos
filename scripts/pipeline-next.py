@@ -242,8 +242,13 @@ def next_stage(n, labels, issue_labels, enabled):
     if qa_last and 'qa' in enabled and (('qa:pass' not in labels and 'qa' not in lost) or 'qa' in stale):
         return 'qa'
     if opts.get('required-checks') == 'yes':
-        rc, _, _ = vcs('pr-checks-required', str(n))
-        if rc != 0:
+        rc, _, err = vcs('pr-checks-required', str(n))
+        # Only pending or missing (exit 2) waits. A red check (exit 1 with the
+        # `failed:` line) goes on to the merge gate, whose step 6 re-runs CI
+        # (at most twice per head) and then posts ci-failed (#960). Any other
+        # answer stays fail-closed on the ci wait.
+        red = rc == 1 and 'pr-checks-required: failed:' in err
+        if rc != 0 and not red:
             return 'ci'
     return 'merge' if opts.get('merge-auto') == 'true' else 'human-merge'
 

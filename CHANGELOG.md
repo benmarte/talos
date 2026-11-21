@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: a ready PR with every approval and a red required check is routed to the merge gate instead of `wait reason=ci`: `next` waits on `ci` only while `pr-checks-required` is pending or missing (exit 2), so `gate merge` re-runs the failed check (at most twice per head) and then posts `ci-failed`
 - fix: guard discovery (`pipeline-verify.sh --guards`) also lists a test that walks the repo with a shell glob loop (`for f in "$ROOT"/tests/test-*.sh`) or a `find <dir>` piped into a loop, so a new test file's missing `tests/timings.txt` line fails before the PR and not at QA; a loop over literal words is still not a guard
 - fix: a criterion's kind marker is the first one right after its id (or checkbox), read by one shared parser in every `pipeline-criteria.sh` reader, so marker-shaped text in backticks or later in the description no longer turns a `(test)` into `(same)` in `red-check`/`qa-run` or gets rewritten by `revise-spec`; a revised spec always starts with the `**PM spec:**` header line, even when the prose mentions it
 - fix: the red-check auto-flip revises an issue-body spec: `revise-spec` numbers a spec without `AC<n>` ids by checklist position (an unmarked line is `(test)`) and inserts the `(same: ...)` marker after the checkbox, the revised spec is posted as a `**PM spec:**` comment, and a finding it still cannot apply blocks the issue and PR and stops `reason=spec-unusable detail=revise-failed` instead of `state-unavailable`
