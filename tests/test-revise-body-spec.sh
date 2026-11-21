@@ -201,7 +201,7 @@ printf 'not json' > "$STUB_DIR/view-issue.9"
 printf 'kind-mismatch AC1 want=same\nred-check: MISMATCH 1\n' > "$STUB_DIR/red-check.out"
 printf 1 > "$STUB_DIR/red-check.rc"
 drv
-assert_eq "yes" "$(printf '%s\n' "$OUT" | grep -q '^stop reason=state-unavailable' && echo yes || echo no)" "AC4 control: an unreadable spec is still state-unavailable"
+assert_contains "$(printf '%s\n' "$OUT" | grep '^stop ')" "stop reason=state-unavailable" "AC4 control: an unreadable spec is still state-unavailable"
 
 # AC1 the driver posts the revised body spec as a **PM spec:** comment and the run goes on.
 first_round "$BODY_SPEC"

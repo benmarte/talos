@@ -6051,8 +6051,10 @@ _talos_run_spec_usable() {
 #     the branch adds, `drop-file` / `to-prose`): the lines are relayed, the spec is
 #     re-posted as a new `**PM spec:**` comment with those kinds flipped, the file
 #     moved to a `**Regression:**` line and its criteria made prose (`revise-spec`,
-#     the body in a file), spec-usable is asked again, and the run continues. An
-#     unreadable spec or a failed post is `stop reason=state-unavailable`.
+#     the body in a file), spec-usable is asked again, and the run continues. A
+#     `revise-spec` that cannot apply a finding (exit 1; #954) blocks the PR and the
+#     issue and stops `reason=spec-unusable detail=revise-failed issue=<N> pr=<M>`
+#     (exit 0). An unreadable spec or a failed post is `stop reason=state-unavailable`.
 #   exit 4: PR and issue blocked, the lines relayed, `stop reason=spec-unusable
 #     detail=id-collision issue=<N> pr=<M>` (exit 0); a `BLOCKED spec:` verdict stops
 #     without `detail=`.
@@ -6077,6 +6079,12 @@ _talos_run_red_check() {
     1)
       _talos_relay red-check "$_lines"
       _talos_run_capture revise-spec bash "$SCRIPT_DIR/pipeline-criteria.sh" revise-spec "$_n" <<<"$_OUT"
+      if [ "$_RC" -eq 1 ]; then
+        # A finding revise-spec cannot apply (its `revise-spec:` line was relayed above).
+        _talos_block_labels "$_n" "$_pr"
+        _talos_emit stop "reason=spec-unusable detail=revise-failed issue=$_n pr=$_pr"
+        _talos_flush; exit 0
+      fi
       { [ "$_RC" -eq 0 ] && [ -n "$_OUT" ]; } || _talos_stop state-unavailable
       _BODY="$_OUT"
       _talos_say comment-issue "$_n" || _talos_stop state-unavailable
