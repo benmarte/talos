@@ -142,7 +142,16 @@
 #            (pending), a candidate gone stale (origin's base is not B, or a PR
 #            of it is no longer an open PR of the base) is deleted without
 #            waiting for its CI (`stale=<branch>`) and the pass goes back to 2
-#            with a fresh cut, at most 5 times (then wait reason=base-moved). Red (#931): the red set S (k PRs) is
+#            with a fresh cut, at most 5 times (then wait reason=base-moved).
+#            Red (#950): first up to merge.queue_retry (0-3, default 1; any
+#            other value is stop reason=config-unreadable before step 1)
+#            re-runs: `pipeline-vcs.sh rerun-ci --sha <candidate sha>`, then the
+#            check answer again after 30 s (a rerun-ci answer of 2, runs still in
+#            progress, is asked again every 30 s within the same poll budget and
+#            spends no retry), `rerun=<n> sha=<sha>`; no new cut, no push, no
+#            approval touched. Green goes on to 8; a re-run that cannot start,
+#            or red with the retries used up, is the bisection below. A
+#            bisection step is not retried. Red (#931): the red set S (k PRs) is
 #            bisected: k=1 is its PR; else a binary search for the shortest red
 #            prefix, each step a cut of B plus the first m PRs of S pushed and
 #            polled as in 6-7 (the previous candidate deleted first; a failed cut
@@ -1965,9 +1974,13 @@ _talos_queue_stale() {
 # last call is wait reason=candidate-timeout,
 # any other exit wait reason=checks-unverified: the pass ends there, on the
 # batch or on any bisection step, with nothing merged and nothing more ejected.
-_talos_queue_poll() {
-  local _calls=0 _scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
+_talos_queue_nap() {
+  local _scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
   case "$_scale" in '' | *[!0-9.]*) _scale=1 ;; esac
+  sleep "$(awk -v k="$_scale" 'BEGIN { print 30 * k }')"
+}
+_talos_queue_poll() {
+  local _calls=0
   while :; do
     _talos_cap _vcs ref-checks-required "$_QR_SHA"
     _calls=$((_calls + 1))
@@ -1977,7 +1990,7 @@ _talos_queue_poll() {
       2) [ "$_calls" -lt "$_QR_POLLS" ] || _talos_queue_end wait candidate-timeout
          # With `restart` (#965), a candidate gone stale is 3: the caller re-cuts.
          [ "${1:-}" != restart ] || ! _talos_queue_stale || return 3
-         sleep "$(awk -v k="$_scale" 'BEGIN { print 30 * k }')" ;;
+         _talos_queue_nap ;;
       *) _talos_queue_end wait checks-unverified ;;
     esac
   done
@@ -2039,7 +2052,7 @@ _talos_queue_eject() {
 
 _talos_queue_run() {
   local _base _prefix _batch _method _tmo _rows _p _qh _qe _br _n _rx _b _t0=""
-  local _picked="" _csv="" _size=0 _n1="" _branches=() _a _recuts=0 _stale=0 _prc=0
+  local _picked="" _csv="" _size=0 _n1="" _branches=() _a _recuts=0 _stale=0 _prc=0 _retry _rt=0
   _talos_prepare queue pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-hooks.sh \
                        pipeline-mergebase.sh pipeline-lock.sh
   [ "$(cfg merge.queue)" = "talos" ] || _talos_verdict off
@@ -2057,6 +2070,15 @@ _talos_queue_run() {
     _talos_stop config-unreadable
   fi
   _QR_POLLS=$((10#$_tmo / 30))
+  # merge.queue_retry (#950): 0-3, the re-runs of a red candidate before it is
+  # bisected and ejected. Exactly one digit, so a leading zero or 1.5 is refused.
+  _retry="$(cfg merge.queue_retry)"
+  case "$_retry" in
+    0 | 1 | 2 | 3) ;;
+    *)
+      printf 'talos: merge.queue_retry must be an integer from 0 to 3 -- got: %s\n' "$_retry" >&2
+      _talos_stop config-unreadable ;;
+  esac
   . "$SCRIPT_DIR/pipeline-lock.sh"
   _QR_LOCK="$(git rev-parse --git-common-dir 2>/dev/null || echo .git)/talos-worktree"
   _talos_on_exit _talos_queue_exit_hook
@@ -2115,18 +2137,43 @@ _talos_queue_run() {
   # re-cut the rest from B and poll again; none left is verdict=ejected. A
   # candidate gone stale while pending (#965) is deleted unwaited and the pass
   # goes back to step 2 for a fresh cut from the current queue.
-  _QR_B="$_b"; _QR_PICKED="$_picked"; _stale=0
+  _QR_B="$_b"; _QR_PICKED="$_picked"; _stale=0; _rt=0
   while :; do
     _talos_queue_poll restart && break
     _prc=$?
     if [ "$_prc" -eq 3 ]; then _stale=1; break; fi
+    # Red (#950): up to merge.queue_retry re-runs of this candidate's failed jobs
+    # at the same sha before the bisection and the eject. No new cut, no push,
+    # no approval touched. A re-run the provider cannot start ejects as today.
+    # The red can come while other jobs still run, and a run in progress cannot be
+    # re-run yet: rerun-ci answers 2 and is asked again every 30 s, as the check
+    # poll is (a wait spends no retry; the poll budget bounds it). Only a re-run
+    # that started counts, and the provider gets 30 s to reset its jobs before the
+    # check is read again, or the old red is read back.
+    if [ "$_rt" -lt "$_retry" ]; then
+      _ra=0
+      while :; do
+        _talos_cap _vcs rerun-ci --sha "$_QR_SHA"
+        [ "$_RC" -eq 2 ] || break
+        _ra=$((_ra + 1))
+        [ "$_ra" -lt "$_QR_POLLS" ] || _talos_queue_end wait candidate-timeout
+        _talos_queue_nap
+      done
+      if [ "$_RC" -eq 0 ]; then
+        _rt=$((_rt + 1))
+        _talos_emit rerun "$_rt sha=$_QR_SHA"
+        _talos_queue_nap
+        continue
+      fi
+      _rt=$_retry
+    fi
     _talos_queue_bisect "$_b" "$_method" "$_prefix$_base-" "$_picked"
     _talos_queue_eject "$_base" "$(printf '%s\n' "$_picked" | grep -c .)" "$_t0"
     _picked="$(printf '%s\n' "$_picked" | awk -v p="${_QR_BAD%% *}" 'NF && $1 != p')"
     [ -n "$_picked" ] || _talos_queue_end ejected
     _talos_queue_cut "$_b" "$_method" "$_picked"
     _talos_queue_push "$_prefix$_base-" "$(_talos_queue_csv "$_picked")"
-    _QR_PICKED="$_picked"
+    _QR_PICKED="$_picked"; _rt=0
   done
   [ "$_stale" -eq 1 ] || break
   _recuts=$((_recuts + 1))
