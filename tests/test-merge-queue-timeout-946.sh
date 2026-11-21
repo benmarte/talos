@@ -116,11 +116,11 @@ timed_out() {
 
 # ── AC1 (same): unset -> 120 calls, then candidate-timeout ───────────────────
 pending
-timed_out AC1 120
+timed_out "AC1 unset:" 120
 
 # ── AC2: 7200 s -> 240 calls, then candidate-timeout ─────────────────────────
 pending ', "queue_timeout_s": 7200'
-timed_out AC2 240
+timed_out "AC2 queue_timeout_s=7200:" 240
 
 # ── AC3: 7200 s, pending 199 times then green -> merged at call 200 ──────────
 q_reset; q_three; q_cfg talos ', "queue_timeout_s": 7200'
