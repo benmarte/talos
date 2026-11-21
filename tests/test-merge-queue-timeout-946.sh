@@ -159,7 +159,8 @@ assert_eq "0|0" "$(jc '^vcs upsert-pr-comment')|$(jc '^hooks post_stage queue_ej
 # ── AC7: the default is 3600 and the row is int ──────────────────────────────
 EMPTY="$SANDBOX/no-config"
 mkdir -p "$EMPTY" && git init -q "$EMPTY"
-assert_eq "3600" "$(cd "$EMPTY" && bash "$TALOS_ROOT/scripts/pipeline-config.sh" merge.queue_timeout_s 2>/dev/null)" \
+assert_eq "3600" "$(cd "$EMPTY" && env -u PIPELINE_CONFIG TALOS_HOME="$EMPTY/home" \
+  bash "$TALOS_ROOT/scripts/pipeline-config.sh" merge.queue_timeout_s 2>/dev/null)" \
   "AC7 with no config file pipeline-config.sh prints 3600"
 assert_eq "int 3600" "$(awk -F'\t' '$1 == "merge.queue_timeout_s" { print $2, $3 }' "$TALOS_ROOT/scripts/pipeline-defaults.sh")" \
   "AC7 the defaults row is int with default 3600"

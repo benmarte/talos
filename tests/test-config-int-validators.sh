@@ -41,7 +41,7 @@ execution.worktree_warn_threshold:0:10000 execution.context_budget_tokens:0:1000
 agents.stage_timeout_s:60:86400 verify.e2e_artifacts.max_files:1:1000 verify.e2e_artifacts.max_mb:1:10240 verify.walk.max_mb:1:10240"
 BOUNDS="$(printf '%s' "$BOUNDS" | tr '\n' ' ')"
 OWN="limits.tokens_per_issue agents.provider_down_s agents.roles.*.stage_timeout_s"
-CONSUMER="issues.max_parallel limits.max_retries"
+CONSUMER="issues.max_parallel limits.max_retries merge.queue_timeout_s"
 RESERVED="merge.queue_batch"
 
 # ── Every int row is in a bucket ─────────────────────────────────────────────
