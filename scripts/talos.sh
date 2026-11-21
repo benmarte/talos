@@ -69,6 +69,7 @@
 #            verdict=merge      [ci_runs=<n>]
 #            verdict=handoff                    merge.auto is off: pipeline:approved is set
 #            verdict=redispatch reason=stale-approvals stale=<roles> | draft-pr | ci-failed | merge-conflict
+#                                 | queue-ejected
 #            verdict=wait       reason=blocked-label | approvals-missing missing=<labels>
 #                                 [never_approved=<roles>]
 #                                 | ci-pending | ci-rerun attempt=<k> | rerun-unsupported
@@ -81,8 +82,10 @@
 #            merged: it is recorded in its `talos:queue` marker comment (see
 #            queue below) and waits with reason=queued; a corrupt trusted
 #            marker or a failed write waits with reason=queue-state-unverified.
+#            A PR the batch runner ejected at its current head (#931) is
+#            redispatch reason=queue-ejected, with nothing written.
 #            Unset, off and github: as before.
-# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge closing-keyword-unverified forbidden-files closing-keyword pr-body-checklist siblings-capped roles-decision-mismatch queued queue-state-unverified
+# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict queue-ejected blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge closing-keyword-unverified forbidden-files closing-keyword pr-body-checklist siblings-capped roles-decision-mismatch queued queue-state-unverified
 #   stop: usage unknown-verb scripts-missing python-missing scratch-unavailable config-unreadable
 #         draft-resolve-failed view-failed labels-unreadable approval-sha-failed
 #         unsupported-verb:<verb> draft-unverified ci-unverified head-unresolved
@@ -99,7 +102,7 @@
 #         is empty. A failed read or a corrupt marker is one lone `stop
 #         reason=queue-state-unverified` (exit 1), never a partial queue.
 # queue run  One pass of the batch runner (#930), exit 0. Output: `verdict=off|
-#         empty|merged|wait|block` first, then key=value lines. Not talos (unset,
+#         empty|merged|ejected|wait|block` first, then key=value lines. Not talos (unset,
 #         off, github): verdict=off, no provider call, no push. Else:
 #         1. every origin branch <merge.queue_branch_prefix><base>-<digits> is a
 #            crashed pass's candidate and is deleted (`cleanup=<b>`; a failed
@@ -119,9 +122,19 @@
 #            sha=<40 hex> prs=<a,b,c>`; a failed push or an origin ref that is not
 #            the cut sha is wait reason=candidate-unverified;
 #         7. `pipeline-vcs.sh ref-checks-required <sha>` every 30 s (times
-#            TALOS_RETRY_SLEEP_SCALE), at most 120 calls: 0 green, 1 block
-#            reason=candidate-red, 2 at the last call wait reason=candidate-timeout,
-#            anything else wait reason=checks-unverified;
+#            TALOS_RETRY_SLEEP_SCALE), at most 120 calls: 0 green, 1 red, 2 at
+#            the last call wait reason=candidate-timeout, anything else wait
+#            reason=checks-unverified. Red (#931): the red set S (k PRs) is
+#            bisected: k=1 is its PR; else a binary search for the shortest red
+#            prefix, each step a cut of B plus the first m PRs of S pushed and
+#            polled as in 6-7 (the previous candidate deleted first; a failed cut
+#            or push is candidate-unverified, a timeout or a failed lookup as
+#            above: nothing merged, nothing more ejected). The culprit's marker
+#            becomes `queue: ejected base=<base> head=<cut head>` plus the first
+#            fail|cancel row of the isolating candidate (none:
+#            checks-unverified; a failed write: queue-state-unverified with
+#            `pr=<pr>`), then `ejected=<pr> issue=<n>`. S minus it is cut again
+#            from B and back to 6; none left is verdict=ejected;
 #         8. green: origin's base is not B, wait reason=base-moved (the next pass
 #            rebuilds); a PR's pr-head is not its cut head, wait reason=head-moved;
 #         9. for each PR in order: its pr-head read again (not its cut head:
@@ -131,10 +144,11 @@
 #            post-merge is `warn reason=post-merge-failed pr=<pr>`. verdict=merged.
 #         The candidate is deleted on every exit. Events (post_stage, role
 #         orchestrator, the first PR's issue for a batch): queue_batch_start at
-#         the push, queue_batch_pass when green, queue_merge per merged PR (--pr,
-#         --sha the PR head), each with --duration-s (since the push) and
-#         --batch-size.
-# queue-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable trust-unverified queue-state-unverified no-candidate candidate-unverified candidate-red candidate-timeout checks-unverified base-moved head-moved merge-failed cleanup-failed post-merge-failed
+#         the first push, queue_batch_pass when green, queue_merge per merged PR
+#         (--pr, --sha the PR head), each with --duration-s (since the first
+#         push) and --batch-size; queue_eject per ejected PR (its issue, --pr,
+#         --sha its cut head, --batch-size the red set it was isolated from).
+# queue-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable trust-unverified queue-state-unverified no-candidate candidate-unverified candidate-timeout checks-unverified base-moved head-moved merge-failed cleanup-failed post-merge-failed
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         trust-unverified (exit 2 for usage; else 1), and queue list's
 #         queue-state-unverified
@@ -347,6 +361,8 @@
 #         A gate `redispatch reason=merge-conflict` is the developer's merge-base
 #         round in the same run (`gate fix-round`, fix-round dispatch; a round that
 #         pushes nothing blocks, `stop reason=fix-round-unchanged-head`) (#850).
+#         A gate `redispatch reason=queue-ejected` (#931) is the same developer
+#         fix round, its summary `PR #<pr> was ejected from the merge queue: ...`.
 #         A gate `wait reason=queued` (merge.queue: talos) runs `queue run` once
 #         and ends `stop queue <its lines, warns dropped>` (exit 0, #930).
 #         An untargeted run drains the queue: once `post-merge` reports the
@@ -1566,10 +1582,12 @@ _talos_closing_check() {
 #   <!-- talos:queue -->
 # A PR's state is the newest comment of a trusted author whose last non-blank
 # line (the cloud footer stripped, as for the other markers) is the marker;
-# other authors are ignored. Prints `none`, `corrupt` (not exactly one
-# well-formed data line) or `ok <base> <head> <eligible>`. argv: 1 or 0 for
-# "only trusted authors count", the trusted logins one per line. An answer that
-# is not read-comments JSON exits non-zero.
+# other authors are ignored. A PR the batch runner ejected (#931) carries
+# `queue: ejected base=<base> head=<40 hex>` as its data line instead. Prints
+# `none`, `corrupt` (not exactly one well-formed data line), `ok <base> <head>
+# <eligible>` or `ejected <base> <head>`. argv: 1 or 0 for "only trusted authors
+# count", the trusted logins one per line. An answer that is not read-comments
+# JSON exits non-zero.
 _TALOS_QUEUE_PY='
 import json, re, sys
 from datetime import datetime
@@ -1577,6 +1595,7 @@ enforce, trusted = sys.argv[1] == "1", set(sys.argv[2].splitlines())
 MARK = "<!-- talos:queue -->"
 FOOT = "_Generated by [Claude Code](https://claude.ai/code)_"
 DATA = re.compile(r"queue: base=(\S+) head=([0-9a-f]{40}) eligible=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)\Z")
+EJECTED = re.compile(r"queue: ejected base=(\S+) head=([0-9a-f]{40})\Z")
 def lines(b):
     ls = b.replace("\r\n", "\n").rstrip().split("\n")
     if len(ls) >= 2 and ls[-1].strip() == FOOT:
@@ -1602,6 +1621,10 @@ if found is None:
     print("none")
     sys.exit(0)
 data = [l.strip() for l in found if l.strip().startswith("queue:")]
+e = EJECTED.match(data[0]) if len(data) == 1 else None
+if e:
+    print("ejected %s %s" % e.groups())
+    sys.exit(0)
 m = DATA.match(data[0]) if len(data) == 1 else None
 try:
     ok = m and datetime.strptime(m.group(3), "%Y-%m-%dT%H:%M:%SZ")
@@ -1633,6 +1656,9 @@ _talos_queue_read() {
 # queue_enqueue event follows. The same head and base writes nothing. It ends in
 # `verdict=wait` (reason=queued, or queue-state-unverified for a corrupt marker
 # or a failed write) or a stop, never a merge: the batch runner (#930) merges.
+# A PR the batch runner ejected at this head and base (#931) writes nothing and
+# is `verdict=redispatch reason=queue-ejected`: the developer fix round; an
+# ejected marker for another head or base is queued again as above.
 _talos_queue_enqueue() {
   local _pr="$1" _n="$2" _head _base _tag _qb _qh _qe
   _talos_queue_head "$_pr" || _talos_stop head-unresolved
@@ -1647,6 +1673,12 @@ _talos_queue_enqueue() {
       if [ "$_qb" = "$_base" ] && [ "$_qh" = "$_head" ]; then
         _talos_emit reason queued
         _talos_verdict wait
+      fi ;;
+    "ejected "*)
+      read -r _tag _qb _qh <<< "$_QS"
+      if [ "$_qb" = "$_base" ] && [ "$_qh" = "$_head" ]; then
+        _talos_emit reason queue-ejected
+        _talos_verdict redispatch
       fi ;;
     *) _talos_emit reason queue-state-unverified; _talos_verdict wait ;;
   esac
@@ -1679,8 +1711,8 @@ for p in json.load(sys.stdin):
 # _talos_queue_load <base>: the queue (#929), read back from the provider, in
 # _QROWS: for every open PR on the base whose trusted marker names its current
 # head and the base, one `<pr> <head> <eligible> <head branch>` line, oldest
-# eligible first, a tie by PR number. 1 on any failed read or a corrupt marker:
-# never a partial queue. _talos_trust runs first.
+# eligible first, a tie by PR number (an ejected PR is not queued). 1 on any
+# failed read or a corrupt marker: never a partial queue. _talos_trust runs first.
 _talos_queue_load() {
   local _base="$1" _prs _p _b _tag _qb _qh _qe _rows=""
   _QROWS=""
@@ -1692,7 +1724,7 @@ _talos_queue_load() {
     _talos_queue_head "$_p" || return 1
     _talos_queue_read "$_p" || return 1
     case "$_QS" in
-      none) continue ;;
+      none | "ejected "*) continue ;;
       "ok "*) read -r _tag _qb _qh _qe <<< "$_QS" ;;
       *) return 1 ;;
     esac
@@ -1730,11 +1762,17 @@ _talos_queue_verb() {
 # ── queue run (#930) ─────────────────────────────────────────────────────────
 # One pass of the batch runner (see the header). The candidate branch it pushed
 # (_QR_CAND) and its throwaway worktree (_QR_WT) are removed on every exit: by
-# _talos_queue_end on a verdict, by the exit hook on a stop or a signal.
+# _talos_queue_end on a verdict, by the exit hook on a stop or a signal. The
+# bisection (#931) keeps the pushed sha, a red answer, the culprit's row and the
+# isolating candidate in _QR_SHA, _QR_RED, _QR_BAD and _QR_ISO.
 _QR_CAND=""
 _QR_PUSHED=0
 _QR_WT=""
 _QR_LOCK=""
+_QR_SHA=""
+_QR_RED=""
+_QR_BAD=""
+_QR_ISO=""
 
 # _talos_queue_wt_drop: remove the throwaway worktree, if any.
 _talos_queue_wt_drop() {
@@ -1816,8 +1854,128 @@ _talos_queue_apply() {
   return 1
 }
 
+# _talos_queue_wt_new <base sha>: a fresh throwaway detached worktree at the
+# base sha in _QR_WT; 1 when it cannot be made.
+_talos_queue_wt_new() {
+  _QR_WT="$(mktemp -d "${TMPDIR:-/tmp}/talos-queue.XXXXXX" 2>/dev/null)" || _QR_WT=""
+  [ -n "$_QR_WT" ] && [ -d "$_QR_WT" ] || { _QR_WT=""; return 1; }
+  with_lock "$_QR_LOCK" 10 -- git worktree add -q --detach "$_QR_WT" "$1" >/dev/null 2>&1
+}
+
+# _talos_queue_csv <rows>: the PR numbers of `<pr> <head> <issue>` rows, a,b,c.
+_talos_queue_csv() { printf '%s\n' "$1" | awk 'NF { printf "%s%s", (n++ ? "," : ""), $1 }'; }
+
+# _talos_queue_cut <base sha> <method> <rows>: the cut of a sub-candidate or of
+# the rest after an eject (#931): base sha B, then each row's queued head in
+# order. A row that does not apply (or a worktree that cannot be made) is wait
+# reason=candidate-unverified: only the first cut sends a PR to the merge base.
+_talos_queue_cut() {
+  local _p _qh _n
+  _talos_queue_wt_new "$1" || _talos_queue_end wait candidate-unverified
+  while read -r _p _qh _n <&3; do
+    [ -n "$_p" ] || continue
+    _talos_queue_apply "$2" "$1" "$_qh" "$_p" || _talos_queue_end wait candidate-unverified
+  done 3<<< "$3"
+}
+
+# _talos_queue_push <name prefix> <prs csv>: step 6 for the cut in _QR_WT. The
+# previous candidate is deleted first (origin holds one at a time), this one is
+# pushed as <prefix><epoch s> and printed `candidate=`, and the worktree is
+# dropped; its sha in _QR_SHA. A failed delete or push, or an origin ref that
+# is not the cut sha, is wait reason=candidate-unverified.
+_talos_queue_push() {
+  local _prc _osha
+  _QR_SHA="$(git -C "$_QR_WT" rev-parse HEAD 2>/dev/null)"
+  [[ "$_QR_SHA" =~ ^[0-9a-f]{40}$ ]] || _talos_queue_end wait candidate-unverified
+  _talos_queue_drop
+  [ "$_QR_PUSHED" -eq 0 ] || _talos_queue_end wait candidate-unverified
+  _QR_CAND="$1$(date +%s)"
+  git -C "$_QR_WT" push -q origin "HEAD:refs/heads/$_QR_CAND" >/dev/null 2>&1
+  _prc=$?
+  _osha="$(_talos_queue_origin_sha "$_QR_CAND")"
+  { [ "$_prc" -eq 0 ] || [ -n "$_osha" ]; } && _QR_PUSHED=1
+  _talos_queue_wt_drop
+  { [ "$_prc" -eq 0 ] && [ "$_osha" = "$_QR_SHA" ]; } || _talos_queue_end wait candidate-unverified
+  _talos_emit candidate "$_QR_CAND sha=$_QR_SHA prs=$2"
+}
+
+# _talos_queue_poll: step 7 for the candidate _QR_SHA: ref-checks-required every
+# 30 s (times TALOS_RETRY_SLEEP_SCALE), at most 120 calls. 0 green; 1 red, its
+# stdout in _QR_RED. Exit 2 at the 120th call is wait reason=candidate-timeout,
+# any other exit wait reason=checks-unverified: the pass ends there, on the
+# batch or on any bisection step, with nothing merged and nothing more ejected.
+_talos_queue_poll() {
+  local _calls=0 _scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
+  case "$_scale" in '' | *[!0-9.]*) _scale=1 ;; esac
+  while :; do
+    _talos_cap _vcs ref-checks-required "$_QR_SHA"
+    _calls=$((_calls + 1))
+    case "$_RC" in
+      0) return 0 ;;
+      1) _QR_RED="$_OUT"; return 1 ;;
+      2) [ "$_calls" -lt 120 ] || _talos_queue_end wait candidate-timeout
+         sleep "$(awk -v k="$_scale" 'BEGIN { print 30 * k }')" ;;
+      *) _talos_queue_end wait checks-unverified ;;
+    esac
+  done
+}
+
+# _talos_queue_bisect <base sha> <method> <name prefix> <rows> (#931): the red
+# set <rows> (queue order; its whole cut just polled red) narrowed to one PR by
+# a binary search for its shortest red prefix: the base alone is taken as green,
+# each step cuts B plus the first m rows, pushes and polls it. The culprit's row
+# in _QR_BAD; the candidate that isolated it (the shortest red prefix) in
+# _QR_ISO (`<branch> <sha>`) and its red stdout in _QR_RED.
+_talos_queue_bisect() {
+  local _rows _lo=0 _hi _m _iso="$_QR_CAND $_QR_SHA" _red="$_QR_RED" _sub
+  _rows="$(printf '%s\n' "$4" | grep .)"
+  _hi="$(printf '%s\n' "$_rows" | grep -c .)"
+  while [ $((_hi - _lo)) -gt 1 ]; do
+    _m=$(((_lo + _hi) / 2))
+    _sub="$(printf '%s\n' "$_rows" | head -n "$_m")"
+    _talos_queue_cut "$1" "$2" "$_sub"
+    _talos_queue_push "$3" "$(_talos_queue_csv "$_sub")"
+    if _talos_queue_poll; then
+      _lo=$_m
+    else
+      _hi=$_m
+      _iso="$_QR_CAND $_QR_SHA"
+      _red="$_QR_RED"
+    fi
+  done
+  _QR_BAD="$(printf '%s\n' "$_rows" | sed -n "${_hi}p")"
+  _QR_ISO="$_iso"
+  _QR_RED="$_red"
+}
+
+# _talos_queue_eject <base> <red set size> <t0> (#931): the culprit _QR_BAD leaves
+# the queue. Its talos:queue marker becomes `queue: ejected base=<base>
+# head=<cut head>` with the failing check (the first fail or cancel row of the
+# isolating candidate's answer: name, state, url) and that candidate's branch
+# and sha; then `ejected=<pr> issue=<n>` and a queue_eject event. No such row is
+# wait reason=checks-unverified; a failed write wait reason=queue-state-unverified
+# with `pr=<pr>`: no event, nothing merged.
+_talos_queue_eject() {
+  local _p _qh _n _row _name _state _el _url
+  read -r _p _qh _n <<< "$_QR_BAD"
+  _row="$(printf '%s\n' "$_QR_RED" | awk -F'\t' '$2 == "fail" || $2 == "cancel" { print; exit }')"
+  [ -n "$_row" ] || _talos_queue_end wait checks-unverified
+  IFS=$'\t' read -r _name _state _el _url <<< "$_row"
+  printf '**Merge queue:** ejected\n\nqueue: ejected base=%s head=%s\nFailing check: %s (%s) on candidate %s at %s: %s\n' \
+    "$1" "$_qh" "$_name" "$_state" "${_QR_ISO% *}" "${_QR_ISO#* }" "$_url" > "$_CFG_CACHE_DIR/queue" \
+    || _talos_stop scratch-unavailable
+  _talos_cap _vcs upsert-pr-comment "$_p" --marker queue --body-file - < "$_CFG_CACHE_DIR/queue"
+  if [ "$_RC" -ne 0 ]; then
+    _talos_emit pr "$_p"
+    _talos_queue_end wait queue-state-unverified
+  fi
+  _talos_emit ejected "$_p issue=$_n"
+  _talos_post_stage queue_eject orchestrator "$_n" --pr "$_p" --sha "$_qh" --duration-s "$((SECONDS - $3))" \
+    --batch-size "$2" < /dev/null
+}
+
 _talos_queue_run() {
-  local _base _prefix _batch _method _rows _p _qh _qe _br _n _rx _b _sha _osha _prc _t0 _scale _calls=0
+  local _base _prefix _batch _method _rows _p _qh _qe _br _n _rx _b _t0
   local _picked="" _csv="" _size=0 _n1="" _branches=() _a
   _talos_prepare queue pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-hooks.sh \
                        pipeline-mergebase.sh pipeline-lock.sh
@@ -1849,10 +2007,7 @@ _talos_queue_run() {
   git fetch -q origin "+refs/heads/$_base:refs/remotes/origin/$_base" ${_branches[@]+"${_branches[@]}"} \
     >/dev/null 2>&1 || _talos_queue_end wait candidate-unverified
   _b="$(git rev-parse -q --verify "refs/remotes/origin/$_base^{commit}" 2>/dev/null)" || _talos_queue_end wait candidate-unverified
-  _QR_WT="$(mktemp -d "${TMPDIR:-/tmp}/talos-queue.XXXXXX" 2>/dev/null)" || _QR_WT=""
-  [ -n "$_QR_WT" ] && [ -d "$_QR_WT" ] || { _QR_WT=""; _talos_queue_end wait candidate-unverified; }
-  with_lock "$_QR_LOCK" 10 -- git worktree add -q --detach "$_QR_WT" "$_b" >/dev/null 2>&1 \
-    || _talos_queue_end wait candidate-unverified
+  _talos_queue_wt_new "$_b" || _talos_queue_end wait candidate-unverified
   while read -r _p _qh _qe _br <&3; do
     [[ "$_br" =~ $_rx ]]
     _n="${BASH_REMATCH[2]}"
@@ -1871,34 +2026,21 @@ _talos_queue_run() {
   [ "$_size" -gt 0 ] || _talos_queue_end wait no-candidate
 
   # 6. Push the candidate; origin must hold exactly the cut sha.
-  _sha="$(git -C "$_QR_WT" rev-parse HEAD 2>/dev/null)"
-  [[ "$_sha" =~ ^[0-9a-f]{40}$ ]] || _talos_queue_end wait candidate-unverified
-  _QR_CAND="$_prefix$_base-$(date +%s)"
-  git -C "$_QR_WT" push -q origin "HEAD:refs/heads/$_QR_CAND" >/dev/null 2>&1
-  _prc=$?
-  _osha="$(_talos_queue_origin_sha "$_QR_CAND")"
-  { [ "$_prc" -eq 0 ] || [ -n "$_osha" ]; } && _QR_PUSHED=1
-  _talos_queue_wt_drop
-  { [ "$_prc" -eq 0 ] && [ "$_osha" = "$_sha" ]; } || _talos_queue_end wait candidate-unverified
+  _talos_queue_push "$_prefix$_base-" "$_csv"
   _t0=$SECONDS
-  _talos_emit candidate "$_QR_CAND sha=$_sha prs=$_csv"
-  _talos_post_stage queue_batch_start orchestrator "$_n1" --sha "$_sha" --duration-s 0 --batch-size "$_size" < /dev/null
+  _talos_post_stage queue_batch_start orchestrator "$_n1" --sha "$_QR_SHA" --duration-s 0 --batch-size "$_size" < /dev/null
 
-  # 7. Its required checks: every 30 s (scaled), at most 120 calls.
-  _scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
-  case "$_scale" in '' | *[!0-9.]*) _scale=1 ;; esac
-  while :; do
-    _talos_cap _vcs ref-checks-required "$_sha"
-    _calls=$((_calls + 1))
-    case "$_RC" in
-      0) break ;;
-      1) _talos_queue_end block candidate-red ;;
-      2) [ "$_calls" -lt 120 ] || _talos_queue_end wait candidate-timeout
-         sleep "$(awk -v k="$_scale" 'BEGIN { print 30 * k }')" ;;
-      *) _talos_queue_end wait checks-unverified ;;
-    esac
+  # 7. Its required checks. Red (#931): bisect the red set to one PR, eject it,
+  # re-cut the rest from B and poll again; none left is verdict=ejected.
+  while ! _talos_queue_poll; do
+    _talos_queue_bisect "$_b" "$_method" "$_prefix$_base-" "$_picked"
+    _talos_queue_eject "$_base" "$(printf '%s\n' "$_picked" | grep -c .)" "$_t0"
+    _picked="$(printf '%s\n' "$_picked" | awk -v p="${_QR_BAD%% *}" 'NF && $1 != p')"
+    [ -n "$_picked" ] || _talos_queue_end ejected
+    _talos_queue_cut "$_b" "$_method" "$_picked"
+    _talos_queue_push "$_prefix$_base-" "$(_talos_queue_csv "$_picked")"
   done
-  _talos_post_stage queue_batch_pass orchestrator "$_n1" --sha "$_sha" --duration-s "$((SECONDS - _t0))" \
+  _talos_post_stage queue_batch_pass orchestrator "$_n1" --sha "$_QR_SHA" --duration-s "$((SECONDS - _t0))" \
     --batch-size "$_size" < /dev/null
 
   # 8. Nothing moved since the cut.
@@ -5318,11 +5460,17 @@ _talos_run_loop() {
         _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
         _r="$(bash "$SCRIPT_DIR"/talos.sh gate merge "$_pr" "$_n" 2>/dev/null)"
         # A merge-conflict redispatch (#850) is the developer's merge-base round,
-        # not a stop; every other redispatch reason keeps the stop below.
+        # and a queue-ejected one (#931) the developer's fix round for the check
+        # that failed in the merge queue, not a stop; every other redispatch
+        # reason keeps the stop below.
         case "$_r" in
           verdict=redispatch*)
             if grep -qx 'reason=merge-conflict' <<<"$_r"; then
               _talos_run_merge_conflict "$_pr" "$_n"
+              continue
+            fi
+            if grep -qx 'reason=queue-ejected' <<<"$_r"; then
+              _talos_run_queue_ejected "$_pr" "$_n"
               continue
             fi ;;
         esac
@@ -6048,6 +6196,18 @@ _talos_run_merge_conflict() {
       while IFS= read -r _l; do [ -z "$_l" ] || printf -- '- %s\n' "$_l"; done <<<"$_paths"
     fi
   } > "$_sum" || _talos_stop scratch-unavailable
+  _talos_run_review_round "$_pr" "$_n" developer "$_sum" 0
+}
+
+# _talos_run_queue_ejected <pr> <issue> (#931): the merge gate answered
+# `redispatch reason=queue-ejected`: the batch runner ejected the PR at its head.
+# The developer's fix round goes through `_talos_run_review_round` as the
+# merge-conflict round does; the summary points to the PR's talos:queue comment,
+# which names the failing check and its link. A push re-queues the PR.
+_talos_run_queue_ejected() {
+  local _pr="$1" _n="$2" _sum="$_CFG_CACHE_DIR/queue-ejected.summary"
+  printf 'PR #%s was ejected from the merge queue: a required check failed on the merge-queue candidate that isolated it. The `talos:queue` comment on the PR names the failing check, the candidate and the check link. Fix the failure and push; the new head is queued again.\n' \
+    "$_pr" > "$_sum" || _talos_stop scratch-unavailable
   _talos_run_review_round "$_pr" "$_n" developer "$_sum" 0
 }
 

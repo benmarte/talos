@@ -314,13 +314,15 @@ assert_contains "$CL" "- main entry" "AC10 the PR branch gained the base's line 
 assert_eq "2" "$(git -C "$ORIGIN" rev-list --parents -n 1 feat/issue-41-q | wc -w | tr -d ' ' | awk '{print $1 - 1}')" "AC10 the PR branch tip is a merge commit"
 
 # ── AC11: a red candidate merges nothing ─────────────────────────────────────
+# Every check red: the bisection (#931, tests/test-merge-queue-931.sh) ejects
+# each PR in turn.
 q_reset; q_three
 printf 1 > "$STUB_DIR/ref-checks-required.rc"
+printf 'unit\tfail\t1m\thttps://ci.example/1\n' > "$STUB_DIR/ref-checks-required.out"
 qr
-assert_eq "verdict=block" "$(line1)" "AC11 a red candidate blocks"
-assert_line "AC11 reason=candidate-red" "reason=candidate-red"
-assert_eq "0|0" "$(jc '^vcs merge-pr')|$(jc '^vcs upsert-pr-comment')" "AC11 no merge-pr, no marker rewritten"
-assert_eq "1|0" "$(cand_pushes)|$(queue_left)" "AC11 the candidate was pushed and is deleted"
+assert_eq "verdict=ejected" "$(line1)" "AC11 every check red: every PR is ejected"
+assert_eq "0|3" "$(jc '^vcs merge-pr')|$(jc '^vcs upsert-pr-comment [0-9]+ --marker queue ')" "AC11 no merge-pr, one ejected marker per PR"
+assert_eq "0" "$(queue_left)" "AC11 every candidate is deleted"
 
 # ── AC12: pending checks: 120 calls, then a timeout ──────────────────────────
 q_reset; q_three
