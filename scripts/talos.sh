@@ -2394,12 +2394,15 @@ for r in sorted(rows):
 # What the sweep reads out of the open issues (a list-issues array): `heal <n>`
 # for each carrying a pipeline:* label, or (mode rest) `blocked <n>`, `epic <n>
 # <carries children-done 0|1>` for each pipeline:epic-decomposed issue no open
-# issue says `Part of #<n>` about, and `unblock <n>` for each issue without
-# pipeline:ready whose `Depends on:` lines name only issues that are no longer
-# open. argv: the mode, then the ids to leave out (already healed, so closed).
+# issue says `Part of #<n>` about, and `unblock <n>` for each issue with no
+# pipeline:* label and no open pipeline PR whose `Depends on:` lines name only
+# issues that are no longer open. argv: the mode, the ids to leave out (already
+# healed, so closed), then the issues with an open pipeline PR (`,<n>,<m>,`; `?`
+# when the PR list was unreadable).
 _TALOS_SWEEP_PY='
 import json, re, sys
 mode, skip = sys.argv[1], set(sys.argv[2].split(","))
+prs = sys.argv[3] if len(sys.argv) > 3 else "?"
 items = []
 for i in json.load(sys.stdin):
     n = i.get("number")
@@ -2429,7 +2432,9 @@ for n, names, _ in items:
         if not any(m != n and part.search(b) for m, _, b in items):
             print("epic", n, 1 if "pipeline:epic-children-done" in names else 0)
 for n, names, b in items:
-    if "pipeline:ready" in names:
+    # Queued, blocked or in flight (any pipeline:* label), or an open pipeline PR
+    # (argv 3: ",<issue>,...,"; "?" is an unreadable PR list: nothing is unblocked).
+    if any(isinstance(x, str) and x.startswith("pipeline:") for x in names) or prs == "?" or ",%d," % n in prs:
         continue
     deps = [int(d) for ln in b.splitlines() if re.match(r"\s*Depends on:", ln) for d in re.findall(r"#([0-9]+)", ln)]
     if deps and not any(d in opened for d in deps):
@@ -2815,7 +2820,7 @@ _talos_ids() {
 
 # sweep [<issue-id>...]: Step 1 items 2 and 4-8, the ids being this run's queue.
 _talos_sweep() {
-  local _issues="" _k _n _lead _pr _prs="" _list="" _healed="" _bi="" _bp="" _ki=0 _kp=0 _plan _s _i _b _e _carried
+  local _issues="" _pr_issues _k _n _lead _pr _prs=""_list="" _healed="" _bi="" _bp="" _ki=0 _kp=0 _plan _s _i _b _e _carried
   _talos_ids "$@"
   _talos_prepare sweep pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
                        pipeline-status.sh \
@@ -2867,21 +2872,25 @@ _talos_sweep() {
     [ -z "$_s" ] || _talos_emit worktree_sweep "$_s"
   fi
 
-  if [ -n "$_issues" ]; then
-    _plan="$(python3 -I -c "$_TALOS_SWEEP_PY" rest "$_healed" <<< "$_issues")" || _plan=""
-  else
-    _plan=""
-  fi
-
   # 5. Stale blocked work: issues and open pipeline PRs labeled pipeline:blocked.
+  # The PR list is read before the plan: an issue with an open pipeline PR is in
+  # flight and is never unblocked (an unreadable list is `?`: nothing is).
+  _pr_issues="?"
   _talos_cap _vcs list-prs
   if [ "$_RC" -eq 0 ] && _prs="$(_talos_pipeline_prs "$_OUT")"; then
+    _pr_issues=","
     while read -r _s _i _b <&3; do
+      _pr_issues="$_pr_issues$_i,"
       [ "${_b:-0}" -eq 1 ] || continue
       _kp=$((_kp + 1)); _bp="${_bp:+$_bp, }PR #$_s"
     done 3<<< "$_prs"
   else
     _talos_warn prs-unlisted
+  fi
+  if [ -n "$_issues" ]; then
+    _plan="$(python3 -I -c "$_TALOS_SWEEP_PY" rest "$_healed" "$_pr_issues" <<< "$_issues")" || _plan=""
+  else
+    _plan=""
   fi
   while read -r _k _n <&3; do
     [ "$_k" = blocked ] || continue
@@ -2931,14 +2940,15 @@ _talos_sweep() {
           fi ;;
       esac
     done 3<<< "$_plan"
-
-    # 7. A sub-issue whose dependencies are all closed is queued.
-    while read -r _k _n <&3; do
-      [ "$_k" = unblock ] || continue
-      _talos_run_capture unblock _vcs label-issue "$_n" --add pipeline:ready
-      if [ "$_RC" -eq 0 ]; then _talos_emit unblocked "$_n"; else _talos_warn unblock-failed "issue=$_n"; fi
-    done 3<<< "$_plan"
   fi
+
+  # 7. An issue whose dependencies are all closed is queued (every sweep: a
+  # `Depends on:` line can be written by hand, and the code driver has no planner).
+  while read -r _k _n <&3; do
+    [ "$_k" = unblock ] || continue
+    _talos_run_capture unblock _vcs label-issue "$_n" --add pipeline:ready
+    if [ "$_RC" -eq 0 ]; then _talos_emit unblocked "$_n"; else _talos_warn unblock-failed "issue=$_n"; fi
+  done 3<<< "$_plan"
   _talos_flush
 }
 
