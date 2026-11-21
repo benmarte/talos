@@ -1204,6 +1204,8 @@ Identity, resolved once per run: `issues.assignee` when it names a login, else `
 | 7 | Stale base: `pipeline-mergebase.sh`, then `update-branch` (`merge.auto_sync`), then a developer merge-base task (`talos.sh run` dispatches it in the same run, through `gate fix-round`; a round that pushes nothing blocks) | `wait` / `redispatch` |
 | 8 | `merge.auto` | `merge` / `handoff` |
 
+`next` routes a ready PR with every approval on the CI state: `pr-checks-required` exit 0 goes to `merge` (or `human-merge`), exit 2 (pending or missing) answers `wait reason=ci`, and exit 1 with the `failed:` line (a red check) also goes to `merge`, so gate 6 re-runs CI or answers `ci-failed` instead of the PR waiting on `ci` forever. Any other answer stays on the `ci` wait.
+
 An unreadable gate answers `stop reason=<r>` (fail closed). Gates 3, 4 and 4b set `pipeline:blocked`; only a human clears it (for 4b, fix the body with `edit-pr-body` first).
 
 #### Closing the issue after a merge
@@ -1920,7 +1922,7 @@ Start with `bash scripts/pipeline-config.sh --show` (each key, its value and lay
 | `action=wait reason=lease` | Another run holds the issue's lease (or the ledger is unavailable). Re-run later; see [Isolation, locking and multi-user claims](#isolation-locking-and-multi-user-claims). |
 | `action=wait reason=owner` | An open issue or PR carries `pipeline:blocked`, or an owner question is open (`pipeline:needs-owner`). No new ready issue starts; only in-flight work moves. Answer the question or clear the label, then run again. |
 | `action=wait reason=human-merge` | `merge.auto` is off, so the driver never runs the merge gate. Under `/talos:pipeline` the session runs the gate and the hand-off; after a bare `talos.sh run`, run `talos.sh gate merge <PR> <N>` and, on `verdict=handoff`, `talos.sh post-merge <PR> <N> --handoff`. See [Human merge](#human-merge). |
-| `action=wait reason=ci pr=<M> issue=<N>` | With `verify.qa_mode: ci`, `talos.sh run --issue <N>` stopped waiting for the PR's required checks because one failed (`warn reason=qa-ci-red` comes first); QA was not dispatched and nothing is blocked. Start the run again once the checks are green. |
+| `action=wait reason=ci pr=<M> issue=<N>` | The PR's required checks are pending or missing (a red check on a fully approved PR goes to the merge gate instead). With `verify.qa_mode: ci`, `talos.sh run --issue <N>` stopped waiting for the PR's required checks because one failed (`warn reason=qa-ci-red` comes first); QA was not dispatched and nothing is blocked. Start the run again once the checks are green. |
 | `qa-fail-unchanged-head` | The QA fix round pushed nothing; PR and issue are `pipeline:blocked`. |
 | `qa-comment-missing` | QA ended FAIL but left no verdict comment on the PR, and posting one from the stage's final message failed; no fix round ran, so the developer is not sent after a finding it cannot read. Read the QA stage's output, post the verdict by hand and run again. |
 | `environment issue=<N> pr=<M>` | A `verify.ready` command failed in QA's `qa-run` (`qa-run: verdict BLOCKED environment: <cmd> exited <N>`), or QA ended `BLOCKED: environment: <why>`: the app was down, restarting or stale, and the code was not judged. PR and issue are `pipeline:blocked`, no fix round ran and no attempt was recorded. Fix the environment (or the `verify.ready` command), then remove `pipeline:blocked`; the raw output is under `.talos/qa-run-<pr>/`. |

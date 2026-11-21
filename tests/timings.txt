@@ -226,6 +226,7 @@
 5 test-ready-gate.sh
 25 test-red-check-747.sh
 25 test-red-check-drop-773.sh
+5 test-red-ci-routes-to-gate.sh
 30 test-ref-checks-required-928.sh
 0 test-reference-reasons-documented.sh
 20 test-repo-guides-789.sh
