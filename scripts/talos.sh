@@ -129,7 +129,9 @@
 #            sha=<40 hex> prs=<a,b,c>`; a failed push or an origin ref that is not
 #            the cut sha is wait reason=candidate-unverified;
 #         7. `pipeline-vcs.sh ref-checks-required <sha>` every 30 s (times
-#            TALOS_RETRY_SLEEP_SCALE), at most 120 calls: 0 green, 1 red, 2 at
+#            TALOS_RETRY_SLEEP_SCALE), at most merge.queue_timeout_s / 30 calls
+#            (default 3600 s: 120; a value outside 30-86400 is stop
+#            reason=config-unreadable before step 1): 0 green, 1 red, 2 at
 #            the last call wait reason=candidate-timeout, anything else wait
 #            reason=checks-unverified. Red (#931): the red set S (k PRs) is
 #            bisected: k=1 is its PR; else a binary search for the shortest red
@@ -1799,6 +1801,7 @@ _QR_SHA=""
 _QR_RED=""
 _QR_BAD=""
 _QR_ISO=""
+_QR_POLLS=120
 
 # _talos_queue_wt_drop: remove the throwaway worktree, if any.
 _talos_queue_wt_drop() {
@@ -1926,8 +1929,9 @@ _talos_queue_push() {
 }
 
 # _talos_queue_poll: step 7 for the candidate _QR_SHA: ref-checks-required every
-# 30 s (times TALOS_RETRY_SLEEP_SCALE), at most 120 calls. 0 green; 1 red, its
-# stdout in _QR_RED. Exit 2 at the 120th call is wait reason=candidate-timeout,
+# 30 s (times TALOS_RETRY_SLEEP_SCALE), at most _QR_POLLS calls (merge.queue_timeout_s
+# / 30, 120 by default). 0 green; 1 red, its stdout in _QR_RED. Exit 2 at the
+# last call is wait reason=candidate-timeout,
 # any other exit wait reason=checks-unverified: the pass ends there, on the
 # batch or on any bisection step, with nothing merged and nothing more ejected.
 _talos_queue_poll() {
@@ -1939,7 +1943,7 @@ _talos_queue_poll() {
     case "$_RC" in
       0) return 0 ;;
       1) _QR_RED="$_OUT"; return 1 ;;
-      2) [ "$_calls" -lt 120 ] || _talos_queue_end wait candidate-timeout
+      2) [ "$_calls" -lt "$_QR_POLLS" ] || _talos_queue_end wait candidate-timeout
          sleep "$(awk -v k="$_scale" 'BEGIN { print 30 * k }')" ;;
       *) _talos_queue_end wait checks-unverified ;;
     esac
@@ -2001,7 +2005,7 @@ _talos_queue_eject() {
 }
 
 _talos_queue_run() {
-  local _base _prefix _batch _method _rows _p _qh _qe _br _n _rx _b _t0
+  local _base _prefix _batch _method _tmo _rows _p _qh _qe _br _n _rx _b _t0
   local _picked="" _csv="" _size=0 _n1="" _branches=() _a
   _talos_prepare queue pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-hooks.sh \
                        pipeline-mergebase.sh pipeline-lock.sh
@@ -2012,6 +2016,14 @@ _talos_queue_run() {
   _method="$(cfg merge.method)"
   [ -n "$_prefix" ] && _talos_isnum "$_batch" && [ "$_batch" -gt 0 ] || _talos_stop config-unreadable
   case "$_method" in squash | merge | rebase) ;; *) _talos_stop config-unreadable ;; esac
+  # merge.queue_timeout_s (#946): 30-86400 digits, never a "no wait"; at most 5
+  # digits and base 10 so a leading zero or a huge number cannot slip past.
+  _tmo="$(cfg merge.queue_timeout_s)"
+  if ! { _talos_isnum "$_tmo" && [ "${#_tmo}" -le 5 ] && [ $((10#$_tmo)) -ge 30 ] && [ $((10#$_tmo)) -le 86400 ]; }; then
+    printf 'talos: merge.queue_timeout_s must be an integer from 30 to 86400 (seconds) -- got: %s\n' "$_tmo" >&2
+    _talos_stop config-unreadable
+  fi
+  _QR_POLLS=$((10#$_tmo / 30))
   . "$SCRIPT_DIR/pipeline-lock.sh"
   _QR_LOCK="$(git rev-parse --git-common-dir 2>/dev/null || echo .git)/talos-worktree"
   _talos_on_exit _talos_queue_exit_hook

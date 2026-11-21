@@ -495,6 +495,7 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `merge.queue` | enum | `off` | - | any |
 | `merge.queue_batch` | int | `3` | - | any |
 | `merge.queue_branch_prefix` | str | `talos/queue/` | - | any |
+| `merge.queue_timeout_s` | int | `3600` | - | any |
 
 #### issues.*
 
@@ -1405,6 +1406,7 @@ Docs is decided by `talos.sh docs-gate <pr> --issue <N>`. With `docs:done` on th
 | `merge.union_paths` | `["CHANGELOG.md"]` | paths `pipeline-mergebase.sh` may union-merge |
 | `merge.queue` | `off` | `off`, `talos` or `github`. `talos`: a PR that passes every merge gate is queued, not merged, and `talos.sh queue run` merges it ([Merge queue](#merge-queue)); `github`: the PR is enqueued in GitHub's merge queue instead of merged ([`merge.queue: github`](#mergequeue-github)) |
 | `merge.queue_batch` | `3` | the most queued PRs one `queue run` candidate holds |
+| `merge.queue_timeout_s` | `3600` | how long one `queue run` candidate waits for its required checks, in seconds (30-86400; one check call per 30 s, so `3600` is 120 calls) |
 | `merge.queue_branch_prefix` | `talos/queue/` | the candidate branch name: `<prefix><base>-<epoch seconds>` |
 
 When `conflict-files <pr>` lists only `merge.union_paths` entries, `scripts/pipeline-mergebase.sh <pr>` resolves them with `git merge-file --union` (both sides kept, the PR's first) in a throwaway worktree and pushes, with no developer dispatch. Exit 0 pushed, 3 a path is not unionable (developer merge-base task), 1 setup error. Entries matching `scripts/**`, `tests/**`, pipeline config or forbidden patterns are rejected.
@@ -1452,7 +1454,7 @@ One pass cuts a candidate branch from the base and the next queued PRs, waits on
 4. **The cut.** The base head `B` is recorded, then each PR's queued head is applied in order in a throwaway detached worktree (the `pipeline-mergebase.sh` pattern) by `merge.method`: `squash` adds one commit per PR, `merge` a merge commit per PR, `rebase` the PR's own non-merge commits replayed.
 5. **A PR that does not apply** is left out of the candidate and goes to the merge-base task: `pipeline-mergebase.sh <pr>` runs, and `conflict=<pr> action=mergebase|developer|unverified` says what it did (exit 0: it pushed a mechanical union, see [Mechanically resolved conflicts](#mechanically-resolved-conflicts); 3: the developer merge-base task; anything else: unverified). Nothing is resolved inside the candidate. With no PR left: `verdict=wait reason=no-candidate`, no push and no check call.
 6. **The push.** The candidate is pushed as `<prefix><base>-<epoch seconds>` and printed as `candidate=<branch> sha=<40 hex> prs=<a,b,c>`. A failed push, or an origin ref that is not the cut sha, is `verdict=wait reason=candidate-unverified`.
-7. **The checks.** `pipeline-vcs.sh ref-checks-required <sha>` ([Required checks](#required-checks)) is asked every 30 seconds (scaled by `TALOS_RETRY_SLEEP_SCALE`), at most 120 times, so a pass waits at most about an hour. Exit 0 is green; 1 is red (bisection, below); 2 at the 120th call is `verdict=wait reason=candidate-timeout`; any other exit is `verdict=wait reason=checks-unverified`. The checks must run on the candidate: the CI workflows behind `merge.required_checks` have to trigger on pushes to `<merge.queue_branch_prefix>*` branches, or every candidate times out.
+7. **The checks.** `pipeline-vcs.sh ref-checks-required <sha>` ([Required checks](#required-checks)) is asked every 30 seconds (scaled by `TALOS_RETRY_SLEEP_SCALE`), at most `merge.queue_timeout_s` / 30 times (integer division), so a pass waits at most `merge.queue_timeout_s` seconds: 120 calls, about an hour, by default. The key accepts an integer from 30 to 86400; any other value (not digits, `0`, below one 30 s interval, above 24 h) is `stop reason=config-unreadable` with one stderr line naming the key, the value and the range, before step 1, so nothing is pushed or merged. Exit 0 is green; 1 is red (bisection, below); 2 at the last call is `verdict=wait reason=candidate-timeout`; any other exit is `verdict=wait reason=checks-unverified`. The checks must run on the candidate: the CI workflows behind `merge.required_checks` have to trigger on pushes to `<merge.queue_branch_prefix>*` branches, or every candidate times out.
    - **Bisection of a red candidate.** The red set `S` (its PRs in queue order) is narrowed to one PR. A single PR is the culprit itself; otherwise a binary search finds the shortest red prefix of `S`: the base alone is taken as green, and each step cuts `B` plus the first `m` PRs of `S` (the same `B` and `merge.method`), then pushes and checks it as in steps 6 and 7. The previous candidate is deleted before each push, so origin holds one at a time, and all are deleted on exit. With `S` = 11, 12, 13 and 12 failing, the candidates are (11 12 13) red, (11) green, (11 12) red: 12 is the culprit. A cut or push that fails mid-bisection is `wait reason=candidate-unverified`, a timeout `wait reason=candidate-timeout`, a failed lookup `wait reason=checks-unverified`: nothing merges and nothing more is ejected.
    - **Eject.** The failing check is the first `fail` or `cancel` row of the isolating candidate's `ref-checks-required` answer (none: `wait reason=checks-unverified`). The culprit's `talos:queue` marker is rewritten (`upsert-pr-comment <pr> --marker queue`) to the ejected form below, `ejected=<pr> issue=<n>` is printed and a `queue_eject` event logged. A failed write is `wait reason=queue-state-unverified` with `pr=<pr>`: no event and no merge.
    - **The rest** of `S` is cut again from `B` and goes back to step 6: a green re-cut goes on to steps 8 and 9, a red one is bisected again. With no PR left: `verdict=ejected`.
@@ -1483,7 +1485,7 @@ Failing check: <name> (<fail|cancel>) on candidate <branch> at <sha>: <check url
 | `wait` | `queue-state-unverified` | a queue read failed, a trusted marker is corrupt, or an eject write failed (`pr=<pr>`) |
 | `wait` | `no-candidate` | no PR of the batch applies |
 | `wait` | `candidate-unverified` | the cut, the push or the origin ref could not be verified |
-| `wait` | `candidate-timeout` | the checks were still pending after 120 calls |
+| `wait` | `candidate-timeout` | the checks were still pending after `merge.queue_timeout_s` / 30 calls (120 by default) |
 | `wait` | `checks-unverified` | the check lookup failed, or a red answer named no failed check |
 | `wait` | `base-moved` | the base moved after the cut; the next pass rebuilds |
 | `wait` | `head-moved` | a PR's head moved after the cut; mid-merge with `pr=<pr>`, the PRs before it merged |
