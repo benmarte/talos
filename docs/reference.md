@@ -34,7 +34,7 @@ Paths such as `scripts/talos.sh` are relative to the Talos install (`~/.talos` a
 
 `run --issue <N>` works one issue and ends after its merge with `stop merged pr=<M>`.
 
-Verbs: `env`, `state [--summary]`, `next [--issue N]`, `prompt`, `done`, `gate fix-round|merge`, `docs-gate`, `post-merge`, `sweep`, `summary`, `claim`, `lease prune`, `evidence prune`, `queue list`, `map`, `run`. (`map --refresh` is described under Project map.)
+Verbs: `env`, `state [--summary]`, `next [--issue N]`, `prompt`, `done`, `gate fix-round|merge`, `docs-gate`, `post-merge`, `sweep`, `summary`, `claim`, `lease prune`, `evidence prune`, `queue list|run`, `map`, `run`. (`map --refresh` is described under Project map; `queue` under [Merge queue](#merge-queue).)
 
 ### Stages
 
@@ -1400,11 +1400,11 @@ Docs is decided by `talos.sh docs-gate <pr> --issue <N>`. With `docs:done` on th
 |---|---|---|
 | `merge.auto` | `true` | `false`: human merge |
 | `merge.method` | `squash` | `squash`, `merge` or `rebase` |
-| `merge.auto_sync` | `true` | `update-branch` on a stale base; sync sibling PRs after a merge |
+| `merge.auto_sync` | `true` | `update-branch` on a stale base; sync sibling PRs after a merge (never under `merge.queue` `talos` or `github`) |
 | `merge.union_paths` | `["CHANGELOG.md"]` | paths `pipeline-mergebase.sh` may union-merge |
-| `merge.queue` | `off` | `off`, `talos` or `github`. `talos`: a PR that passes every merge gate is queued, not merged ([Merge queue](#merge-queue)); `github` is reserved (#927), no effect yet |
-| `merge.queue_batch` | `3` | reserved for the merge queue (#927), no effect yet |
-| `merge.queue_branch_prefix` | `talos/queue/` | reserved for the merge queue (#927), no effect yet |
+| `merge.queue` | `off` | `off`, `talos` or `github`. `talos`: a PR that passes every merge gate is queued, not merged, and `talos.sh queue run` merges it ([Merge queue](#merge-queue)); `github` only turns the sibling sync off for now (#927) |
+| `merge.queue_batch` | `3` | the most queued PRs one `queue run` candidate holds |
+| `merge.queue_branch_prefix` | `talos/queue/` | the candidate branch name: `<prefix><base>-<epoch seconds>` |
 
 When `conflict-files <pr>` lists only `merge.union_paths` entries, `scripts/pipeline-mergebase.sh <pr>` resolves them with `git merge-file --union` (both sides kept, the PR's first) in a throwaway worktree and pushes, with no developer dispatch. Exit 0 pushed, 3 a path is not unionable (developer merge-base task), 1 setup error. Entries matching `scripts/**`, `tests/**`, pipeline config or forbidden patterns are rejected.
 
@@ -1419,11 +1419,11 @@ Every config or feature PR appends to a few shared files, so a sibling PR's merg
 | the generated config table of `docs/reference.md` | regeneration with `python3 -I tests/gen-config-table.py --write docs/reference.md` from the merged `scripts/pipeline-defaults.sh` |
 | everything else | the developer merge-base task |
 
-The two built-in paths are not configurable. The table is regenerated only when the file merges cleanly with the block between the `config-table:start` and `config-table:end` markers replaced by a placeholder in the merge base, the PR and the base branch (the block is the only conflicting part), and only with a `tests/gen-config-table.py` identical to the base branch's, so a PR's own code is never run by the orchestrator; a PR that changed the generator, a conflict in `scripts/pipeline-defaults.sh` or missing markers exit 3. The same regeneration runs when the merge is clean but the table is stale. After a merge, the sync of the other open PRs (`merge.auto_sync`) tries `pipeline-mergebase.sh` first, then `update-branch`, then a developer.
+The two built-in paths are not configurable. The table is regenerated only when the file merges cleanly with the block between the `config-table:start` and `config-table:end` markers replaced by a placeholder in the merge base, the PR and the base branch (the block is the only conflicting part), and only with a `tests/gen-config-table.py` identical to the base branch's, so a PR's own code is never run by the orchestrator; a PR that changed the generator, a conflict in `scripts/pipeline-defaults.sh` or missing markers exit 3. The same regeneration runs when the merge is clean but the table is stale. After a merge, the sync of the other open PRs (`merge.auto_sync`) tries `pipeline-mergebase.sh` first, then `update-branch`, then a developer (no sync runs under `merge.queue` `talos` or `github`, see [Merge queue](#merge-queue)).
 
 #### Merge queue
 
-With `merge.queue: talos`, `gate merge` runs every gate as before; where it would answer `verdict=merge`, it queues the PR instead and answers `verdict=wait reason=queued`. Nothing merges from the queue yet (the batch runner is #930), so a queued PR waits. `merge.auto: false` still hands off first, and `off`, `github` or no key leave the gate as it was.
+With `merge.queue: talos`, `gate merge` runs every gate as before; where it would answer `verdict=merge`, it queues the PR instead and answers `verdict=wait reason=queued`. The batch runner, `talos.sh queue run` (below), merges from the queue. `merge.auto: false` still hands off first, and `off`, `github` or no key leave the gate as it was.
 
 The queue lives on the provider, one marker comment per PR, so it survives a restart and is the same on every machine: never in the working tree. `gate merge` writes it with `upsert-pr-comment <pr> --marker queue` (GitHub, GitLab, Azure DevOps):
 
@@ -1440,6 +1440,43 @@ queue: base=<base_branch> head=<40-hex PR head> eligible=<UTC YYYY-MM-DDTHH:MM:S
 The queue fails closed. A trusted marker without exactly one well-formed `queue:` line (none, two, a head that is not 40 lowercase hex, a time that does not parse) or a failed write (`upsert-pr-comment` exit 1) is `verdict=wait reason=queue-state-unverified`, with nothing written. A failed comment read is `stop reason=comments-unreadable`, an unresolvable trust set `stop reason=trust-unverified`, and a provider without the verb `stop reason=unsupported-verb:upsert-pr-comment`. None of them merges.
 
 `talos.sh queue list` reads the queue back: the open PRs on `base_branch` (`list-prs`), then `pr-head` and `read-comments` for each. It prints one `queued pr=<n> head=<sha> eligible=<ts>` line per PR whose trusted marker names its current head and the base, oldest `eligible` first and a tie by PR number, and nothing for an empty queue. A PR with no marker or a marker for an older head is left out. Any failed read or a corrupt marker prints one lone `stop reason=queue-state-unverified` (exit 1), never part of the queue.
+
+##### The batch runner: `talos.sh queue run`
+
+One pass cuts a candidate branch from the base and the next queued PRs, waits on the candidate's required checks and merges the PRs only when the candidate is green and nothing moved. It prints `verdict=off|empty|merged|wait|block` first, then `key=value` lines, and exits 0 (a usage or setup failure is the usual lone `stop reason=` line). Under `merge.queue` unset, `off` or `github` it answers `verdict=off` with no provider call and no push. Under `talos`, in order:
+
+1. **Cleanup.** Every `origin` branch named `<merge.queue_branch_prefix><base>-<digits>` is deleted: a pass deletes its own candidate on every exit, so one still there was left by a crashed pass. Each prints `cleanup=<branch>`; a failed delete is `warn reason=cleanup-failed branch=<branch>`. Branches of another base, or any other name, are left alone.
+2. **The queue**, read as `queue list` reads it. A failed read or a corrupt marker is `verdict=wait reason=queue-state-unverified`; no queued PR is `verdict=empty`.
+3. **The batch:** the first `merge.queue_batch` PRs in queue order. The issue comes from the `fix/issue-<N>` or `feat/issue-<N>` head branch (another head branch: `queue-state-unverified`).
+4. **The cut.** The base head `B` is recorded, then each PR's queued head is applied in order in a throwaway detached worktree (the `pipeline-mergebase.sh` pattern) by `merge.method`: `squash` adds one commit per PR, `merge` a merge commit per PR, `rebase` the PR's own non-merge commits replayed.
+5. **A PR that does not apply** is left out of the candidate and goes to the merge-base task: `pipeline-mergebase.sh <pr>` runs, and `conflict=<pr> action=mergebase|developer|unverified` says what it did (exit 0: it pushed a mechanical union, see [Mechanically resolved conflicts](#mechanically-resolved-conflicts); 3: the developer merge-base task; anything else: unverified). Nothing is resolved inside the candidate. With no PR left: `verdict=wait reason=no-candidate`, no push and no check call.
+6. **The push.** The candidate is pushed as `<prefix><base>-<epoch seconds>` and printed as `candidate=<branch> sha=<40 hex> prs=<a,b,c>`. A failed push, or an origin ref that is not the cut sha, is `verdict=wait reason=candidate-unverified`.
+7. **The checks.** `pipeline-vcs.sh ref-checks-required <sha>` ([Required checks](#required-checks)) is asked every 30 seconds (scaled by `TALOS_RETRY_SLEEP_SCALE`), at most 120 times, so a pass waits at most about an hour. Exit 0 is green; 1 is `verdict=block reason=candidate-red`; 2 at the 120th call is `verdict=wait reason=candidate-timeout`; any other exit is `verdict=wait reason=checks-unverified`. The checks must run on the candidate: the CI workflows behind `merge.required_checks` have to trigger on pushes to `<merge.queue_branch_prefix>*` branches, or every candidate times out.
+8. **Nothing moved.** When green, an `origin/<base>` that is no longer `B` is `verdict=wait reason=base-moved` (the next pass cuts a new candidate on the new base), and a PR whose `pr-head` is not the head it was cut with is `verdict=wait reason=head-moved`.
+9. **The merges,** in queue order: the PR's `pr-head` is read again right before its merge, and one that is no longer its cut head (a push while the PRs before it merged) is `verdict=wait reason=head-moved` with `pr=<pr>` and stops the merges; then `merge-pr <pr>` (with its `merge.method`), then `talos.sh post-merge <pr> <issue>`, then `merged=<pr> issue=<n>`. A failed `merge-pr` is `verdict=block reason=merge-failed` with `pr=<pr>` and stops the merges; a failed post-merge is `warn reason=post-merge-failed pr=<pr>` and the merges go on. All merged: `verdict=merged`.
+
+Every exit deletes the candidate branch, and only `merged`, `merge-failed` and a mid-merge `head-moved` (for the PRs before the stop) follow a merge: a red candidate, a timeout, a failed check lookup or a missing candidate sha merges nothing. Bisection of a red batch is not done yet (#931): for now the batch stops with its reason.
+
+| Verdict | Reason | Meaning |
+|---|---|---|
+| `off` | | `merge.queue` is not `talos` |
+| `empty` | | nothing is queued |
+| `merged` | | every PR of the candidate merged |
+| `wait` | `queue-state-unverified` | a queue read failed or a trusted marker is corrupt |
+| `wait` | `no-candidate` | no PR of the batch applies |
+| `wait` | `candidate-unverified` | the cut, the push or the origin ref could not be verified |
+| `wait` | `candidate-timeout` | the checks were still pending after 120 calls |
+| `wait` | `checks-unverified` | the check lookup failed |
+| `wait` | `base-moved` | the base moved after the cut; the next pass rebuilds |
+| `wait` | `head-moved` | a PR's head moved after the cut; mid-merge with `pr=<pr>`, the PRs before it merged |
+| `block` | `candidate-red` | a required check failed on the candidate |
+| `block` | `merge-failed` | `merge-pr` failed (`pr=<pr>`); the PRs before it merged |
+
+Under `merge.queue` `talos` or `github`, post-merge does no sibling sync: no `list-prs`, no `update-branch` and no `pipeline-mergebase.sh` sweep over the other open PRs (`merge.auto_sync` does not apply), since the queue tests each PR on the base it merges onto. The rest of post-merge (the issue close, `checkout=`, the events) runs as before.
+
+`talos.sh run` drives it: a `gate merge` answer of `verdict=wait reason=queued` runs `talos.sh queue run` once, and the run ends with one line, `stop queue <queue run's lines>` (its `warn` lines dropped), exit 0. Any other wait ends the run as before.
+
+The pass logs three events (role `orchestrator`; the batch events carry the first PR's issue), each with `duration_s` (seconds since the push) and `batch_size` (the PRs in the candidate): `queue_batch_start` at the push (`duration_s` 0), `queue_batch_pass` when the checks are green, and `queue_merge` for each merged PR, with its `pr` and `sha` (the PR head). See [Hooks](#hooks).
 
 ### Forbidden-files gate
 
@@ -1625,7 +1662,7 @@ Both keys hold a shell command (`sh -c`), disabled when empty. `hooks.timeout_s`
 {"event":"qa","role":"qa","issue":42,"pr":57,"repo":"owner/name","sha":"<40 hex>","verdict":"PASS","summary":"...","details":"...","attempt":null,"model":"claude-sonnet-5","runner":"claude","duration_s":312,"tokens":48213,"tool_uses":19,"ts":"..."}
 ```
 
-Unknown fields are null. `ci_runs` is added only on `merged` when known. `input_tokens`, `output_tokens`, `cache_write_tokens` and `cache_read_tokens` (`post_stage --input-tokens`, `--output-tokens`, `--cache-write-tokens`, `--cache-read-tokens`) follow `tool_uses` and `ci_runs`, each present only when supplied and valid; an event with no `cache_read_tokens` reads as cache reads unrecorded, never 0. `pool` (`post_stage --pool api|plan`, [Monthly API credits](#monthly-api-credits)) comes after them and before `ts`, present only when supplied as `api` or `plan`; any other value is left out with one stderr line. `event` is the role name for a finished stage (`talos.sh done`), or a lifecycle event with role `orchestrator`: `pr-opened`, `merged`, `blocked`, `issue-closed`, `budget-blocked`, `queue_enqueue` (a PR entered the [merge queue](#merge-queue); `pr` and `sha` set). The adapter path adds `stage_complete` (PASS or FAIL from the exit code), `stage_attempt` (a failed attempt before failover) and `failover`.
+Unknown fields are null. `ci_runs` is added only on `merged` when known. `input_tokens`, `output_tokens`, `cache_write_tokens` and `cache_read_tokens` (`post_stage --input-tokens`, `--output-tokens`, `--cache-write-tokens`, `--cache-read-tokens`) follow `tool_uses` and `ci_runs`, each present only when supplied and valid; an event with no `cache_read_tokens` reads as cache reads unrecorded, never 0. `pool` (`post_stage --pool api|plan`, [Monthly API credits](#monthly-api-credits)) comes after them and before `ts`, present only when supplied as `api` or `plan`; any other value is left out with one stderr line. `batch_size` (`post_stage --batch-size N`) is the last key before `ts`, present only when supplied as an integer (anything else is left out with one stderr line). `event` is the role name for a finished stage (`talos.sh done`), or a lifecycle event with role `orchestrator`: `pr-opened`, `merged`, `blocked`, `issue-closed`, `budget-blocked`, `queue_enqueue` (a PR entered the [merge queue](#merge-queue); `pr` and `sha` set), and the batch runner's `queue_batch_start`, `queue_batch_pass` and `queue_merge` (`pr` and `sha` set), each with `batch_size` and `duration_s`. The adapter path adds `stage_complete` (PASS or FAIL from the exit code), `stage_attempt` (a failed attempt before failover) and `failover`.
 
 ### The events log
 
@@ -1872,7 +1909,7 @@ Start with `bash scripts/pipeline-config.sh --show` (each key, its value and lay
 | `scratch-unavailable` | A scratch file or directory (`TMPDIR`, default `/tmp`) could not be created or written. Free space or fix `TMPDIR`, then run again. |
 | `config-unreadable` | The pipeline config file could not be read or parsed. Fix the file (`talos.sh env` prints what it reads) and run again. |
 | `map-failed` | Updating the project map failed. It is a `warn` line: the first failure turns the map off for the rest of the run and the run goes on. Run the map verb by hand to see why. |
-| `verdict=wait reason=queued` | `merge.queue: talos`: every gate passed and the PR is in the merge queue (its `talos:queue` marker); nothing merges from the queue yet. `talos.sh queue list` shows the order. See [Merge queue](#merge-queue). |
+| `verdict=wait reason=queued` | `merge.queue: talos`: every gate passed and the PR is in the merge queue (its `talos:queue` marker). `talos.sh run` then runs one `talos.sh queue run` pass and ends `stop queue verdict=...`; `talos.sh queue list` shows the order. See [Merge queue](#merge-queue). |
 | `verdict=wait reason=queue-state-unverified` | `merge.queue: talos`: the PR's trusted queue marker is corrupt, or writing it failed; nothing was merged or written. Fix or delete the marker comment, then run again. `talos.sh queue list` answers `stop reason=queue-state-unverified` for the same causes and for any failed read. |
 | `trust-unverified` | The login lookup was refused (an Actions or GitHub App token) and `markers.trusted_authors` is empty, so marker authors cannot be checked. Set `markers.trusted_authors`. |
 

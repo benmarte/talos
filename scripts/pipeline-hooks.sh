@@ -17,7 +17,7 @@
 #          [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N]
 #          [--ci-runs N] [--model M] [--runner R]
 #          [--input-tokens N] [--output-tokens N] [--cache-write-tokens N] [--cache-read-tokens N]
-#          [--pool api|plan]
+#          [--pool api|plan] [--batch-size N]
 #        pipeline-hooks.sh stage_start <role> <issue> [--pr N]
 #        pipeline-hooks.sh run_end <stop line> [--issue N]
 #        pipeline-hooks.sh hand_note <kind> [--issue N] [--pr M] [--role R] < body
@@ -147,6 +147,10 @@
 # key after the #604 keys and before ts; any other value prints one stderr line
 # and the key is left out, and an event without it is "pool-unrecorded" to
 # pipeline-events.sh cost.
+# --batch-size N (#930) is the number of PRs in a merge-queue batch (the
+# queue_batch_start, queue_batch_pass and queue_merge events of `talos.sh queue
+# run`). It follows the ci_runs rule: a "batch_size" key right before ts, only
+# when supplied and a valid integer (one stderr note otherwise).
 # model comes from agents.roles.<role>.model, falling back to agents.model;
 # runner from agents.runner. ts is UTC ISO-8601.
 #
@@ -402,7 +406,7 @@ _hooks_usage() {
   echo "       pipeline-hooks.sh hand_note <kind> [--issue N] [--pr M] [--role R] < body" >&2
   echo "       pipeline-hooks.sh hand_event <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--once]" >&2
   echo "       pipeline-hooks.sh finding_outcome <role> <issue> --pr N --prev-file F --now-file F [--reply-file F]" >&2
-  echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\" | --summary - | --summary-file F] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R] [--input-tokens N] [--output-tokens N] [--cache-write-tokens N] [--cache-read-tokens N] [--pool api|plan]" >&2
+  echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\" | --summary - | --summary-file F] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R] [--input-tokens N] [--output-tokens N] [--cache-write-tokens N] [--cache-read-tokens N] [--pool api|plan] [--batch-size N]" >&2
 }
 
 # _hooks_need_value OPTION ARGC -- exit 2 with usage when a value-taking
@@ -419,7 +423,7 @@ _hooks_need_value() {
 #            [--summary-file F] [--details-file F] [--attempt stage:count:total] [--duration-s N]
 #            [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R]
 #            [--input-tokens N] [--output-tokens N] [--cache-write-tokens N] [--cache-read-tokens N]
-#            [--pool api|plan]
+#            [--pool api|plan] [--batch-size N]
 # --runner R (#418): the runner the stage actually ran on. pipeline-agent.sh
 # passes it only for a stage that ran on a failover-chain runner; the event's
 # runner is then R and its model is null (a fallback runner uses its own
@@ -433,10 +437,10 @@ post_stage() {
 
   local pr="" sha="" verdict="" summary="" details_file="" attempt="" duration_s="" tokens="" tool_uses="" ci_runs="" model_arg="" runner_arg=""
   local summary_file="" summary_stdin=0
-  local input_tokens="" output_tokens="" cache_write_tokens="" cache_read_tokens="" pool=""
+  local input_tokens="" output_tokens="" cache_write_tokens="" cache_read_tokens="" pool="" batch_size=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --pr|--sha|--verdict|--summary|--summary-file|--details-file|--attempt|--duration-s|--tokens|--tool-uses|--ci-runs|--model|--runner|--input-tokens|--output-tokens|--cache-write-tokens|--cache-read-tokens|--pool)
+      --pr|--sha|--verdict|--summary|--summary-file|--details-file|--attempt|--duration-s|--tokens|--tool-uses|--ci-runs|--model|--runner|--input-tokens|--output-tokens|--cache-write-tokens|--cache-read-tokens|--pool|--batch-size)
         # A value flag as the last argument used to loop forever (`shift 2`
         # with one argument left shifts nothing): exit 2 with usage instead.
         _hooks_need_value "$1" $#
@@ -466,6 +470,7 @@ post_stage() {
       --cache-write-tokens) cache_write_tokens="$2"; shift 2 ;;
       --cache-read-tokens) cache_read_tokens="$2"; shift 2 ;;
       --pool) pool="$2"; shift 2 ;;
+      --batch-size) batch_size="$2"; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -496,6 +501,8 @@ post_stage() {
   output_tokens="$(_validate_nonneg_int output-tokens "$output_tokens")"
   cache_write_tokens="$(_validate_nonneg_int cache-write-tokens "$cache_write_tokens")"
   cache_read_tokens="$(_validate_nonneg_int cache-read-tokens "$cache_read_tokens")"
+  # #930: the merge-queue batch size; an invalid value drops the key.
+  batch_size="$(_validate_nonneg_int batch-size "$batch_size")"
   # #616: the pool that paid; anything but api or plan drops the key.
   case "$pool" in
     ''|api|plan) ;;
@@ -566,7 +573,7 @@ post_stage() {
     TALOS_HOOK_CI_RUNS="$ci_runs" TALOS_HOOK_TS="$ts" \
     TALOS_HOOK_INPUT_TOKENS="$input_tokens" TALOS_HOOK_OUTPUT_TOKENS="$output_tokens" \
     TALOS_HOOK_CACHE_WRITE_TOKENS="$cache_write_tokens" TALOS_HOOK_CACHE_READ_TOKENS="$cache_read_tokens" \
-    TALOS_HOOK_POOL="$pool" \
+    TALOS_HOOK_POOL="$pool" TALOS_HOOK_BATCH_SIZE="$batch_size" \
     python3 -I -c '
 import json
 import os
@@ -621,6 +628,10 @@ for _key in ("input_tokens", "output_tokens", "cache_write_tokens", "cache_read_
 # #616: the pool that paid, only when supplied.
 if os.environ.get("TALOS_HOOK_POOL"):
     payload["pool"] = os.environ["TALOS_HOOK_POOL"]
+# #930: the merge-queue batch size, only when supplied (the ci_runs rule).
+_batch = _int_or_none(os.environ.get("TALOS_HOOK_BATCH_SIZE"))
+if _batch is not None:
+    payload["batch_size"] = _batch
 payload["ts"] = os.environ.get("TALOS_HOOK_TS", "")
 json.dump(payload, sys.stdout)
 ')"
