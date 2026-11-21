@@ -166,6 +166,33 @@ qr
 assert_eq "verdict=ejected" "$(line1)" "AC2 queue_retry 2, always red: verdict=ejected"
 assert_eq "2|3" "$(jc '^vcs rerun-ci ')|$(jc '^vcs ref-checks-required ')" "AC2 queue_retry 2: two re-runs, three check reads"
 
+# A re-run with nothing to re-run YET (rerun-ci answers 2: the candidate's other
+# jobs are still in progress, so no run has a failed conclusion) is not a re-run:
+# the queue waits and asks again, and the retry is spent only by a re-run that
+# started. A re-run the provider refuses (1) still ejects, below.
+rerun_busy() { printf '[ "$(grep -c "^vcs rerun-ci " "$d/journal")" -gt %s ] || exit 2\n' "$1" > "$STUB_DIR/hook.rerun-ci"; }
+q_reset; q_pr 11 41 a11.txt x11; red_until 1; rerun_busy 2
+qr
+assert_eq "verdict=merged" "$(line1)" "AC1 red while jobs run, re-run once they settle: verdict=merged"
+assert_eq "3|2" "$(jc '^vcs rerun-ci ')|$(jc '^vcs ref-checks-required ')" "AC1 two waits then one started re-run: three rerun-ci calls, two check reads"
+assert_eq "0" "$(jc '^hooks post_stage queue_eject ')" "AC1 a pending candidate is not ejected"
+assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c '^rerun=')" "AC1 one rerun= line: a wait is not a re-run"
+
+# Never settling is the candidate timeout (merge.queue_timeout_s / 30 asks), not an eject.
+q_reset; q_pr 11 41 a11.txt x11; q_cfg talos ', "queue_timeout_s": 90'; red_always > "$STUB_DIR/hook.ref-checks-required"; rerun_busy 99
+qr
+assert_eq "wait reason=candidate-timeout" "$(line1)" "AC1 jobs that never settle: wait reason=candidate-timeout"
+assert_eq "3|0|0" "$(jc '^vcs rerun-ci ')|$(jc '^hooks post_stage queue_eject ')|$(jc '^vcs merge-pr ')" "AC1 the timeout bounds the asks: three, no eject, no merge"
+
+# The provider needs a moment to reset the re-run jobs: the next read is after a pause.
+mkdir -p "$SANDBOX/sleepbin"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/sleeps"\n' "$STUB_DIR" > "$SANDBOX/sleepbin/sleep"
+chmod +x "$SANDBOX/sleepbin/sleep"
+q_reset; q_pr 11 41 a11.txt x11; red_until 1; : > "$STUB_DIR/sleeps"
+OUT="$(PATH="$SANDBOX/sleepbin:$PATH" TALOS_RETRY_SLEEP_SCALE=1 bash "$GQ/talos.sh" queue run </dev/null 2>"$ERR")"; RC=$?
+assert_eq "verdict=merged" "$(line1)" "AC1 with real pauses: verdict=merged"
+assert_eq "30" "$(cat "$STUB_DIR/sleeps")" "AC1 one pause of 30 s after the re-run, before the check is read again"
+
 # A re-run the provider cannot start ejects as today.
 q_reset; q_pr 11 41 a11.txt x11; red_until 1; printf 1 > "$STUB_DIR/rerun-ci.rc"
 qr
