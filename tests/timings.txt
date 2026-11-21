@@ -141,6 +141,7 @@
 10 test-gitlab-pr-checks-fallback.sh
 12 test-global-install-model-hint.sh
 22 test-global-install.sh
+3 test-guards-shell-glob.sh
 8 test-hand-note-event.sh
 12 test-hand-stage-events-897.sh
 7 test-has-spec.sh
