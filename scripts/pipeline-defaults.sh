@@ -152,6 +152,7 @@ merge.queue	enum	off	-	-	any
 merge.queue_batch	int	3	-	-	any
 merge.queue_branch_prefix	str	talos/queue/	-	-	any
 merge.queue_timeout_s	int	3600	-	-	any
+merge.queue_retry	int	1	-	-	any
 issues.label_filter	str	pipeline:ready	-	-	repo
 issues.skip_labels	list	pipeline:blocked\nwontfix	-	-	repo
 issues.max_parallel	int	1	-	-	any

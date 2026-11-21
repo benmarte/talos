@@ -567,6 +567,32 @@ out="$(bash "$VCS" rerun-ci 9 2>&1)"; rc=$?
 assert_eq "0" "$rc"                              "rerun-ci: no failures exits 0"
 assert_contains "$out" "no failed runs"          "rerun-ci: no failures prints informational message"
 
+# ── rerun-ci --sha (#950): exit 0 only when a re-run started ─────────────────
+RR_SHA="0123456789abcdef0123456789abcdef01234567"
+: > "$CURL_LOG"
+printf '%s\n' \
+  '{"total_count":2,"workflow_runs":[{"id":111,"status":"completed","conclusion":"failure"},{"id":112,"status":"in_progress","conclusion":null}]}' \
+  '{}' > "$CURL_QUEUE"
+out="$(bash "$VCS" rerun-ci --sha "$RR_SHA" 2>&1)"; rc=$?
+assert_eq "0" "$rc" "rerun-ci --sha: a failed run is re-run, exit 0"
+assert_contains "$(cat "$CURL_LOG")" "/actions/runs/111/rerun-failed-jobs" "rerun-ci --sha: the failed run is restarted"
+assert_not_contains "$(cat "$CURL_LOG")" "/pulls/" "rerun-ci --sha: no PR is read"
+
+: > "$CURL_LOG"
+printf '%s\n' \
+  '{"total_count":2,"workflow_runs":[{"id":112,"status":"in_progress","conclusion":null},{"id":113,"status":"completed","conclusion":"success"}]}' \
+  > "$CURL_QUEUE"
+out="$(bash "$VCS" rerun-ci --sha "$RR_SHA" 2>&1)"; rc=$?
+assert_eq "2" "$rc" "rerun-ci --sha: nothing failed yet and a run in progress is exit 2 (ask again)"
+assert_not_contains "$(cat "$CURL_LOG")" "rerun-failed-jobs" "rerun-ci --sha: nothing is re-run while the runs are in progress"
+
+: > "$CURL_LOG"
+printf '%s\n' \
+  '{"total_count":1,"workflow_runs":[{"id":113,"status":"completed","conclusion":"success"}]}' \
+  > "$CURL_QUEUE"
+out="$(bash "$VCS" rerun-ci --sha "$RR_SHA" 2>&1)"; rc=$?
+assert_eq "1" "$rc" "rerun-ci --sha: every run finished and none failed is exit 1, not a started re-run"
+
 # ── find-pr merged: maps state=merged to state=closed + merged_at filter ─────
 : > "$CURL_LOG"
 printf '%s\n' \

@@ -380,6 +380,14 @@
 #                                             list exits 3, nothing on stdout (the
 #                                             callers fail closed on exactly that).
 #   rerun-ci <n>                             Re-run failed CI for the PR head SHA
+#   rerun-ci --sha <sha>                      Re-run the failed jobs of the failed
+#                                             runs of a commit that is no PR (#950,
+#                                             the merge queue's candidate). github
+#                                             only; every other provider exits 1
+#                                             with one stderr line. Exit 0 only when
+#                                             a re-run started; 2 when no run has
+#                                             failed yet but one is in progress
+#                                             (ask again); 1 for no failed run.
 #   pr-head <n>                               Print the current head SHA for a PR
 #   pr-head-ref <n>                           Print the PR's head branch name (#607).
 #                                             Exits 1 with nothing on stdout when it
@@ -907,14 +915,15 @@ fi
 # merge-pr --sha <sha> (#941): the head the gates approved. Pulled out of ARGS
 # into _MERGE_SHA here, before the config reads and the repo auto-detect, so a
 # bad value is a usage error (exit 1) with no provider call, --dry-run included.
+# rerun-ci --sha <sha> (#950) takes the same flag: the commit to re-run, no PR.
 _MERGE_SHA=""
-if [ "$VERB" = "merge-pr" ]; then
+if [ "$VERB" = "merge-pr" ] || [ "$VERB" = "rerun-ci" ]; then
   _ms_args=() _ms_i=0
   while [ "$_ms_i" -lt "${#ARGS[@]}" ]; do
     if [ "${ARGS[$_ms_i]}" = "--sha" ]; then
       _MERGE_SHA="${ARGS[$((_ms_i + 1))]-}"
       if ! [[ "$_MERGE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-        echo "pipeline-vcs: merge-pr: --sha needs a 40-character lowercase hex commit sha (got '$_MERGE_SHA'); nothing merged" >&2
+        echo "pipeline-vcs: $VERB: --sha needs a 40-character lowercase hex commit sha (got '$_MERGE_SHA'); nothing $([ "$VERB" = "merge-pr" ] && echo merged || echo re-run)" >&2
         exit 1
       fi
       _ms_i=$((_ms_i + 2))
@@ -6212,11 +6221,19 @@ sys.stdout.write(json.load(sys.stdin).get('body') or '')
       fi
       ;;
     rerun-ci)
-      local n="${1:-}" _rr_sha _rr_runs _rr_ids _rr_id
-      _gh_num "$verb" PR "$n"
-      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$n (head SHA); GET $_GH_API/actions/runs?head_sha=<sha>; POST $_GH_API/actions/runs/<id>/rerun-failed-jobs for each failed run"; return 0; }
-      _rr_sha="$(_gh_req GET "$_GH_API/pulls/$n" | _gh_field head.sha)"
-      [ -n "$_rr_sha" ] || { echo "pipeline-vcs: could not resolve head SHA for PR #$n" >&2; exit 1; }
+      local n="${1:-}" _rr_sha _rr_runs _rr_ids _rr_id _rr_what
+      if [ -n "$_MERGE_SHA" ]; then
+        # --sha (#950): a commit with no PR; there is no PR number to take.
+        [ -z "$n" ] || { echo "pipeline-vcs: rerun-ci: --sha takes no PR number" >&2; exit 1; }
+        _rr_sha="$_MERGE_SHA"; _rr_what="commit $_rr_sha"
+        [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/actions/runs?head_sha=$_rr_sha; POST $_GH_API/actions/runs/<id>/rerun-failed-jobs for each failed run"; return 0; }
+      else
+        _gh_num "$verb" PR "$n"
+        _rr_what="PR #$n"
+        [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$n (head SHA); GET $_GH_API/actions/runs?head_sha=<sha>; POST $_GH_API/actions/runs/<id>/rerun-failed-jobs for each failed run"; return 0; }
+        _rr_sha="$(_gh_req GET "$_GH_API/pulls/$n" | _gh_field head.sha)"
+        [ -n "$_rr_sha" ] || { echo "pipeline-vcs: could not resolve head SHA for PR #$n" >&2; exit 1; }
+      fi
       _rr_runs="$(_gh_pages "$_GH_API/actions/runs?head_sha=$_rr_sha&per_page=100" "" "workflow runs" workflow_runs)" || exit 1
       _rr_ids="$(printf '%s' "$_rr_runs" | python3 -I -c "
 import json, sys
@@ -6224,13 +6241,27 @@ for r in json.load(sys.stdin)['workflow_runs']:
     if r.get('conclusion') in ('failure', 'timed_out', 'cancelled'):
         print(r['id'])")"
       if [ -z "$_rr_ids" ]; then
-        echo "rerun-ci: no failed runs found for PR #$n ($_rr_sha)"
+        if [ -n "$_MERGE_SHA" ]; then
+          # --sha (#950) answers for the queue, which reads a started re-run as
+          # exit 0: nothing re-run is never 0. A run still in progress has no
+          # failed conclusion yet (rerun-failed-jobs needs a finished run), so 2
+          # is "ask again"; no run at all is 1.
+          if printf '%s' "$_rr_runs" | python3 -I -c "
+import json, sys
+sys.exit(0 if any(r.get('status') != 'completed' for r in json.load(sys.stdin)['workflow_runs']) else 1)"; then
+            echo "rerun-ci: runs of $_rr_what ($_rr_sha) are still in progress; nothing to re-run yet"
+            return 2
+          fi
+          echo "rerun-ci: no failed runs found for $_rr_what ($_rr_sha)" >&2
+          return 1
+        fi
+        echo "rerun-ci: no failed runs found for $_rr_what ($_rr_sha)"
         return 0
       fi
       while IFS= read -r _rr_id; do
         [ -n "$_rr_id" ] && { _gh_req POST "$_GH_API/actions/runs/$_rr_id/rerun-failed-jobs" '{}' >/dev/null || exit 1; }
       done <<< "$_rr_ids"
-      echo "rerun-ci: re-ran failed runs for PR #$n ($_rr_sha)"
+      echo "rerun-ci: re-ran failed runs for $_rr_what ($_rr_sha)"
       ;;
     update-branch)
       # update-branch <n> (#289): merge the base into the PR's head SERVER-SIDE
@@ -10301,6 +10332,11 @@ _file() {
       exit 1
       ;;
     diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|check-pr-body|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
+      # rerun-ci --sha (#950) must not look like a started re-run: exit 1.
+      if [ "$verb" = "rerun-ci" ] && [ -n "$_MERGE_SHA" ]; then
+        echo "pipeline-vcs: rerun-ci --sha: not supported for provider file" >&2
+        return 1
+      fi
       echo "file mode: $verb not applicable in file mode" >&2
       return 0
       ;;
