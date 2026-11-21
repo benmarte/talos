@@ -433,7 +433,10 @@
 #         role=<role>` (failover exhausted, exit 1), `stop reason=config-mutated
 #         role=<role> file=<path>` (the stage changed a resolved config file,
 #         pipeline-agent.sh exit 78, exit 1, #754), `stop reason=merge-failed`
-#         (`merge-pr` failed, exit 1), `stop reason=state-unavailable` (an
+#         (`merge-pr` failed, exit 1; it is bound with `--sha` to the PR head
+#         read before `gate merge`, so a push since then fails it, #941),
+#         `stop reason=head-unresolved` (that head read failed or is not a
+#         40-hex sha: no gate, no merge, exit 1), `stop reason=state-unavailable` (an
 #         answer of `next` or of a gate that is not one of its shapes, exit 1),
 #         `stop reason=worktree-unavailable role=docs` (no worktree of the PR's
 #         head branch for docs to run in, `pipeline-worktree.sh pr-worktree`,
@@ -2075,13 +2078,14 @@ _talos_queue_run() {
 
   # 9. Merge in queue order; post-merge for each. Each head is read again right
   # before its merge-pr: a push while the PRs before it merged was never tested.
+  # merge-pr is bound to the cut head (--sha, #941), so a later push fails it.
   while read -r _p _qh _n <&3; do
     [ -n "$_p" ] || continue
     if ! { _talos_queue_head "$_p" && [ "$_QH" = "$_qh" ]; }; then
       _talos_emit pr "$_p"
       _talos_queue_end wait head-moved
     fi
-    _talos_cap _vcs merge-pr "$_p"
+    _talos_cap _vcs merge-pr "$_p" --sha "$_qh"
     if [ "$_RC" -ne 0 ]; then
       _talos_emit pr "$_p"
       _talos_queue_end block merge-failed
@@ -5302,7 +5306,7 @@ _talos_run_continue() {
 # (#519), and an untargeted merge is followed by the next pass (#601).
 _talos_run_loop() {
   local _issue="" _max=20 _iter=0 _act _r _rc _pr _n _inflight_list _state_json _next_issue
-  local _fresh=1 _stopf _pm _pm_out _co _w
+  local _fresh=1 _stopf _pm _pm_out _co _w _head
   # run --stop (#601): only the request, no pass.
   if [ "${1:-}" = "--stop" ]; then
     [ "$#" -eq 1 ] || _talos_stop usage 2
@@ -5485,6 +5489,12 @@ _talos_run_loop() {
       "merge pr="*)
         _pr="$(sed -n 's/merge pr=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
         _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
+        # The head the merge is bound to (#941), read BEFORE the gate: a push
+        # during or after the gate fails merge-pr at the provider, never merges
+        # an unreviewed head.
+        _talos_cap _vcs pr-head "$_pr"
+        { [ "$_RC" -eq 0 ] && [[ "$_OUT" =~ ^[0-9a-f]{40}$ ]]; } || _talos_stop head-unresolved
+        _head="$_OUT"
         _r="$(bash "$SCRIPT_DIR"/talos.sh gate merge "$_pr" "$_n" 2>/dev/null)"
         # A merge-conflict redispatch (#850) is the developer's merge-base round,
         # and a queue-ejected one (#931) the developer's fix round for the check
@@ -5505,7 +5515,7 @@ _talos_run_loop() {
           "verdict=merge"*)
             _RUN_CI="$(sed -n 's/^ci_runs=//p' <<<"$_r" | head -n 1)"
             _talos_emit merged pr="$_pr"
-            if _vcs merge-pr "$_pr" > /dev/null 2> "$_CFG_CACHE_DIR/merge-err"; then
+            if _vcs merge-pr "$_pr" --sha "$_head" > /dev/null 2> "$_CFG_CACHE_DIR/merge-err"; then
               # merge-pr says on stderr when the merge went through but the
               # head branch stayed: one warn per branch, for the run's end (#653).
               cat "$_CFG_CACHE_DIR/merge-err" >&2

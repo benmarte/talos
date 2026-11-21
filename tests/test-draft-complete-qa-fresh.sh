@@ -101,6 +101,7 @@ assert_eq "0" "$(lease_lines)" "AC1 the lease line for the issue is gone"
 # ── AC2: the next pass is the merge arm, zero QA in the whole run ────────────
 fixture "$ALL"
 printf 0 > "$STUB_DIR/check-approval-sha.rc"
+printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' > "$STUB_DIR/pr-head.12"  # the merge arm's head read (#941)
 printf '%s' '{"prs":[{"n":12,"issue":9,"head":"a4f9","owner":false,"stage":"merge"}],"pr_total":1,"ignored":0,"blocked":[],"queued":[],"held":[],"owners":[],"capped":[]}' > "$STUB_DIR/collect.merge"
 printf 'cp "$d/collect.merge" "$d/collect.json"\n' > "$STUB_DIR/hook.ready-pr"
 printf '%s' '{"prs":[],"pr_total":0,"ignored":0,"blocked":[],"queued":[],"held":[],"owners":[],"capped":[]}' > "$STUB_DIR/collect.done"

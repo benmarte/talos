@@ -1174,6 +1174,8 @@ merge_fixture() {  # $1 = the PR's labels (JSON array members) ; $2 = extra top-
   draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900' "${2:-}"
   draft_collect merge
   printf '{"labels": [%s], "state": "open"}' "$1" > "$STUB_DIR/view-pr.12"
+  # The head the run's merge arm reads before gate merge and binds merge-pr to (#941).
+  printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' > "$STUB_DIR/pr-head.12"
 }
 ALL_APPROVALS='{"name": "qa:pass"}, {"name": "docs:done"}, {"name": "review:approved"}, {"name": "security:approved"}'
 if run_part 3; then

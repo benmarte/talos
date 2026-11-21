@@ -20,12 +20,14 @@ Then for each role: `done <role> --issue <N> --pr <PR> --verdict <V> --summary-f
 
 ## Step 4 — Merge when ready (VCS mode)
 
+First read the head the merge will be bound to, BEFORE the gate: `bash scripts/pipeline-vcs.sh pr-head <PR_NUMBER>`. A failed read or anything but a 40-character lowercase hex sha: stop for this PR, run neither the gate nor `merge-pr`.
+
 ```bash
 bash scripts/talos.sh gate merge <PR_NUMBER> <N>
 ```
 
 It runs every gate and never merges itself: no `pipeline:blocked`; every enabled role's approval label (`qa:pass`, `review:approved`, `security:approved`, `docs:done`, `adversarial:approved`), waived only by a human's `skip-qa`; `check-approval-sha`; `check-pr-files`; `check-closing-keyword`; the draft state; `pr-checks-required` (2 re-runs per head SHA); the stale-base guard; `merge.auto`. Act on the first line:
-- `merge`: `bash scripts/pipeline-vcs.sh merge-pr <PR_NUMBER>`, then `post-merge`. With `PR_DRAFT` capture `ci_runs=` first (`ref=draft-order`).
+- `merge`: `bash scripts/pipeline-vcs.sh merge-pr <PR_NUMBER> --sha <head>` (`<head>` = that pre-gate `pr-head`; a push since then makes the merge fail, never land an unreviewed head: a failed `merge-pr` is a stop, not a retry without `--sha`), then `post-merge`. With `PR_DRAFT` capture `ci_runs=` first (`ref=draft-order`).
 - `handoff` (`merge.auto = false`): `ref=human-merge`.
 - `wait`: do not merge, nothing is blocked, look again next pass. `closing-keyword-unverified`: the closing-keyword check could not look (no label, no comment). `ci-failed`: 2 re-runs are spent, a human or a new commit must act. `base-synced`: a base update was pushed, CI must rerun on the new head.
 - `redispatch`: `stale-approvals` (the verb stripped the `stale=` labels and commented): re-stamp below. `merge-conflict`: `refs/merge-conflict.md`. With `PR_DRAFT`, `draft-pr` and `ci-failed` return to the draft order.
