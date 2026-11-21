@@ -252,6 +252,17 @@ assert_eq "verdict=wait" "$(line1)" "AC8 a moved PR head waits"
 assert_line "AC8 reason=head-moved" "reason=head-moved"
 assert_eq "0" "$(jc '^vcs merge-pr')" "AC8 no merge-pr for any PR"
 assert_eq "0" "$(queue_left)" "AC8 the candidate is deleted"
+# A push to PR 12 while PR 11 merges: its head is read again right before its
+# merge-pr, so the untested head is never merged.
+q_reset; q_three
+printf '[ "$2" != 11 ] || printf %%s %s > "$d/pr-head.12"\n' "$OTHER_SHA" > "$STUB_DIR/hook.merge-pr"
+qr
+assert_eq "verdict=wait" "$(line1)" "AC8 a head moved mid-merge waits"
+assert_line "AC8 mid-merge reason=head-moved" "reason=head-moved"
+assert_line "AC8 mid-merge names the moved PR" "pr=12"
+assert_eq "vcs merge-pr 11>worktree to-base 41" "$(merge_order)" "AC8 a head moved mid-merge gets no merge-pr, nor do the PRs after it"
+assert_line "AC8 mid-merge the merged PR is reported" "merged=11 issue=41"
+assert_eq "0" "$(queue_left)" "AC8 mid-merge the candidate is deleted"
 
 # ── AC9: a PR that does not apply goes to the merge-base task ────────────────
 q9() {  # <mergebase rc>: PR 12 edits base.txt, then main does too
