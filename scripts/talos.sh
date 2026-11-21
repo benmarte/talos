@@ -3005,7 +3005,7 @@ _TALOS_PROMPT_NAMES="ISSUE PR ROLE ROLE_TITLE BASE_BRANCH VCS_PROVIDER COMMENTS_
   VERIFY_TARGETED VERIFY_TIMEOUT_MS VERIFY_CI_WAIT_S VERIFY_QA_MODE VERIFY_COMMANDS REQUIRED_CHECKS_LINE
   VERIFY_TIMEOUT_LINE SPEC_SOURCE ISOLATION_NOTE PRIOR_STAGE_SUMMARY HANDOFF_LINE DRAFT_PR_LINE FIX_ROUND_LINES
   PASSED_LEAD DOCS_DIFF_INSTRUCTION TITLE BODY RESTAMP_INPUTS STOP_RULE QA_CI_WAIT_LINE QA_RULE QA_GATE_STEP
-  QA_TARGETED_LINE QA_WALK_LINE QA_CI_STEP DEV_TESTS_LINE WORKTREE_PATH CHANGE_BLOCK GUIDE_BLOCK SCRIPTS_DIR TEMPLATES_DIR INSTALL_LINES"
+  QA_TARGETED_LINE QA_WALK_LINE QA_CI_STEP DEV_TESTS_LINE FINAL_VERIFY_LINE WORKTREE_PATH CHANGE_BLOCK GUIDE_BLOCK SCRIPTS_DIR TEMPLATES_DIR INSTALL_LINES"
 
 # The renderer: argv = template, values file, output file, allowed names. The
 # values file is NUL-delimited NAME, VALUE pairs; a NAME written `<NAME` carries
@@ -3473,16 +3473,31 @@ _talos_prompt() {
         _talos_pv DRAFT_PR_LINE ""
       fi
       _v="$(cfg verify)"
-      _talos_pv VERIFY_COMMANDS "${_v:-none}"
-      # #832: with verify.dev_tests set the developer runs that set, plus the
-      # guard tests discovered in this checkout, not the full suites. Unset or
-      # empty, the line is empty and discovery is not run. The block is data.
-      _v="$(cfg verify.dev_tests)"
-      if [ -n "$_v" ]; then
+      # #951: with merge.required_checks set CI is the full run at the pushed
+      # head, so the final verification is the spec's Tests: files plus the guard
+      # tests: neither the verify list nor the verify.dev_tests set is in the brief.
+      # #832: otherwise, with verify.dev_tests set the developer runs that set,
+      # plus the guard tests discovered in this checkout, not the full suites.
+      # With neither, both lines are empty and discovery is not run. The blocks
+      # are data.
+      _r="$(cfg verify.dev_tests)"
+      _ck="$(cfg merge.required_checks)"
+      if [ -n "$_ck" ] || [ -n "$_r" ]; then
         _g="$(bash "$SCRIPT_DIR/pipeline-verify.sh" --guards ${_wt:+--worktree "$_wt"} 2>/dev/null)" || _g=""
-        _talos_pv DEV_TESTS_LINE "Developer verification set (run this, not the full suites):"$'\n'"$_v"$'\n'"Guard tests (discovered, run each by its file):"$'\n'"${_g:-none found}"
-      else
+        _g="Guard tests (discovered, run each by its file):"$'\n'"${_g:-none found}"
+      fi
+      if [ -n "$_ck" ]; then
+        _talos_pv VERIFY_COMMANDS "none: CI is the full run (merge.required_checks)"
         _talos_pv DEV_TESTS_LINE ""
+        _talos_pv FINAL_VERIFY_LINE "Final verification: Tests: files only — CI is the full run (merge.required_checks). Before the final push run only the spec's \`Tests:\` files (through \`verify.targeted_commands\` where that applies) and each guard test by its file; run neither the full \`verify\` list nor the \`verify.dev_tests\` set."$'\n'"$_g"
+      else
+        _talos_pv VERIFY_COMMANDS "${_v:-none}"
+        _talos_pv FINAL_VERIFY_LINE ""
+        if [ -n "$_r" ]; then
+          _talos_pv DEV_TESTS_LINE "Developer verification set (run this, not the full suites):"$'\n'"$_r"$'\n'"$_g"
+        else
+          _talos_pv DEV_TESTS_LINE ""
+        fi
       fi
       if [ "$_shape" = fix-round ]; then
         [ -n "$_pr" ] || _talos_stop value-missing

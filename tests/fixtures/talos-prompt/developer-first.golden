@@ -11,6 +11,9 @@ Comment header: **Agent:** developer (talos)
 Comment templates dir: tpl/comments
 Comments enabled: true
 Targeted iteration: false
+Final verification: Tests: files only — CI is the full run (merge.required_checks). Before the final push run only the spec's `Tests:` files (through `verify.targeted_commands` where that applies) and each guard test by its file; run neither the full `verify` list nor the `verify.dev_tests` set.
+Guard tests (discovered, run each by its file):
+none found
 Required checks:
 ci / test
 ci / lint
@@ -23,8 +26,7 @@ itself (never export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand):
 (worktree isolation: pass --worktree; branch isolation: omit it.)
 
 Verify commands (run once, immediately before your final commit):
-bash tests/run-tests.sh --quiet
-bash lint.sh
+none: CI is the full run (merge.required_checks)
 
 If you stop, block, or ask instead of completing: name the file and quote
 the line that made you stop, and say whether it is an explicit requirement or
