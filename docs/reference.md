@@ -1492,7 +1492,7 @@ Failing check: <name> (<fail|cancel>) on candidate <branch> at <sha>: <check url
 | `wait` | `candidate-unverified` | the cut, the push or the origin ref could not be verified |
 | `wait` | `candidate-timeout` | the checks were still pending after `merge.queue_timeout_s` / 30 calls (120 by default) |
 | `wait` | `checks-unverified` | the check lookup failed, or a red answer named no failed check |
-| `wait` | `base-moved` | the base moved after the cut; the next pass rebuilds |
+| `wait` | `base-moved` | the base moved after the cut, or 5 stale candidates were re-cut in one pass; the next pass rebuilds |
 | `wait` | `head-moved` | a PR's head moved after the cut; mid-merge with `pr=<pr>`, the PRs before it merged |
 | `block` | `merge-failed` | `merge-pr` failed (`pr=<pr>`); the PRs before it merged |
 
