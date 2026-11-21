@@ -145,7 +145,10 @@ qr
 SHA="$(cand_sha)"
 assert_eq "$SHA|$SHA" "$(check_shas | sed -n 1p)|$(check_shas | sed -n 2p)" \
   "AC2 a batch of 2: the first two check reads are both of the whole candidate (retry before bisecting)"
-assert_eq "1" "$(jc '^vcs rerun-ci ')" "AC2 a batch of 2: one re-run, none per bisection step"
+# Two re-runs: the whole candidate, and the re-cut of the PR left after the eject
+# (a new candidate, its own retry); the bisection step in between has none.
+assert_eq "2" "$(jc '^vcs rerun-ci ')" "AC2 a batch of 2: a re-run per candidate, none per bisection step"
+assert_eq "5" "$(jc '^vcs ref-checks-required ')" "AC2 a batch of 2 red twice: 2 reads of the whole candidate, 1 bisection read, 2 of the re-cut"
 
 # ── AC3: merge.queue_retry 0 -> ejected at once, no re-run ───────────────────
 q_reset; q_pr 11 41 a11.txt x11; q_cfg talos ', "queue_retry": 0'; red_until 1

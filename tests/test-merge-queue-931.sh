@@ -86,7 +86,7 @@ q_pr() {  # <pr> <issue>: branch feat/issue-<issue>-q adds a<pr>.txt; queued
 q_cfg() {  # <merge.queue or ->
   local _q=""
   [ "$1" = "-" ] || _q="\"queue\": \"$1\", "
-  printf '{"vcs": {"provider": "github"}, "base_branch": "main", "merge": {%s"method": "squash"}}' "$_q" > "$SANDBOX/talos.pipeline.json"
+  printf '{"vcs": {"provider": "github"}, "base_branch": "main", "merge": {%s"method": "squash", "queue_retry": 0}}' "$_q" > "$SANDBOX/talos.pipeline.json"
 }
 # The check hook: each call logs the candidate's PRs and its base (the commit
 # under its one squash commit per PR) to cands, and how many candidates origin
