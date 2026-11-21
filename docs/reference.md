@@ -1453,9 +1453,9 @@ One pass cuts a candidate branch from the base and the next queued PRs, waits on
 6. **The push.** The candidate is pushed as `<prefix><base>-<epoch seconds>` and printed as `candidate=<branch> sha=<40 hex> prs=<a,b,c>`. A failed push, or an origin ref that is not the cut sha, is `verdict=wait reason=candidate-unverified`.
 7. **The checks.** `pipeline-vcs.sh ref-checks-required <sha>` ([Required checks](#required-checks)) is asked every 30 seconds (scaled by `TALOS_RETRY_SLEEP_SCALE`), at most 120 times, so a pass waits at most about an hour. Exit 0 is green; 1 is `verdict=block reason=candidate-red`; 2 at the 120th call is `verdict=wait reason=candidate-timeout`; any other exit is `verdict=wait reason=checks-unverified`. The checks must run on the candidate: the CI workflows behind `merge.required_checks` have to trigger on pushes to `<merge.queue_branch_prefix>*` branches, or every candidate times out.
 8. **Nothing moved.** When green, an `origin/<base>` that is no longer `B` is `verdict=wait reason=base-moved` (the next pass cuts a new candidate on the new base), and a PR whose `pr-head` is not the head it was cut with is `verdict=wait reason=head-moved`.
-9. **The merges,** in queue order: `merge-pr <pr>` (with its `merge.method`), then `talos.sh post-merge <pr> <issue>`, then `merged=<pr> issue=<n>`. A failed `merge-pr` is `verdict=block reason=merge-failed` with `pr=<pr>` and stops the merges; a failed post-merge is `warn reason=post-merge-failed pr=<pr>` and the merges go on. All merged: `verdict=merged`.
+9. **The merges,** in queue order: the PR's `pr-head` is read again right before its merge, and one that is no longer its cut head (a push while the PRs before it merged) is `verdict=wait reason=head-moved` with `pr=<pr>` and stops the merges; then `merge-pr <pr>` (with its `merge.method`), then `talos.sh post-merge <pr> <issue>`, then `merged=<pr> issue=<n>`. A failed `merge-pr` is `verdict=block reason=merge-failed` with `pr=<pr>` and stops the merges; a failed post-merge is `warn reason=post-merge-failed pr=<pr>` and the merges go on. All merged: `verdict=merged`.
 
-Every exit deletes the candidate branch, and no verdict but `merged` merges anything: a red candidate, a timeout, a failed check lookup or a missing candidate sha merges nothing. Bisection of a red batch is not done yet (#931): for now the batch stops with its reason.
+Every exit deletes the candidate branch, and only `merged`, `merge-failed` and a mid-merge `head-moved` (for the PRs before the stop) follow a merge: a red candidate, a timeout, a failed check lookup or a missing candidate sha merges nothing. Bisection of a red batch is not done yet (#931): for now the batch stops with its reason.
 
 | Verdict | Reason | Meaning |
 |---|---|---|
@@ -1468,7 +1468,7 @@ Every exit deletes the candidate branch, and no verdict but `merged` merges anyt
 | `wait` | `candidate-timeout` | the checks were still pending after 120 calls |
 | `wait` | `checks-unverified` | the check lookup failed |
 | `wait` | `base-moved` | the base moved after the cut; the next pass rebuilds |
-| `wait` | `head-moved` | a PR's head moved after the cut |
+| `wait` | `head-moved` | a PR's head moved after the cut; mid-merge with `pr=<pr>`, the PRs before it merged |
 | `block` | `candidate-red` | a required check failed on the candidate |
 | `block` | `merge-failed` | `merge-pr` failed (`pr=<pr>`); the PRs before it merged |
 

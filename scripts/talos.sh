@@ -124,8 +124,9 @@
 #            anything else wait reason=checks-unverified;
 #         8. green: origin's base is not B, wait reason=base-moved (the next pass
 #            rebuilds); a PR's pr-head is not its cut head, wait reason=head-moved;
-#         9. for each PR in order: merge-pr, `talos.sh post-merge <pr> <issue>`,
-#            `merged=<pr> issue=<n>`; a failed merge-pr is block
+#         9. for each PR in order: its pr-head read again (not its cut head:
+#            wait reason=head-moved with `pr=<pr>`, and the merges stop), merge-pr,
+#            `talos.sh post-merge <pr> <issue>`, `merged=<pr> issue=<n>`; a failed merge-pr is block
 #            reason=merge-failed with `pr=<pr>` and stops the merges; a failed
 #            post-merge is `warn reason=post-merge-failed pr=<pr>`. verdict=merged.
 #         The candidate is deleted on every exit. Events (post_stage, role
@@ -1907,9 +1908,14 @@ _talos_queue_run() {
     { _talos_queue_head "$_p" && [ "$_QH" = "$_qh" ]; } || _talos_queue_end wait head-moved
   done 3<<< "$_picked"
 
-  # 9. Merge in queue order; post-merge for each.
+  # 9. Merge in queue order; post-merge for each. Each head is read again right
+  # before its merge-pr: a push while the PRs before it merged was never tested.
   while read -r _p _qh _n <&3; do
     [ -n "$_p" ] || continue
+    if ! { _talos_queue_head "$_p" && [ "$_QH" = "$_qh" ]; }; then
+      _talos_emit pr "$_p"
+      _talos_queue_end wait head-moved
+    fi
     _talos_cap _vcs merge-pr "$_p"
     if [ "$_RC" -ne 0 ]; then
       _talos_emit pr "$_p"
