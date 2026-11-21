@@ -263,33 +263,54 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 usage() { sed -n '/^# Usage:/,/^# Exit codes/p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
+# The one reader of a criterion's kind (#956), shared by `ids` (so spec-check,
+# spec-usable, placement, red-check and qa-run read it) and revise-spec: Python
+# source prefixed to each snippet that needs it, so they cannot drift.
+#   parse_criteria(lines) -> ([(id, kind, line index, start, end)], positional): the
+#       explicit `AC<n>` checklist lines, else (positional) every checklist line as
+#       AC<position>. `start:end` is the span of the kind marker, -1 when it has none
+#       (kind test).
+# The kind marker is the first one directly after the id (after the checkbox on a
+# positional line); failing that, the last one outside backticks (a trailing
+# `(test)`). Marker-shaped text in backticks is description, never a kind.
+_KIND_PY='
+import re, sys
+_BOX = re.compile(r"^[ \t]*[-*][ \t]+\[[ xX]\][ \t]+")
+_ITEM = re.compile(r"^[ \t]*[-*][ \t]+\[[ xX]\][ \t]+[*`]*(AC[0-9]+)")
+_MARK = re.compile(r"\((test|prose|same)[:)]")
+_LEAD = re.compile(r"(?:[*`]*AC[0-9]+[*`]*[:.]?[ \t]*)?")
+def _kind(ln):
+    pos = _BOX.match(ln).end()
+    m = _MARK.match(ln, _LEAD.match(ln, pos).end())
+    if not m:
+        quoted = [s.span() for s in re.finditer(r"`[^`]*`", ln)]
+        free = [x for x in _MARK.finditer(ln, pos) if not any(a <= x.start() < b for a, b in quoted)]
+        if not free:
+            return ("test", -1, -1)
+        m = free[-1]
+    end = ln.find(")", m.start())
+    return (m.group(1), m.start(), end + 1 if end >= 0 else -1)
+def parse_criteria(lines):
+    boxes = [i for i, ln in enumerate(lines) if _BOX.match(ln)]
+    explicit = [i for i in boxes if _ITEM.match(lines[i])]
+    positional = not explicit
+    rows = []
+    for k, i in enumerate(boxes if positional else explicit):
+        kind, a, b = _kind(lines[i])
+        rows.append(("AC%d" % (k + 1) if positional else _ITEM.match(lines[i]).group(1), kind, i, a, b))
+    return rows, positional
+'
+
 # ids FILE: the criteria table, `AC<n> test|same|prose`.
 cmd_ids() {
   local file="${1:-}"
   [ -n "$file" ] || usage
   [ -f "$file" ] || { echo "pipeline-criteria: ids: no such file: $file" >&2; return 1; }
   local out
-  out="$(awk '
-    # The last marker names the kind: a criterion may mention another marker in its text.
-    function kind(l,   k) {
-      k = "test"
-      while (match(l, /\((test|prose|same)[:)]/)) {
-        k = substr(l, RSTART + 1, RLENGTH - 2)
-        l = substr(l, RSTART + RLENGTH)
-      }
-      return k
-    }
-    /^[ \t]*[-*][ \t]+\[[ xX]\][ \t]/ {
-      n++; plain_kind[n] = kind($0)
-      if (match($0, /^[ \t]*[-*][ \t]+\[[ xX]\][ \t]+[*`]*AC[0-9]+/)) {
-        id = substr($0, RSTART, RLENGTH); sub(/^.*AC/, "AC", id)
-        ac++; ac_id[ac] = id; ac_kind[ac] = kind($0)
-      }
-    }
-    END {
-      if (ac > 0) for (i = 1; i <= ac; i++) print ac_id[i], ac_kind[i]
-      else for (i = 1; i <= n; i++) print "AC" i, plain_kind[i]
-    }' "$file")"
+  out="$(python3 -I -c "$_KIND_PY
+rows, _ = parse_criteria(open(sys.argv[1], encoding='utf-8', errors='replace').read().split('\n'))
+for r in rows:
+    print(r[0], r[1])" "$file")"
   [ -n "$out" ] || { echo "pipeline-criteria: ids: no criteria checklist in $file" >&2; return 1; }
   printf '%s\n' "$out"
 }
@@ -2028,49 +2049,39 @@ for ln in sys.stdin:
 if not want and not prose and not drops:
     sys.stderr.write("revise-spec: no finding to apply\n")
     sys.exit(1)
-item = re.compile(r"^[ \t]*[-*][ \t]+\[[ xX]\][ \t]+[*`]*(AC[0-9]+)")
-box = re.compile(r"^[ \t]*[-*][ \t]+\[[ xX]\][ \t]+")
-marker = re.compile(r"\((test|prose|same)[:)]")
 done = set()
 lines = text.split("\n")
-# The ids as qa-run and spec-usable read them: the explicit AC<n> of a checklist line
-# when any line has one; else (a body spec) the 1-based position, an unmarked line (test).
-boxes = [i for i, ln in enumerate(lines) if box.match(ln)]
-positional = not any(item.match(lines[i]) for i in boxes)
-if positional:
-    ids = [("AC%d" % (k + 1), i) for k, i in enumerate(boxes)]
-else:
-    ids = [(item.match(lines[i]).group(1), i) for i in boxes if item.match(lines[i])]
-for aid, i in ids:
+# The ids and kind markers exactly as `ids` reads them (the shared parse_criteria):
+# the explicit AC<n> of a checklist line when any line has one; else (a body spec) the
+# 1-based position, an unmarked line (test). The marker is the one after the id.
+rows, positional = parse_criteria(lines)
+for aid, mkind, i, start, end in rows:
     ln = lines[i]
     if (aid not in want and aid not in prose) or aid in done:
         continue
-    ms = list(marker.finditer(ln))
-    if not ms:
+    if start < 0:
         # Only a positional line may lack a marker: it is read as (test), and the
         # flip inserts the new marker right after the checkbox.
         if not positional or (aid in want and want[aid] != "same"):
             continue
         new = "(prose: %s must pass at head)" % prose[aid] if aid in prose else "(same: green at the red commit, found by red-check)"
-        at = box.match(ln).end()
+        at = _BOX.match(ln).end()
         lines[i] = ln[:at] + new + " " + ln[at:]
         done.add(aid)
         continue
-    start = ms[-1].start()
-    end = ln.find(")", start)
     if end < 0:
         continue
     if aid in prose:
         # A (test) or (same) whose evidence was only in a dropped file is prose.
-        if ms[-1].group(1) == "prose":
+        if mkind == "prose":
             continue
         new = "(prose: %s must pass at head)" % prose[aid]
     else:
         # (test) is flipped to (same), (same...) to (test); anything else is not a kind to flip.
-        if ms[-1].group(1) != ("test" if want[aid] == "same" else "same"):
+        if mkind != ("test" if want[aid] == "same" else "same"):
             continue
         new = "(same: green at the red commit, found by red-check)" if want[aid] == "same" else "(test)"
-    lines[i] = ln[:start] + new + ln[end + 1:]
+    lines[i] = ln[:start] + new + ln[end:]
     done.add(aid)
 if len(done) != len(order) + len(prose):
     sys.stderr.write("revise-spec: not a flippable criterion line: " + " ".join(a for a in order + list(prose) if a not in done) + "\n")
@@ -2114,7 +2125,19 @@ why += ["%s is dropped from Tests: (it shares an id with a file the branch adds)
 why = ", ".join(why)
 lead = "**PM spec:**"
 note = lead + " revised by the driver after red-check: " + why + "\n\n"
-at = text.find(lead)
+# The header is the `**PM spec:**` line of the spec itself, one of its first two non-blank
+# lines (as the spec reader vets it, #645); the same text mid-prose (in backticks, in a
+# bullet) is not the header (#956), and then the note leads the unchanged spec.
+at, pos, seen = -1, 0, 0
+for ln in text.split("\n"):
+    if ln.strip():
+        seen += 1
+        if seen > 2:
+            break
+        if ln.lstrip().startswith(lead):
+            at = pos + len(ln) - len(ln.lstrip())
+            break
+    pos += len(ln) + 1
 if at < 0:
     sys.stdout.write(note + text)
 else:
@@ -2133,7 +2156,7 @@ cmd_revise_spec() {
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/talos-revise-spec.XXXXXX")" && [ -d "$tmp" ] \
     || { echo "pipeline-criteria: revise-spec: no scratch directory" >&2; return 5; }
   if bash "$SCRIPT_DIR/pipeline-vcs.sh" view-issue "$issue" --spec 2>/dev/null | python3 -I -c "$_QA_SPEC_PY" > "$tmp/spec.md" && [ -s "$tmp/spec.md" ]; then
-    python3 -I -c "$_REVISE_PY" "$tmp/spec.md" || rc=$?
+    python3 -I -c "$_KIND_PY$_REVISE_PY" "$tmp/spec.md" || rc=$?
   else
     echo "pipeline-criteria: revise-spec: spec unreadable for issue #$issue" >&2; rc=5
   fi
