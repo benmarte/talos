@@ -173,6 +173,15 @@ if path == "/graphql":
     # GraphQL-level refusal (HTTP 200 carrying "errors").
     if E("STUB_GRAPHQL_FAIL") == "1":
         reply(200, {"errors": [{"message": "Resource not accessible"}], "data": None})
+    # enqueue-pr (#932): answered by query content. STUB_GH_MERGE_QUEUE is the
+    # base branch's queue: on (default), off (no queue) or queued (the PR is in it).
+    gq = str(payload().get("query", ""))
+    if "enqueuePullRequest" in gq:
+        reply(200, {"data": {"enqueuePullRequest": {"mergeQueueEntry": {"id": "MQE_1", "position": 1}}}})
+    if "mergeQueue(" in gq:
+        mq = E("STUB_GH_MERGE_QUEUE", "on")
+        reply(200, {"data": {"repository": {"mergeQueue": None if mq == "off" else {"id": "MQ_1"}},
+                             "node": {"isInMergeQueue": mq == "queued"}}})
     reply(200, {"data": {"result": {"pullRequest": {"isDraft": False}}}})
 
 m = re.fullmatch(r"/repos/([^/]+/[^/]+)(/.*)?", path)
