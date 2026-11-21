@@ -158,7 +158,7 @@ assert_eq '[]' "$(J "d['inflight']")" "A: bob's pipeline:dev issue #4 is not in 
 assert_eq '[]' "$(J "d['blocked']")" "A: bob's blocked issue and blocked PR are not A's to report"
 assert_eq '[]' "$(J "d['prs']")" "A: bob's pipeline PRs are not A's"
 assert_eq '[3]' "$(J "d['unassigned']")" "AC1 A: the unassigned ready issue is listed as unassigned, not queued"
-assert_eq 'False' "$(J "'unclaimed' in d")" "AC1 A: nothing is left for next to claim"
+assert_eq 'false' "$(J "'unclaimed' in d")" "AC1 A: nothing is left for next to claim"
 assert_eq 'alice' "$(J "d['me']")" "A: the state names the operator"
 assert_eq '[[1,"bob"],[4,"bob"],[6,"bob"],[7,"bob"],[8,"bob"]]' "$(J "[[t['issue'], t['owner']] for t in d['theirs'] if t['kind'] == 'issue']")" "A: bob's issues are listed as theirs, with the owner"
 assert_eq '[[17,7,"bob"],[18,8,"bob"]]' "$(J "[[t['n'], t['issue'], t['owner']] for t in d['theirs'] if t['kind'] == 'PR']")" "A: bob's PRs are listed as theirs, with the issue and owner"
@@ -359,7 +359,7 @@ assert_eq "0" "$(count_calls list-assignees)" "no identity: the assignees are no
 # identity.name stands in for the login
 cfg_p '"identity": {"name": "bob"}'; reset_repo
 collect_as alice
-assert_eq '[1,3]' "$(J "d['queued']")" "identity.name: the operator is bob whoever is logged in"
+assert_eq '[1]' "$(J "d['queued']")" "identity.name: the operator is bob whoever is logged in"
 assert_eq "0" "$(count_calls current-user)" "identity.name: no identity lookup"
 
 # a provider with no assignees (file mode answers 2): unfiltered

@@ -43,17 +43,18 @@
 #   owners    list-needs-owner --json items {n, status, question}, or null when the
 #             provider has no such verb; status is answered|unanswered|unverified
 #   capped    the list verbs whose result was capped
-#   me, theirs, unclaimed   (#560) only while multi-user claiming is on
+#   me, theirs, unassigned   (#560, #949) only while multi-user claiming is on
 #             (issues.claim, an issues.assignee other than none, and a
 #             resolvable identity; see talos_claim_resolve): `me` is the
 #             operator's login, `theirs` the other operators' items, each
 #             {kind: "issue"|"PR", n, issue, owner} -- an open issue assigned
 #             to someone else, or a pipeline PR whose issue is -- and
-#             `unclaimed` the issues of the queue, the in-flight list and the
-#             open PRs with no assignee, which `talos.sh next` claims before it
-#             dispatches. Everything above is then the operator's own: the
-#             theirs items are left out of prs, blocked, queued, held,
-#             inflight and owners, and their PRs cost no per-PR read. One bulk
+#             `unassigned` the issues with no assignee that carry a Talos label
+#             or an open pipeline PR: never routed and never claimed by `next`
+#             (`talos.sh claim <N>` takes one). Everything above is then the
+#             operator's own: the theirs and unassigned items are left out of
+#             prs, blocked, queued, held, inflight and owners, and their PRs
+#             cost no per-PR read. One bulk
 #             `list-assignees` read; exit 2 (file mode) keeps the unfiltered
 #             state, any other failure fails the run.
 #
