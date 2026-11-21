@@ -164,6 +164,7 @@
 10 test-map-registry-903.sh
 23 test-marker-author-trust.sh
 0 test-marker-contract.sh
+45 test-merge-queue-929.sh
 19 test-mergebase.sh
 0 test-mergesync-skill.sh
 4 test-mergesync.sh

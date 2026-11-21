@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- feat: with `merge.queue: talos`, `gate merge` queues a PR that passes every merge gate instead of merging it: a trusted `talos:queue` marker comment on the PR (FIFO by eligible time, kept on the provider), a `queue_enqueue` event and `verdict=wait reason=queued`; a corrupt marker or a failed write is `reason=queue-state-unverified`, never a merge; `talos.sh queue list` prints the queue in order
 - feat: `pipeline-vcs.sh ref-checks-required <sha|branch>` judges `merge.required_checks` on a commit or branch head on github, gitlab, azure and file, with `pr-checks-required`'s output and exits plus exit 3 when it cannot judge (a bad ref, a failed or unparseable read, an empty list); the config keys `merge.queue` (`off`), `merge.queue_batch` (`3`) and `merge.queue_branch_prefix` (`talos/queue/`) are registered for the merge queue and have no effect yet
 
 ## [0.22.2] - 2026-11-15

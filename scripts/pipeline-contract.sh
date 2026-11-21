@@ -144,6 +144,7 @@ TALOS_MARKERS=(
   talos:spend
   talos:budget
   talos:qa-evidence
+  talos:queue
 )
 
 # ── talos_contract_check_label_length ────────────────────────────────────
