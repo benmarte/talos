@@ -85,12 +85,12 @@ BASE='https://api.github.com/repos/acme/widget'
 Q="$(printf '%s\n' '[{"number":3,"title":"Fix login bug","body":"Body text","labels":[{"name":"pipeline:dev"}]},{"number":4,"title":"a PR","body":"","labels":[],"pull_request":{}}]')"
 parity "list-issues" list-issues
 json_is "list-issues: issues only (a pull request is dropped), github field set" \
-  '[{"number":3,"title":"Fix login bug","labels":[{"name":"pipeline:dev"}],"body":"Body text"}]'
+  '[{"number":3,"title":"Fix login bug","labels":[{"name":"pipeline:dev"}],"body":"Body text","author":{"login":""}}]'
 assert_contains "$(req_of)" "$BASE/issues?state=open&per_page=100" "list-issues: one paginated REST list"
 
 Q="$(printf '%s\n' '[{"number":3,"title":"Fix login bug","body":"Body text","labels":[]}]')"
 parity "list-issues --no-body" list-issues --no-body
-json_is "list-issues --no-body: no body key" '[{"number":3,"title":"Fix login bug","labels":[]}]'
+json_is "list-issues --no-body: no body key" '[{"number":3,"title":"Fix login bug","labels":[],"author":{"login":""}}]'
 
 Q="$(printf '%s\n' "$ISSUE3" '[{"id":1,"user":{"login":"alice"},"body":"hello","created_at":"2026-10-01T00:00:00Z","html_url":"https://github.com/acme/widget/issues/3#issuecomment-1"}]')"
 parity "view-issue" view-issue 3

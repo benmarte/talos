@@ -8,6 +8,7 @@
 #   AC4 an open dependency keeps the issue waiting
 #   AC6 an open pipeline PR for the issue: no ready label
 #   AC7 epic auto-close stays behind roles.planner
+#   AC8 an issue by an author outside the marker trust set is never unblocked
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
@@ -40,11 +41,11 @@ done
 PM="$GS/talos.sh"
 ERR="$SANDBOX/stderr"
 
-issue_json() {  # number "labels,..." [body]
-  local n="$1" out="" l body="${3:-}"
+issue_json() {  # number "labels,..." [body] [author, default the bot]
+  local n="$1" out="" l body="${3:-}" who="${4:-bot}"
   local IFS=,
   for l in $2; do out="${out:+$out,}{\"name\":\"$l\"}"; done
-  printf '{"number":%s,"title":"t","labels":[%s],"body":%s}' "$n" "$out" "$(python3 -I -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$body")"
+  printf '{"number":%s,"title":"t","labels":[%s],"author":{"login":"%s"},"body":%s}' "$n" "$out" "$who" "$(python3 -I -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$body")"
 }
 # fresh <issues-json> [list-prs json]: a GitHub provider, no planner key.
 fresh() {
@@ -87,6 +88,20 @@ fresh "[$(issue_json 30 bug "$DEP")]"
 printf '%s' 1 > "$STUB_DIR/list-prs.rc"
 sw
 assert_eq "0" "$(readied 30)" "AC6 an unreadable PR list unblocks nothing"
+
+fresh "[$(issue_json 30 bug "$DEP" stranger)]"
+sw
+assert_eq "0" "$(readied 30)" "AC8 an issue by an untrusted author is not unblocked"
+
+fresh "[$(issue_json 30 bug "$DEP" stranger)]"
+printf '%s' 1 > "$STUB_DIR/current-user.rc"
+sw
+assert_eq "0" "$(readied 30)" "AC8 an unreadable identity trusts nobody"
+
+fresh "[$(issue_json 30 bug "$DEP" stranger)]"
+printf '%s' '{"vcs": {"provider": "github"}, "markers": {"trusted_authors": ["stranger"]}}' > "$SANDBOX/talos.pipeline.json"
+sw
+assert_eq "1" "$(readied 30)" "AC8 an author in markers.trusted_authors is unblocked"
 
 fresh "[$(issue_json 100 pipeline:epic-decomposed)]"
 sw

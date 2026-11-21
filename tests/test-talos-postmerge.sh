@@ -104,7 +104,7 @@ issue_json() {  # number "labels,..." [body] -> one list-issues item
   local n="$1" out="" l body="${3:-}"
   local IFS=,
   for l in $2; do out="${out:+$out,}{\"name\":\"$l\"}"; done
-  printf '{"number":%s,"title":"t","labels":[%s],"body":%s}' "$n" "$out" "$(python3 -I -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$body")"
+  printf '{"number":%s,"title":"t","labels":[%s],"author":{"login":"bot"},"body":%s}' "$n" "$out" "$(python3 -I -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$body")"
 }
 pr_json() {  # number branch base "labels,..." cross
   local out="" l

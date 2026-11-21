@@ -2397,12 +2397,17 @@ for r in sorted(rows):
 # issue says `Part of #<n>` about, and `unblock <n>` for each issue with no
 # pipeline:* label and no open pipeline PR whose `Depends on:` lines name only
 # issues that are no longer open. argv: the mode, the ids to leave out (already
-# healed, so closed), then the issues with an open pipeline PR (`,<n>,<m>,`; `?`
-# when the PR list was unreadable).
+# healed, so closed), the issues with an open pipeline PR (`,<n>,<m>,`; `?` when
+# the PR list was unreadable), then 1 or 0 for "only trusted authors count" and
+# the trusted logins one per line: an issue whose author is not trusted is never
+# unblocked (anyone can open an issue and write a `Depends on:` line).
 _TALOS_SWEEP_PY='
 import json, re, sys
 mode, skip = sys.argv[1], set(sys.argv[2].split(","))
 prs = sys.argv[3] if len(sys.argv) > 3 else "?"
+enforce = len(sys.argv) > 4 and sys.argv[4] == "1"
+trusted = set(sys.argv[5].splitlines()) if len(sys.argv) > 5 else set()
+authors = {}
 items = []
 for i in json.load(sys.stdin):
     n = i.get("number")
@@ -2410,6 +2415,8 @@ for i in json.load(sys.stdin):
         continue
     names = set(l.get("name") if isinstance(l, dict) else l for l in i.get("labels") or [])
     items.append((n, names, i.get("body") or ""))
+    a = i.get("author")
+    authors[n] = (a.get("login") if isinstance(a, dict) else a) or ""
 items.sort(key=lambda t: t[0])
 if mode == "heal":
     opened = set(n for n, _, _ in items)
@@ -2435,6 +2442,8 @@ for n, names, b in items:
     # Queued, blocked or in flight (any pipeline:* label), or an open pipeline PR
     # (argv 3: ",<issue>,...,"; "?" is an unreadable PR list: nothing is unblocked).
     if any(isinstance(x, str) and x.startswith("pipeline:") for x in names) or prs == "?" or ",%d," % n in prs:
+        continue
+    if enforce and authors.get(n) not in trusted:
         continue
     deps = [int(d) for ln in b.splitlines() if re.match(r"\s*Depends on:", ln) for d in re.findall(r"#([0-9]+)", ln)]
     if deps and not any(d in opened for d in deps):
@@ -2820,7 +2829,7 @@ _talos_ids() {
 
 # sweep [<issue-id>...]: Step 1 items 2 and 4-8, the ids being this run's queue.
 _talos_sweep() {
-  local _issues="" _pr_issues _k _n _lead _pr _prs=""_list="" _healed="" _bi="" _bp="" _ki=0 _kp=0 _plan _s _i _b _e _carried
+  local _issues="" _pr_issues _k _n _lead _pr _prs="" _list="" _healed="" _bi="" _bp="" _ki=0 _kp=0 _plan _s _i _b _e _carried _was
   _talos_ids "$@"
   _talos_prepare sweep pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
                        pipeline-status.sh \
@@ -2888,7 +2897,11 @@ _talos_sweep() {
     _talos_warn prs-unlisted
   fi
   if [ -n "$_issues" ]; then
-    _plan="$(python3 -I -c "$_TALOS_SWEEP_PY" rest "$_healed" "$_pr_issues" <<< "$_issues")" || _plan=""
+    # Only a trusted author's issue is unblocked (an identity that cannot be
+    # looked up trusts nobody: the soft mode counts none).
+    _was="${_TALOS_TRUST_SOFT:-}"
+    _TALOS_TRUST_SOFT=1; _talos_trust; _TALOS_TRUST_SOFT="$_was"
+    _plan="$(python3 -I -c "$_TALOS_SWEEP_PY" rest "$_healed" "$_pr_issues" "$_TRUST_ON" "$_TRUST_SET" <<< "$_issues")" || _plan=""
   else
     _plan=""
   fi
