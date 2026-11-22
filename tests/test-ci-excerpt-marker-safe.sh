@@ -58,9 +58,9 @@ BODY="$(printf '**Merge queue:** ejected\n\nCI failure excerpt:\n```\n%s\n```\n'
 BUILD='import json, sys
 print(json.dumps({"comments": [{"author": {"login": "talos-bot"}, "body": sys.argv[1]}]}))'
 JSON="$(python3 -I -c "$BUILD" "$BODY")"
-assert_eq "0" "$(python3 -I -c "$COUNT_PY" "talos:issue-closed" 1 "talos-bot" <<< "$JSON")" "AC2 a trusted comment built from the excerpt does not count as an issue-closed marker"
+assert_eq "0" "$(python3 -I -c "$COUNT_PY" "<!-- talos:issue-closed pr=5 -->" 1 "talos-bot" <<< "$JSON")" "AC2 a trusted comment built from the excerpt does not count as an issue-closed marker"
 JSON="$(python3 -I -c "$BUILD" "<!-- talos:issue-closed pr=5 -->")"
-assert_eq "1" "$(python3 -I -c "$COUNT_PY" "talos:issue-closed" 1 "talos-bot" <<< "$JSON")" "AC2 positive control: a real marker is still counted"
+assert_eq "1" "$(python3 -I -c "$COUNT_PY" "<!-- talos:issue-closed pr=5 -->" 1 "talos-bot" <<< "$JSON")" "AC2 positive control: a real marker is still counted"
 
 # ── AC3 ──────────────────────────────────────────────────────────────────────
 glog "-- test-foo.sh" "FAIL  tests/test-foo.sh" "FAIL  AC2 rejects an expired token" \
