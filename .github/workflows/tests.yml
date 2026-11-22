@@ -98,7 +98,7 @@ jobs:
       # merges without a full run: the Talos merge queue (docs/reference.md) runs the whole
       # suite on every talos/queue/** candidate and every push to main runs it again, so a
       # test a PR run missed fails at the candidate and the queue ejects the PR (#972).
-      - name: Run test shard (PR: the tests the changes select)
+      - name: "Run test shard (PR: the tests the changes select)"
         if: github.event_name == 'pull_request'
         run: bash tests/run-tests.sh --no-cache --quiet --timings --changed HEAD^1 --shard ${{ matrix.shard }}
       - name: Run test shard (full suite)
