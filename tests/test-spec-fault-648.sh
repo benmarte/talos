@@ -179,6 +179,16 @@ dn
 assert_eq "next=stop" "$(printf '%s\n' "$OUT" | tail -n 1)" "AC4 done pm: at the attempt ceiling it ends next=stop"
 assert_contains "$(journal)" "vcs label-issue 9 --add pipeline:blocked" "AC4 done pm: at the ceiling the issue is blocked"
 
+# #975: an id already labelled in an existing Tests file is a refusal under done pm too, not a warning.
+reset_stubs
+mk_test tests/test-a.sh "AC1 greet prints hello"
+spec '**Tests:** `tests/test-a.sh`'
+OUT="$(cd "$SANDBOX" && bash "$RUN" done pm --issue 9 --summary-file "$SANDBOX/summary.txt" 2>"$ERR" < /dev/null)"; RC=$?
+assert_contains "$OUT" "spec_check=id-collision" "AC4 done pm: an id-collision is spec_check=id-collision"
+assert_eq "next=fix-round stage=pm" "$(printf '%s\n' "$OUT" | tail -n 1)" "AC4 done pm: an id-collision ends next=fix-round stage=pm"
+assert_contains "$(journal)" "vcs label-issue 9 --add pipeline:confirmed --remove pipeline:dev" "AC4 done pm: an id-collision sends the label back to pipeline:confirmed"
+rm -rf "$SANDBOX/tests"
+
 # ── AC5 / AC6: talos.sh run after a QA FAIL ──────────────────────────────────
 rn() { OUT="$(TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 bash "$RUN" run --max-iterations 5 2>"$ERR")"; RC=$?; }
 run_fixture() {  # the PR is at stage ready; QA's first report is $1, its second $2
