@@ -5,6 +5,8 @@
 #   AC1 exit 0, empty output, no markers.trusted_authors: no issue from outside the trust set is unblocked
 #   AC2 the same with markers.trusted_authors set: a listed author's issue is still unblocked
 #   AC3 exit 0 with a login: that login joins the trust set and its issue is unblocked
+#   AC4 exit 1 and exit 3 are unchanged (tests/test-talos-gate.sh and
+#       tests/test-sweep-unblock-code-driver.sh hold the full trust cases)
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
@@ -55,7 +57,7 @@ readied() { grep -c "^vcs label-issue 30 --add pipeline:ready" "$STUB_DIR/journa
 fresh stranger "" "$CFG_PLAIN"
 sw
 assert_eq "0" "$(readied)" "AC1 an empty login with exit 0 and no trusted_authors unblocks no outside author's issue"
-assert_contains "$(cat "$ERR")" "trust-unverified" "AC1 the sweep warns reason=trust-unverified"
+assert_contains "$OUT" "warn reason=trust-unverified" "AC1 the sweep warns reason=trust-unverified"
 
 fresh stranger "  " "$CFG_PLAIN"
 sw
@@ -72,5 +74,12 @@ assert_eq "1" "$(readied)" "AC3 a login with exit 0 joins the trust set and its 
 fresh stranger "bot" "$CFG_PLAIN"
 sw
 assert_eq "0" "$(readied)" "AC3 a login with exit 0 does not trust other authors"
+
+for RC_CASE in 1 3; do
+  fresh stranger "" "$CFG_PLAIN"
+  printf '%s' "$RC_CASE" > "$STUB_DIR/current-user.rc"
+  sw
+  assert_eq "0" "$(readied)" "AC4 current-user exit $RC_CASE (no identity) still trusts nobody in the sweep"
+done
 
 finish
