@@ -379,6 +379,15 @@
 #                                             prints nothing (exit 0); an unreadable
 #                                             list exits 3, nothing on stdout (the
 #                                             callers fail closed on exactly that).
+#   ci-failure-excerpt <pr|sha>               The runner's failure lines from the log of
+#                                             each failed required check (#993): `job
+#                                             <name> (run <id>):` then FAIL, expected:/
+#                                             actual:/missing:, first failure: and
+#                                             RESULT: lines, 40 a job, 120 in all. For
+#                                             stages that cannot read CI logs. Another
+#                                             provider or an unreadable log is one
+#                                             `ci-failure-excerpt: unavailable (<why>)`
+#                                             line; always exit 0.
 #   rerun-ci <n>                             Re-run failed CI for the PR head SHA
 #   rerun-ci --sha <sha>                      Re-run the failed jobs of the failed
 #                                             runs of a commit that is no PR (#950,
@@ -12514,6 +12523,119 @@ _vcs_ref_checks_required_dispatch() {
   _vcs_ref_fail "the $PROVIDER provider could not run (exit $_rk_rc): nothing judged"
 }
 
+# ci-failure-excerpt <pr|sha> (#993): the runner's own failure lines from the
+# log of each failed required job, for a stage whose session cannot read CI logs.
+# A PR number reads its head; 40 lowercase hex characters are a sha. github only
+# (it runs `gh run view <run> --job <job> --log-failed`); every other provider, a
+# log it cannot read or no failed required job is ONE
+# `ci-failure-excerpt: unavailable (<reason>)` line, exit 0: the verb never fails
+# a run. Per job: `job <name> (run <id>):`, then at most 40 lines of FAIL<2 spaces>,
+# the expected:/actual:/missing: line after one, `first failure:` and `RESULT:`
+# (control characters stripped, 300 characters a line); 120 lines in all.
+_vcs_ci_failure_excerpt_filter() {
+  python3 -I -c '
+import re, sys
+cap = int(sys.argv[1])
+ansi = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]")
+ctrl = re.compile(r"[\x00-\x08\x0a-\x1f\x7f-\x9f]")
+# `gh run view --log-failed` prefixes each line with "<job>\t<step>\t<timestamp> ".
+pre = re.compile(r"^[^\t]*\t[^\t]*\t(?:\d{4}-\d\d-\d\dT[0-9:.]+Z ?)?")
+keep = re.compile(r"^(?:FAIL  |RESULT:|\s*first failure:)")
+follow = re.compile(r"^\s*(?:expected|actual|missing):")
+out, prev = [], False
+for raw in sys.stdin.buffer.read().decode("utf-8", "replace").split("\n"):
+    line = pre.sub("", raw, count=1)
+    line = ctrl.sub("", ansi.sub("", line.replace("\t", " "))).rstrip()[:300]
+    if keep.match(line):
+        out.append(line)
+        prev = line.startswith("FAIL  ")
+    elif prev and follow.match(line):
+        out.append(line)
+        prev = False
+    else:
+        prev = False
+    if len(out) >= cap:
+        break
+sys.stdout.write("".join(l + "\n" for l in out))
+' "$1"
+}
+# The failed required check runs of <sha>: "name TAB run id TAB job id" per line.
+_vcs_ci_failure_excerpt_jobs() {
+  python3 -I -c '
+import json, re, sys
+required = {l.strip() for l in sys.argv[1].splitlines() if l.strip()}
+newest = {}
+for c in json.load(sys.stdin).get("check_runs") or []:
+    n = c.get("name")
+    if n in required:
+        key = (c.get("started_at") or "", c.get("id") or 0)
+        if n not in newest or key > newest[n][0]:
+            newest[n] = (key, c)
+for n, (_, c) in sorted(newest.items()):
+    if c.get("status") != "completed" or c.get("conclusion") in ("success", "skipped", "neutral"):
+        continue
+    url = c.get("html_url") or c.get("details_url") or ""
+    run = re.search(r"/actions/runs/([0-9]+)", url)
+    job = re.search(r"/job/([0-9]+)", url)
+    if run:
+        print(re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", n) + "\t" + run.group(1) + "\t" + (job.group(1) if job else str(c.get("id") or "")))
+' "$1"
+}
+_vcs_ci_failure_excerpt_body() {
+  local _x_ref="${ARGS[0]:-}" _x_sha _x_required _x_runs _x_jobs _x_name _x_run _x_job _x_log _x_lines _x_room
+  local _x_total=0 _x_why="no failed required job found" _x_out=""
+  _x_unavailable() { printf 'ci-failure-excerpt: unavailable (%s)\n' "$1"; exit 0; }
+  case "$PROVIDER" in
+    github | github-api) ;;
+    *) _x_unavailable "the $(printf '%s' "$PROVIDER" | tr -d '[:cntrl:]') provider has no CI log reader" ;;
+  esac
+  [ "${#ARGS[@]}" -eq 1 ] || _x_unavailable "usage: ci-failure-excerpt <pr|sha>"
+  command -v gh >/dev/null 2>&1 || _x_unavailable "the gh CLI is not on PATH"
+  _x_required="$(cfg merge.required_checks)"
+  [ -n "$_x_required" ] || _x_unavailable "merge.required_checks is empty"
+  _gh_init
+  if [[ "$_x_ref" =~ ^[0-9a-f]{40}$ ]]; then
+    _x_sha="$_x_ref"
+  elif [[ "$_x_ref" =~ ^[0-9]+$ ]]; then
+    _x_sha="$(_gh_try GET "$_GH_API/pulls/$_x_ref" | _gh_field head.sha)" || _x_sha=""
+    [[ "$_x_sha" =~ ^[0-9a-f]{40}$ ]] || _x_unavailable "could not read the head of PR #$_x_ref"
+  else
+    _x_unavailable "usage: ci-failure-excerpt <pr|sha>"
+  fi
+  _x_runs="$(_gh_pages "$_GH_API/commits/$_x_sha/check-runs?per_page=100" "" "check runs" check_runs)" \
+    || _x_unavailable "could not read the check runs of $_x_sha"
+  _x_jobs="$(printf '%s' "$_x_runs" | _vcs_ci_failure_excerpt_jobs "$_x_required")" \
+    || _x_unavailable "could not parse the check runs of $_x_sha"
+  while IFS=$'\t' read -r _x_name _x_run _x_job; do
+    [ -n "$_x_run" ] || continue
+    _x_room=$((120 - _x_total - 1))   # the header takes a line of the 120
+    [ "$_x_room" -ge 1 ] || break
+    [ "$_x_room" -le 40 ] || _x_room=40
+    _x_log="$(gh run view "$_x_run" ${REPO:+--repo "$REPO"} ${_x_job:+--job "$_x_job"} --log-failed 2>/dev/null)" \
+      || { _x_why="could not read the log of run $_x_run"; continue; }
+    _x_lines="$(printf '%s\n' "$_x_log" | _vcs_ci_failure_excerpt_filter "$_x_room")" || _x_lines=""
+    [ -n "$_x_lines" ] || { _x_why="the log of run $_x_run has no runner result line"; continue; }
+    _x_out="${_x_out}job $_x_name (run $_x_run):"$'\n'"$_x_lines"$'\n'
+    _x_total=$((_x_total + 1 + $(printf '%s\n' "$_x_lines" | wc -l)))
+  done <<<"$_x_jobs"
+  [ -n "$_x_out" ] || _x_unavailable "$_x_why"
+  printf '%s' "$_x_out"
+}
+_vcs_ci_failure_excerpt() {
+  local _x_out _x_rc=0
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] GET $_GH_API/pulls/<n> (head SHA); GET $_GH_API/commits/<sha>/check-runs; gh run view <run> --job <job> --log-failed for each failed required job"
+    return 0
+  fi
+  _x_out="$(_vcs_ci_failure_excerpt_body 2>/dev/null)" || _x_rc=$?
+  if [ "$_x_rc" -ne 0 ] || [ -z "$_x_out" ]; then
+    echo "ci-failure-excerpt: unavailable (the excerpt could not be read)"
+  else
+    printf '%s\n' "$_x_out"
+  fi
+  exit 0
+}
+
 # batch-members <lead> (#834): the numbers of the open issues whose body has a
 # line `Batched into: #<lead>` (the number not followed by a digit) and that
 # carry an `epic:<n>` label (the planner sets it on every member; only a user
@@ -12640,6 +12762,7 @@ fi
 _DISPATCH_RC=0
 case "$VERB" in
   batch-members) _vcs_batch_members ;;
+  ci-failure-excerpt) _vcs_ci_failure_excerpt ;;
   pr-checks-required) _vcs_pr_checks_required_dispatch ;;
   ref-checks-required) _vcs_ref_checks_required_dispatch ;;
   required-roles) _vcs_required_roles ;;
