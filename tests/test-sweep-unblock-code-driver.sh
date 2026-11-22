@@ -9,6 +9,10 @@
 #   AC6 an open pipeline PR for the issue: no ready label
 #   AC7 epic auto-close stays behind roles.planner
 #   AC8 an issue by an author outside the marker trust set is never unblocked
+# #966: a `current-user` exit 0 with no login is "no identity resolved", not "a login found"
+#   AC1 exit 0 + empty output, no trusted_authors: an issue outside the trust set is not unblocked
+#   AC2 the same with markers.trusted_authors: a listed author's issue is still unblocked
+#   AC3 exit 0 with a login: that login's issue is unblocked
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
@@ -102,6 +106,27 @@ fresh "[$(issue_json 30 bug "$DEP" stranger)]"
 printf '%s' '{"vcs": {"provider": "github"}, "markers": {"trusted_authors": ["stranger"]}}' > "$SANDBOX/talos.pipeline.json"
 sw
 assert_eq "1" "$(readied 30)" "AC8 an author in markers.trusted_authors is unblocked"
+
+fresh "[$(issue_json 30 bug "$DEP" stranger)]"
+: > "$STUB_DIR/current-user.out"
+sw
+assert_eq "0" "$(readied 30)" "AC1 current-user exit 0 with empty output trusts nobody"
+
+fresh "[$(issue_json 30 bug "$DEP" bot)]"
+printf '  \n' > "$STUB_DIR/current-user.out"
+sw
+assert_eq "0" "$(readied 30)" "AC1 current-user exit 0 with blank output trusts nobody"
+
+fresh "[$(issue_json 30 bug "$DEP" stranger)]"
+: > "$STUB_DIR/current-user.out"
+printf '%s' '{"vcs": {"provider": "github"}, "markers": {"trusted_authors": ["stranger"]}}' > "$SANDBOX/talos.pipeline.json"
+sw
+assert_eq "1" "$(readied 30)" "AC2 empty identity with markers.trusted_authors still unblocks a listed author"
+
+fresh "[$(issue_json 30 bug "$DEP" octo)]"
+printf 'octo\n' > "$STUB_DIR/current-user.out"
+sw
+assert_eq "1" "$(readied 30)" "AC3 current-user exit 0 with a login unblocks that login's issue"
 
 fresh "[$(issue_json 100 pipeline:epic-decomposed)]"
 sw
