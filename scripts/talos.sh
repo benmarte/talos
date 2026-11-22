@@ -5794,6 +5794,7 @@ _talos_run_loop() {
         _pr="$(sed -n 's/.* pr=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
         _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
         case "$_pr$_n" in ''|*[!0-9]*) _talos_stop state-unavailable ;; esac
+        _talos_run_qa_draft_guard "$_pr" "$_n" || continue
         _talos_run_presync "$_pr" "$_n"
         _talos_run_ci_wait "$_pr" "$_n"
         _talos_run_dispatch "$_RUN_ACT" ;;
@@ -6640,6 +6641,42 @@ _talos_run_ci_wait() {
       _talos_flush; exit 0 ;;
     *) _talos_stop state-unavailable ;;
   esac
+}
+
+# _talos_run_qa_draft_guard <pr> <issue> (#1002): before a QA dispatch under
+# pr.draft and verify.qa_mode ci, the PR is asked whether it is still a draft: CI
+# skips a draft, so QA would wait on a check that never runs and fail closed. A
+# fix round puts the PR back to draft, and the collected state `next` answered
+# from can predate that. With the QA pre-CI gate on (QA runs on the draft by
+# design) or a ready PR the guard changes nothing (return 0). A draft PR is
+# judged by the live collect, the resolver's own answer: `ready` (every approval
+# current) finishes the draft completion (`ready-pr`, the CI wait, QA, as the
+# wait arm does); any other stage is left to the next pass, which routes it (the
+# re-stamp or review stage). Both return 1 and the caller `continue`s. The lease
+# `next` took is released first: a leftover line of this run's own pid would make
+# the next pass answer reason=lease. An unreadable draft state is stop
+# reason=draft-unverified; a collect that does not name the PR is
+# state-unavailable.
+_talos_run_qa_draft_guard() {
+  local _pr="$1" _n="$2" _st _stage
+  [ "$_RUN_DRAFT" -eq 1 ] && [ "$_RUN_GATE" -eq 0 ] && [ "$(cfg verify.qa_mode)" = "ci" ] || return 0
+  _talos_cap _vcs pr-is-draft "$_pr"
+  case "$_RC:$_OUT" in
+    1:ready) return 0 ;;
+    0:draft) : ;;
+    *) _talos_stop draft-unverified ;;
+  esac
+  _talos_collect_drop
+  _st="$(bash "$SCRIPT_DIR"/pipeline-status-file.sh collect 2>/dev/null)" || _talos_stop state-unavailable
+  _talos_collect_put "$_st"
+  _stage="$(python3 -I -c 'import json, sys
+for p in json.loads(sys.stdin.read()).get("prs") or []:
+    if isinstance(p, dict) and p.get("n") == int(sys.argv[1]) and isinstance(p.get("stage"), str):
+        print(p["stage"]); break' "$_pr" <<< "$_st" 2>/dev/null)" || _stage=""
+  [ -n "$_stage" ] || _talos_stop state-unavailable
+  _talos_lease_release "$_n"
+  [ "$_stage" != ready ] || _talos_run_draft_complete "$_pr" "$_n"
+  return 1
 }
 
 # _talos_run_draft_complete <pr> <issue> (#516): the draft-window completion,

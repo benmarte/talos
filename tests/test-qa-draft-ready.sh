@@ -107,7 +107,7 @@ pos() { journal | grep -nE -m1 "$1" | cut -d: -f1 | grep . || echo 0; }
 
 # ── AC1: a draft PR with current approvals is marked ready, then QA runs ─────
 fixture 1
-TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 2
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
 assert_contains "$(journal)" "vcs ready-pr 12" "AC1 the draft PR is marked ready"
 assert_eq "1" "$(qa_count)" "AC1 QA is dispatched once"
 RP="$(pos '^vcs ready-pr 12')"; QA="$(pos '^agent qa$')"
