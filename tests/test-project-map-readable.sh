@@ -61,7 +61,7 @@ ev validator validator 21 "" CONFIRMED 100 "" 3000
 ev pm pm 21 "" "" "" "" 2900
 ev developer developer 21 31 PR_OPENED 5000 "" 2000
 ev reviewer reviewer 21 31 APPROVED 800 "<b>reviewed</b> $LONG" 1000
-start 21 750 31 qa
+start 21 722 31 qa   # just past 12 min: a slow render adds seconds, so it needs slack before 13 min
 # 22: a developer fix round 2 (a failing QA and a failing review), no title, no tokens.
 ev validator validator 22 "" CONFIRMED "" "" 3000
 ev developer developer 22 32 PR_OPENED "" "" 2500
