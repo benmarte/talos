@@ -121,6 +121,7 @@ ev merged orchestrator 75 80 "" "" $(( 3 * 86400 ))
 ev merged orchestrator 76 81 "" "" 20
 snap none none
 PAGE="$(render)"
+sleep $(( 61 - 10#$(date -u +%S) ))  # AC2 (#967) the render lands across a minute boundary
 OLD="$(python3 -I -c '
 import datetime
 print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=3 * 86400)).strftime("%Y-%m-%d %H:%M"))')"
