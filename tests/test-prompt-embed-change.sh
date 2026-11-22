@@ -183,6 +183,7 @@ vcs_fixture() {
   base_cfg
   cp "$FIX/diff" "$STUB_DIR/diff-pr.77"
   cp "$FIX/issue.json" "$STUB_DIR/view-issue.468"
+  printf 'owner1\n' > "$STUB_DIR/current-user"
 }
 
 : > "$SANDBOX/no-prompt"

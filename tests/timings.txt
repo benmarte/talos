@@ -317,6 +317,7 @@
 17 test-threat-model.sh
 2 test-timing-guard.sh
 3 test-title-cache-886.sh
+3 test-trust-empty-login.sh
 4 test-unsafe-cleanup-guard.sh
 12 test-update-timings-ci.sh
 47 test-upsert-pr-comment.sh

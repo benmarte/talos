@@ -1156,9 +1156,10 @@ print(sum(1 for c in json.load(sys.stdin).get("comments", [])
 # (check-approval-sha and read-attempt): markers.trusted_authors plus the
 # authenticated login, unless markers.verify_authors is false. Sets _TRUST_ON
 # (1 or 0) and _TRUST_SET. An identity that cannot be looked up and no
-# trusted_authors is the same fail-open as those readers (every marker counts),
-# except under _TALOS_TRUST_SOFT (post-merge), where it counts none; one that
-# was refused and no trusted_authors stops, as nothing could be counted.
+# trusted_authors (an exit 0 with no login included) is the same fail-open as
+# those readers (every marker counts), except under _TALOS_TRUST_SOFT
+# (post-merge), where it counts none; one that was refused and no
+# trusted_authors stops, as nothing could be counted.
 _talos_trust() {
   _TRUST_ON=0; _TRUST_SET=""
   [ "$(cfg markers.verify_authors)" != "false" ] || return 0
@@ -1166,8 +1167,10 @@ _talos_trust() {
   _t="$(cfg markers.trusted_authors)"
   _talos_cap _vcs current-user
   _rc="$_RC"; _u="$_OUT"
+  # An exit 0 that printed no login resolved no identity: it reads as exit 1.
+  { [ "$_rc" -ne 0 ] || [ -n "${_u//[[:space:]]/}" ]; } || _rc=1
   case "$_rc" in
-    0) [ -z "$_u" ] || _t="${_t:+$_t$'\n'}$_u" ;;
+    0) _t="${_t:+$_t$'\n'}$_u" ;;
     1) [ -z "${_TALOS_TRUST_SOFT:-}" ] || _TRUST_ON=1 ;;
     *) _TRUST_ON=1 ;;
   esac
