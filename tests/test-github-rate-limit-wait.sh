@@ -97,7 +97,7 @@ assert_eq "2" "$(grep -c '/pulls/9' "$CURL_LOG")" "AC3 the PR is read again afte
 # A budget shorter than the reset: it sleeps its budget, reads again, then ends
 # as a rate limit (exit 7), not as a pending or failed check.
 : > "$CURL_LOG"; : > "$SANDBOX/sleep.log"
-printf '%s\n%s\n' "$RL_BODY" "$RL_BODY" > "$CURL_QUEUE"
+printf '%s\n%s\n%s\n%s\n' "$RL_BODY" "$RL_BODY" "$RL_BODY" "$RL_BODY" > "$CURL_QUEUE"
 TALOS_RETRY_SLEEP_SCALE=1 PATH="$SANDBOX/sleepbin:$PATH" bash "$VCS" pr-checks-required 9 --wait 100 >/dev/null 2>"$ERR"; RC=$?
 assert_eq "7" "$RC" "AC3 a rate limit that outlasts the budget ends exit 7"
 S="$(head -n 1 "$SANDBOX/sleep.log" 2>/dev/null)"

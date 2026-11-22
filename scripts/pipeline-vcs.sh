@@ -263,6 +263,11 @@
 #                                             az rest PATCH with lastMergeSourceCommit
 #                                             and the same completionOptions; file:
 #                                             ignored. Without it: unchanged.
+#   rate-limit                               The core and graphql quota of GitHub's
+#                                             REST API (#1004): {"core": {"limit",
+#                                             "remaining", "reset"}, "graphql": {...}}.
+#                                             Costs no quota. Exit 2 on a provider
+#                                             other than github/github-api.
 #   enqueue-pr <n>                           Put the PR into its base branch's
 #                                             GitHub merge queue (#932, the queue's
 #                                             github mode): GraphQL enqueuePullRequest
@@ -1173,6 +1178,76 @@ for line in sys.stdin:
 #   returns before its first network call when $DRY_RUN = true.
 _RETRY_STDERR_PATTERN='HTTP 429|API rate limit exceeded|secondary rate limit|abuse detection|rate limited|too many requests'
 
+# A rate limit that will not lift soon is a wait for the caller, not a failure
+# (#1004). A GitHub answer that is a rate limit by the real signs (HTTP 403 or 429
+# with x-ratelimit-remaining: 0, `API rate limit exceeded`, `secondary rate limit`
+# or a Retry-After) sets _WR_RL_SPEC=1 and, when the answer says when, _WR_RL_EPOCH
+# (the epoch the limit lifts). A limit that lifts within the 60 s retry cap is
+# retried here as before. One that does not, or one still on after the retries,
+# is recorded in <config cache dir>/rate-limited (the later epoch wins) and the
+# verb ends `rate-limited reset=<epoch>` on stderr with exit 7, whatever it would
+# have exited with, by _vcs_rl_exit_hook (a verb that carried on past the failed
+# read, and exited 0, is not turned into a failure). A bare 429, with none of the
+# signs above, keeps the retry-and-fail-with-1 behaviour. Poll loops read the
+# record themselves (_vcs_rl_take): they wait for the reset instead of failing.
+_VCS_RL_CODE=7
+_WR_RL_SPEC=""
+_WR_RL_EPOCH=""
+_vcs_rl_file() { [ -n "${_CFG_CACHE_DIR:-}" ] && [ -d "$_CFG_CACHE_DIR" ] && printf '%s/rate-limited' "$_CFG_CACHE_DIR"; }
+# _vcs_rl_core_reset -- the epoch the core quota resets at, from /rate_limit (it
+# costs no quota), when the quota is spent; nothing otherwise.
+_vcs_rl_core_reset() {
+  local _rc_hdr _rc_raw
+  [ -n "${_GH_XPORT:-}" ] || return 0
+  _rc_hdr="$(mktemp)" || return 0
+  _rc_raw="$(_gh_http GET rate_limit "$_GH_JSON" "$_rc_hdr" 2>/dev/null)" || _rc_raw=""
+  rm -f "$_rc_hdr"
+  printf '%s' "${_rc_raw%$'\n'*}" | python3 -I -c '
+import json, sys
+try:
+    c = json.load(sys.stdin)["resources"]["core"]
+    print(c["reset"] if c.get("remaining") == 0 and isinstance(c["reset"], int) else "")
+except Exception:
+    print("")' 2>/dev/null
+}
+# _vcs_rl_record [<epoch>] -- note a rate limit given up on. Without an epoch (the
+# answer did not say when) the core quota's reset, else a minute from now.
+_vcs_rl_record() {
+  local _rr_f _rr_e="${1:-}" _rr_old
+  _rr_f="$(_vcs_rl_file)" || return 0
+  [ -n "$_rr_e" ] || _rr_e="$(_vcs_rl_core_reset)"
+  case "$_rr_e" in ''|*[!0-9]*) _rr_e=$(( $(date +%s) + 60 )) ;; esac
+  _rr_old="$(cat "$_rr_f" 2>/dev/null)"
+  case "$_rr_old" in ''|*[!0-9]*) _rr_old=0 ;; esac
+  [ "$_rr_e" -gt "$_rr_old" ] && printf '%s\n' "$_rr_e" > "$_rr_f"
+  return 0
+}
+# _vcs_rl_peek -- print the recorded reset epoch; non-zero, nothing printed, when none.
+_vcs_rl_peek() {
+  local _rt_f _rt_e
+  _rt_f="$(_vcs_rl_file)" || return 1
+  _rt_e="$(cat "$_rt_f" 2>/dev/null)"
+  case "$_rt_e" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$_rt_e"
+}
+# _vcs_rl_clear -- forget the record (a poll loop that has waited for it).
+_vcs_rl_clear() {
+  local _rc_f
+  _rc_f="$(_vcs_rl_file)" || return 0
+  : > "$_rc_f"
+}
+_vcs_rl_exit_hook() {
+  local _rh_f _rh_e
+  [ "${_TALOS_EXIT_STATUS:-0}" -ne 0 ] || return 0
+  _rh_f="$(_vcs_rl_file)" || return 0
+  _rh_e="$(cat "$_rh_f" 2>/dev/null)"
+  case "$_rh_e" in ''|*[!0-9]*) return 0 ;; esac
+  printf 'rate-limited reset=%s\n' "$_rh_e" >&2
+  _TALOS_EXIT_OVERRIDE="$_VCS_RL_CODE"
+}
+# First in the list: the hook that removes the cache dir runs after it.
+_TALOS_EXIT_HOOKS=('_vcs_rl_exit_hook' ${_TALOS_EXIT_HOOKS[@]+"${_TALOS_EXIT_HOOKS[@]}"})
+
 _with_retry() {
   local _wr_verb="$1"; shift
   local _wr_max _wr_scale _wr_attempt=0 _wr_wait _wr_out _wr_err _wr_rc _wr_err_text
@@ -1193,6 +1268,8 @@ _with_retry() {
   while :; do
     _WR_RETRY_AFTER=""
     _WR_RETRYABLE=""
+    _WR_RL_SPEC=""
+    _WR_RL_EPOCH=""
     _wr_out="$(mktemp)"
     _wr_err="$(mktemp)"
     "$@" >"$_wr_out" 2>"$_wr_err"
@@ -1208,14 +1285,24 @@ _with_retry() {
 
     if [ -n "$_WR_RETRYABLE" ] || grep -qiE "$_RETRY_STDERR_PATTERN" <<<"$_wr_err_text"; then
       rm -f "$_wr_out" "$_wr_err"
+      # #1004: a limit that lifts later than the retry cap is not waited out here.
+      if [ "$_WR_RL_SPEC" = 1 ] && [ -n "$_WR_RL_EPOCH" ] && [ "$_WR_RL_EPOCH" -gt $(( $(date +%s) + 60 )) ]; then
+        printf '%s\n' "$_wr_err_text" >&2
+        printf 'pipeline-vcs: %s: rate-limited until %s; not retrying here\n' "$_wr_verb" "$_WR_RL_EPOCH" >&2
+        _vcs_rl_record "$_WR_RL_EPOCH"
+        return 1
+      fi
       _wr_attempt=$((_wr_attempt + 1))
       if [ "$_wr_attempt" -gt "$_wr_max" ]; then
         printf 'pipeline-vcs: %s: rate-limited; exhausted %s retries; last error: %s\n' \
           "$_wr_verb" "$_wr_max" "$_wr_err_text" >&2
+        [ "$_WR_RL_SPEC" != 1 ] || _vcs_rl_record "$_WR_RL_EPOCH"
         return 1
       fi
       if [ -n "${_WR_RETRY_AFTER:-}" ] && [ "$_WR_RETRY_AFTER" -gt 0 ] 2>/dev/null; then
         _wr_wait="$_WR_RETRY_AFTER"
+      elif [ "$_WR_RL_SPEC" = 1 ] && [ -n "$_WR_RL_EPOCH" ] && [ "$_WR_RL_EPOCH" -gt "$(date +%s)" ]; then
+        _wr_wait=$(( _WR_RL_EPOCH - $(date +%s) ))
       else
         _wr_wait=$(( 2 ** _wr_attempt ))
       fi
@@ -4846,7 +4933,7 @@ _gh_pull_cached() {
 # file, since a global would not survive _with_retry's command substitution.
 _gh_once() {
   local _m="$1" _p="$2" _acc="$3" _data="${4:-}" _next_file="${5:-}"
-  local _hdr _full _status _body _rc=0 _reset
+  local _hdr _full _status _body _rc=0 _reset _rem _ra _rl=0 _sign=0 _now
   [ "$_m" = GET ] || _gh_cache_clear
   _hdr="$(mktemp)"
   _full="$(_gh_http "$_m" "$_p" "$_acc" "$_hdr" "$_data")" || {
@@ -4863,10 +4950,31 @@ _gh_once() {
     | sed 's/<\([^>]*\)>; rel="next"/\1/' > "$_next_file"
   if [ "${_status:-0}" -ge 300 ] 2>/dev/null; then
     _GH_ERR_BODY="$_body"
-    if [ "$_status" = "429" ] || { [ "$_status" = "403" ] && grep -qiE 'secondary rate limit|abuse detection' <<<"$_body"; }; then
+    _ra="$(grep -i '^retry-after:' "$_hdr" 2>/dev/null | head -1 | sed 's/[^0-9]*//g' | tr -d '[:space:]')"
+    [ "${#_ra}" -le 9 ] || _ra=999999999   # an untrusted header cannot overflow the arithmetic below
+    _reset="$(grep -i '^x-ratelimit-reset:' "$_hdr" 2>/dev/null | sed 's/[^0-9]*//g' | tr -d '[:space:]')"
+    [ "${#_reset}" -le 12 ] || _reset=""
+    _rem="$(grep -i '^x-ratelimit-remaining:' "$_hdr" 2>/dev/null | head -1 | sed 's/[^0-9]*//g' | tr -d '[:space:]')"
+    # #1004: the real signs of a rate limit: no quota left, its text, a Retry-After.
+    if [ "$_rem" = "0" ] || [ -n "$_ra" ] || grep -qiE 'API rate limit exceeded|secondary rate limit|abuse detection' <<<"$_body"; then
+      _sign=1
+    fi
+    # A 429 is a limit whatever it carries; a 403 only with a sign (any other 403 is a refusal).
+    if [ "$_status" = "429" ] || { [ "$_status" = "403" ] && [ "$_sign" = 1 ]; }; then
+      _rl=1
+    fi
+    if [ "$_rl" = 1 ]; then
       _WR_RETRYABLE=1
-      _WR_RETRY_AFTER="$(grep -i '^retry-after:' "$_hdr" 2>/dev/null | head -1 | sed 's/[^0-9]*//g' | tr -d '[:space:]')"
-      _reset="$(grep -i '^x-ratelimit-reset:' "$_hdr" 2>/dev/null | sed 's/[^0-9]*//g' | tr -d '[:space:]')"
+      _WR_RETRY_AFTER="$_ra"
+      if [ "$_sign" = 1 ]; then
+        _WR_RL_SPEC=1
+        _now="$(date +%s)"
+        if [ -n "$_ra" ]; then
+          _WR_RL_EPOCH=$(( _now + 10#$_ra ))
+        elif [ -n "$_reset" ] && [ "$_reset" -gt 0 ] 2>/dev/null; then
+          _WR_RL_EPOCH="$_reset"
+        fi
+      fi
       printf 'github: HTTP %s on %s (rate-limited%s)\n' "$_status" "$VERB" "${_reset:+; reset at $_reset}" >&2
     elif [ -n "$_next_file" ]; then
       printf 'github: HTTP %s fetching page: %s\n' "$_status" "$_p" >&2
@@ -6075,6 +6183,22 @@ print('yes' if ((d.get('head') or {}).get('repo') or {}).get('full_name') == ((d
           || echo "pipeline-vcs: merge-pr: PR #$n merged, but its branch '$_mp_ref' could not be deleted" >&2
       fi
       echo "Merged PR #$n"
+      ;;
+    rate-limit)
+      # (#1004) the core and graphql quota, from GET /rate_limit, which costs no
+      # quota: {"core": {"limit", "remaining", "reset"}, "graphql": {...}}.
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET rate_limit"; return 0; }
+      _gh_req GET rate_limit | python3 -I -c '
+import json, sys
+res = json.load(sys.stdin).get("resources") or {}
+out = {}
+for k in ("core", "graphql"):
+    r = res.get(k) or {}
+    if not all(isinstance(r.get(f), int) and not isinstance(r.get(f), bool) for f in ("limit", "remaining", "reset")):
+        sys.exit(1)
+    out[k] = {f: r[f] for f in ("limit", "remaining", "reset")}
+print(json.dumps(out))' \
+        || { echo "pipeline-vcs: rate-limit: could not read the quota" >&2; exit 1; }
       ;;
     enqueue-pr)
       # (#932) the merge queue's github mode: the PR goes into its base branch's merge
@@ -10895,8 +11019,9 @@ case "$VERB" in
       exit 2
     fi
     ;;
-  enqueue-pr)
+  enqueue-pr|rate-limit)
     # (#932) GitHub's merge queue only: no GitLab merge train or Azure equivalent.
+    # (#1004) rate-limit reads GitHub's quota; no other provider has one.
     if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ]; then
       echo "pipeline-vcs: $VERB: not implemented for provider '$PROVIDER'" >&2
       exit 2
@@ -12435,7 +12560,7 @@ _vcs_draft_gate_dispatch() {
 # TALOS_RETRY_SLEEP_SCALE=0 makes a test instant and still deterministic. The
 # poll interval backs off 30 s -> 60 s -> 120 s (#554).
 _vcs_pr_checks_required_dispatch() {
-  local _w="" _keep=() _i=0 _a _start _slept=0 _polls=0 _el _left _step _scale _rc
+  local _w="" _keep=() _i=0 _a _start _slept=0 _polls=0 _el _left _step _scale _rc _rl_at
   while [ "$_i" -lt "${#ARGS[@]}" ]; do
     _a="${ARGS[$_i]}"
     if [ "$_a" = "--wait" ]; then
@@ -12470,17 +12595,27 @@ _vcs_pr_checks_required_dispatch() {
   case "$_scale" in ''|*[!0-9.]*) _scale=1 ;; esac
   _start=$SECONDS
   while :; do
+    # A read that met a rate limit it gave up on (#1004) left its reset on record:
+    # the read read as nothing reported (exit 2). Wait for the reset, within the
+    # budget, instead of polling the API that is refusing us or failing at once.
+    # Still on at the budget: the record stays, and the exit is 7.
+    _vcs_rl_clear
     ( _vcs_dispatch_provider ); _rc=$?
-    [ "$_rc" -ne 2 ] && break
+    _rl_at="$(_vcs_rl_peek)" || _rl_at=""
+    [ -n "$_rl_at" ] || [ "$_rc" -eq 2 ] || break
     _el=$((SECONDS - _start)); [ "$_slept" -gt "$_el" ] && _el=$_slept
     # TALOS_RETRY_SLEEP_SCALE=0 (tests) makes every sleep instant, so the wall
     # clock measures only the machine's load there: count the nominal sleeps (#593).
     case "$_scale" in 0 | 0.0 | 0.00) _el=$_slept ;; esac
     _left=$((_w - _el))
     [ "$_left" -le 0 ] && break
-    # Back off: 30 s, 60 s, then 120 s (#554) -- a CI run takes minutes, and every
-    # poll is two REST reads, so a fixed 30 s step spent most of them on "pending".
-    case "$_polls" in 0) _step=30 ;; 1) _step=60 ;; *) _step=120 ;; esac
+    if [ -n "$_rl_at" ]; then
+      _step=$((_rl_at - $(date +%s))); [ "$_step" -lt 1 ] && _step=1
+    else
+      # Back off: 30 s, 60 s, then 120 s (#554) -- a CI run takes minutes, and every
+      # poll is two REST reads, so a fixed 30 s step spent most of them on "pending".
+      case "$_polls" in 0) _step=30 ;; 1) _step=60 ;; *) _step=120 ;; esac
+    fi
     _polls=$((_polls + 1))
     [ "$_left" -lt "$_step" ] && _step=$_left
     sleep "$(awk -v s="$_step" -v k="$_scale" 'BEGIN { print s * k }')"
