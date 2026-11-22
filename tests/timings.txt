@@ -229,6 +229,7 @@
 88 test-qa-environment-751.sh
 46 test-qa-fail-verdict-814.sh
 40 test-qa-flaky-e2e-717.sh
+10 test-qa-gate-no-ci-wait.sh
 40 test-qa-guard-693.sh
 11 test-qa-no-runner-824.sh
 2 test-qa-restore-stub-mode-821.sh
