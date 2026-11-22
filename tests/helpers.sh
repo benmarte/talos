@@ -399,6 +399,34 @@ wait_until() {
   "$@"
 }
 
+# lock_contention_run <resource> <workers> <n> <timeout_s> <errdir>: <workers>
+# background workers each do <n> read-sleep-write increments of the counter file
+# <resource> through with_lock (scripts/pipeline-lock.sh) with <timeout_s>; each
+# worker's stderr goes to <errdir>/w<k>.err so a timed-out acquire stays visible.
+lock_contention_run() {
+  local _lc_res="$1" _lc_workers="$2" _lc_n="$3" _lc_to="$4" _lc_err="$5" _lc_k _lc_pids=""
+  for _lc_k in $(seq 1 "$_lc_workers"); do
+    (
+      . "$TALOS_ROOT/scripts/pipeline-lock.sh"
+      _lc_i=0
+      while [ "$_lc_i" -lt "$_lc_n" ]; do
+        with_lock "$_lc_res" "$_lc_to" -- bash -c '
+          val=$(cat "$1"); sleep 0.01; printf "%s" "$((val + 1))" > "$1"' _ "$_lc_res"
+        _lc_i=$((_lc_i + 1))
+      done
+    ) 2>"$_lc_err/w$_lc_k.err" &
+    _lc_pids="$_lc_pids $!"
+  done
+  for _lc_k in $_lc_pids; do wait "$_lc_k"; done
+}
+
+# lock_contention_verdict <errdir> <final> <expected>: "ok", or what went wrong.
+lock_contention_verdict() {
+  if [ "$2" = "$3" ]; then printf 'ok'; else
+    printf 'lost update with no timeout, %s of %s' "$2" "$3"
+  fi
+}
+
 finish() {
   printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$_PASS" "$_FAIL"
   [ "$_FAIL" -eq 0 ]
