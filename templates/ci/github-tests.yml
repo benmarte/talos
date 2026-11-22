@@ -8,6 +8,11 @@
 # already exists), then adjust the paths, job name, and test command for your
 # project. Talos dogfoods this exact template in its own repo.
 #
+# Pull requests run the FULL suite here, unlike Talos's own .github/workflows/tests.yml,
+# which runs only the tests a PR's changes select (run-tests.sh --changed HEAD^1). That
+# partial run is safe only because Talos has a merge queue that runs the full suite on
+# every candidate before merge; a target repo may have no queue to back it up.
+#
 # What each knob buys you, and the trade-off it makes:
 #
 #   paths-ignore (push)

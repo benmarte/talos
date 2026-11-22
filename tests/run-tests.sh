@@ -20,7 +20,9 @@
 #               tests/timings.txt (`<secs> <basename>` per line, refreshed by
 #               tests/update-timings.sh); a file missing from it gets a fixed
 #               default weight. The partition is computed over the whole suite,
-#               so a pattern / --for filter composes with it. The base-ref count
+#               so a pattern / --for filter composes with it. A shard whose
+#               slice is empty prints `no tests in this shard` and exits 0.
+#               The base-ref count
 #               check is skipped in a shard (run it once with --count-only).
 #   --count-only  run only the base-ref count check (missing test files vs
 #               tests/retired-tests.txt) and exit; an unresolvable base ref is
@@ -81,9 +83,18 @@
 #                                                        whose contents
 #                                                        reference the path's
 #                                                        directory prefix
+#                         *.md (any other Markdown path, docs/** and
+#                                                        CHANGELOG.md included)
+#                                                     -> the test files whose
+#                                                        contents name the path
+#                                                        (its repo-relative
+#                                                        path, fixed string);
+#                                                        none naming it selects
+#                                                        nothing, no fallback
 #                       Fail-safe (full suite, one-line stderr note):
 #                         tests/stubs/*, tests/helpers.sh, tests/run-tests.sh,
-#                         talos.pipeline.*, .github/**, any path matching no
+#                         talos.pipeline.*, .github/**, hooks/**, install.sh,
+#                         any path matching no
 #                         rule above, or a scripts/pipeline-<name>.sh whose
 #                         convention + referencing rules match zero files
 #                         (e.g. no tests/test-<name>*.sh exists and no test
@@ -561,7 +572,7 @@ _fail_open() {  # $1=message (no trailing punctuation)
 _map_changed_path() {
   local p="$1" base name before
   case "$p" in
-    tests/stubs/*|tests/helpers.sh|tests/run-tests.sh|talos.pipeline.*|.github/*)
+    tests/stubs/*|tests/helpers.sh|tests/run-tests.sh|talos.pipeline.*|.github/*|hooks/*|install.sh)
       _fail_open "no test mapping for '$p'"
       ;;
     tests/test-*.sh)
@@ -618,6 +629,12 @@ _map_changed_path() {
         skills/*) _add_referencing "skills/" ;;
         templates/*) _add_referencing "templates/" ;;
       esac
+      ;;
+    *.md)
+      # Any other Markdown path (docs/**, CHANGELOG.md, README.md ...) selects
+      # the tests whose contents name it. Naming none selects nothing: it is
+      # not a fail-safe path, so it never forces the full suite (#972).
+      _add_referencing "$p"
       ;;
     *)
       _fail_open "no test mapping for '$p'"
@@ -689,7 +706,11 @@ fi
 # selected turned out not to exist under tests/ (deleted, renamed, or a
 # mapping bug). "0 of 0 passed" is not a pass; it means the selection is
 # broken, so fail loudly instead of reporting a silent green.
-if [ "$TARGETED_ACTIVE" -eq 1 ] && [ "$FULL_SUITE" -eq 0 ] && [ "${#ALL_FILES[@]}" -eq 0 ]; then
+# An empty SELECTION under --shard is a legitimate empty slice (the sharding
+# step below reports it and passes); a non-empty selection whose files do not
+# exist is still the mapping bug this refuses.
+if [ "$TARGETED_ACTIVE" -eq 1 ] && [ "$FULL_SUITE" -eq 0 ] && [ "${#ALL_FILES[@]}" -eq 0 ] \
+   && { [ -z "$SHARD_N" ] || [ "${#SELECTED_SET[@]}" -gt 0 ]; }; then
   echo "run-tests.sh: --for/--changed selected 0 test file(s) to run -- refusing to report a pass; check the mapping in _map_changed_path (a selected name may not exist under tests/)" >&2
   exit 1
 fi
@@ -749,6 +770,12 @@ $(basename "$t")
   ALL_FILES=()
   [ "${#_in_shard[@]}" -gt 0 ] && ALL_FILES=("${_in_shard[@]}")
   echo "SHARD $SHARD_I/$SHARD_N: ${#ALL_FILES[@]} test file(s)" >&2
+  # A slice with no file passes: a small selection spread over n shards leaves
+  # some empty, and that must not be red (#972).
+  if [ "${#ALL_FILES[@]}" -eq 0 ]; then
+    echo "no tests in this shard"
+    exit 0
+  fi
 fi
 
 # --budget-s N (#806): refuse a selection whose estimated wall time is over N
