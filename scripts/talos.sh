@@ -169,6 +169,12 @@
 #            `talos.sh post-merge <pr> <issue>`, `merged=<pr> issue=<n>`; a failed merge-pr is block
 #            reason=merge-failed with `pr=<pr>` and stops the merges; a failed
 #            post-merge is `warn reason=post-merge-failed pr=<pr>`. verdict=merged.
+#         The drain (#981): the runner holds the lock for the whole invocation. After
+#         a pass that merged or ejected it reads the queue again; with PRs that no
+#         batch of this invocation held it runs the next pass (steps 1-9, each
+#         printing its own `verdict=` and lines), until the queue is empty, a pass
+#         ends wait|block (or stop), or merge.queue_batch * 4 PRs were handled.
+#         The last pass's lines end the output; queue-busy and the lock are unchanged.
 #         The candidate is deleted on every exit. Events (post_stage, role
 #         orchestrator, the first PR's issue for a batch): queue_batch_start at
 #         the first push, queue_batch_pass when green, queue_merge per merged PR
@@ -391,7 +397,7 @@
 #         A gate `redispatch reason=queue-ejected` (#931) is the same developer
 #         fix round, its summary `PR #<pr> was ejected from the merge queue: ...`.
 #         A gate `wait reason=queued` (merge.queue: talos) runs `queue run` once
-#         and ends `stop queue <its lines, warns dropped>` (exit 0, #930).
+#         (the runner that holds the lock drains the queue, #981) and ends `stop queue <its lines, warns dropped>` (exit 0, #930).
 #         An untargeted run drains the queue: once `post-merge` reports the
 #         checkout `returned`, `synced` or `kept`, it flushes its output, runs its
 #         exit hooks and execs `$SCRIPT_DIR/talos.sh run` for the next pass (same
@@ -1823,6 +1829,7 @@ _QR_RED=""
 _QR_BAD=""
 _QR_ISO=""
 _QR_POLLS=120
+_QR_BATCH=3
 
 # _talos_queue_wt_drop: remove the throwaway worktree, if any.
 _talos_queue_wt_drop() {
@@ -1845,6 +1852,46 @@ _talos_queue_drop() {
 }
 
 _talos_queue_exit_hook() { _talos_queue_wt_drop; _talos_queue_drop; }
+
+# The drain (#981): the PRs of the batches this invocation handled (" 11 12 ") and
+# how many that is, so a later pass never takes one again and the loop is bounded.
+_QR_SEEN=" "
+_QR_HANDLED=0
+
+# _talos_queue_fresh: _QROWS without the PRs this invocation already handled, in
+# _QFRESH. A merged PR can still be in a stale read; one left out of a batch (a
+# conflict) went to the merge-base task and is not taken again here.
+_talos_queue_fresh() {
+  local _p _r
+  _QFRESH=""
+  while read -r _p _r; do
+    [ -z "$_p" ] || [[ "$_QR_SEEN" == *" $_p "* ]] || _QFRESH="$_QFRESH$_p $_r"$'\n'
+  done <<< "$_QROWS"
+  _QFRESH="${_QFRESH%$'\n'}"
+}
+
+# _talos_queue_finish <verdict> <PRs in the candidate> <batch rows> (#981): the end
+# of a pass that merged or ejected. The candidate is cleaned up, then the queue is
+# read again under the same lock: with PRs that no batch of this invocation held,
+# and fewer than merge.queue_batch * 4 PRs handled, the pass's own lines are
+# printed (`verdict=` first, as ever) and 0 is returned for the next pass. Else
+# (an empty queue, the bound, an unreadable queue) the pass's verdict ends the run.
+_talos_queue_finish() {
+  local _p _r
+  _QR_HANDLED=$((_QR_HANDLED + $2))
+  while read -r _p _r; do _QR_SEEN="$_QR_SEEN$_p "; done <<< "$3"
+  _talos_queue_wt_drop
+  _talos_queue_drop warn
+  [ "$_QR_HANDLED" -lt $((_QR_BATCH * 4)) ] || _talos_verdict "$1"
+  _talos_trust
+  _talos_queue_load "$_QR_BASE" || _talos_verdict "$1"
+  _talos_queue_fresh
+  [ -n "$_QFRESH" ] || _talos_verdict "$1"
+  { printf 'verdict\0%s\0' "$1"; cat "$_TALOS_OUT"; } > "$_TALOS_OUT.v" \
+    && mv "$_TALOS_OUT.v" "$_TALOS_OUT" || _talos_stop scratch-unavailable
+  _talos_flush
+  : > "$_TALOS_OUT"
+}
 
 # _talos_queue_end <verdict> [<reason>]: clean up, then print the verdict.
 _talos_queue_end() {
@@ -2070,6 +2117,7 @@ _talos_queue_run() {
     _talos_stop config-unreadable
   fi
   _QR_POLLS=$((10#$_tmo / 30))
+  _QR_BATCH="$((10#$_batch))"
   # merge.queue_retry (#950): 0-3, the re-runs of a red candidate before it is
   # bisected and ejected. Exactly one digit, so a leading zero or 1.5 is refused.
   _retry="$(cfg merge.queue_retry)"
@@ -2091,15 +2139,21 @@ _talos_queue_run() {
   _lock_acquire "$(git rev-parse --git-common-dir 2>/dev/null || echo .git)/talos-queue-${_base//[!A-Za-z0-9._-]/_}" 0 2>/dev/null \
     || _talos_queue_end wait queue-busy
 
+  # The drain (#981): steps 1-9 are one pass. A pass that merged or ejected goes
+  # on to the next (_talos_queue_finish) while PRs that no batch of this
+  # invocation held are queued, under the same lock.
+  while :; do
   # 1. Stale candidates of this base.
   _talos_queue_cleanup "$_prefix$_base-"
+  _t0=""; _recuts=0
   while :; do
   _picked=""; _csv=""; _size=0; _n1=""; _branches=()
   # 2-3. The queue, and its first merge.queue_batch PRs with their issues.
   _talos_trust
   _talos_queue_load "$_base" || _talos_queue_end wait queue-state-unverified
-  [ -n "$_QROWS" ] || _talos_queue_end empty
-  _rows="$(printf '%s\n' "$_QROWS" | head -n "$_batch")"
+  _talos_queue_fresh
+  [ -n "$_QFRESH" ] || _talos_queue_end empty
+  _rows="$(printf '%s\n' "$_QFRESH" | head -n "$_batch")"
   _rx='^(fix|feat)/issue-([0-9]+)(-|$)'
   while read -r _p _qh _qe _br; do
     [[ "$_br" =~ $_rx ]] || _talos_queue_end wait queue-state-unverified
@@ -2170,7 +2224,9 @@ _talos_queue_run() {
     _talos_queue_bisect "$_b" "$_method" "$_prefix$_base-" "$_picked"
     _talos_queue_eject "$_base" "$(printf '%s\n' "$_picked" | grep -c .)" "$_t0"
     _picked="$(printf '%s\n' "$_picked" | awk -v p="${_QR_BAD%% *}" 'NF && $1 != p')"
-    [ -n "$_picked" ] || _talos_queue_end ejected
+    # Every PR of the batch ejected: the pass ends, the drain may start the next
+    # (continue 3: the poll loop, the re-cut loop, then the pass loop).
+    [ -n "$_picked" ] || { _talos_queue_finish ejected "$_size" "$_rows"; continue 3; }
     _talos_queue_cut "$_b" "$_method" "$_picked"
     _talos_queue_push "$_prefix$_base-" "$(_talos_queue_csv "$_picked")"
     _QR_PICKED="$_picked"; _rt=0
@@ -2211,7 +2267,8 @@ _talos_queue_run() {
     [ "$_RC" -eq 0 ] || _talos_warn post-merge-failed "pr=$_p"
     _talos_emit merged "$_p issue=$_n"
   done 3<<< "$_picked"
-  _talos_queue_end merged
+  _talos_queue_finish merged "$_size" "$_rows"
+  done
 }
 
 # gate merge <pr> <issue>: Step 4 in its order, one verdict. It writes only what
@@ -5705,6 +5762,13 @@ _talos_run_loop() {
         _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
         case "$_pr$_n" in ''|*[!0-9]*) _talos_stop state-unavailable ;; esac
         _talos_run_blocked_fix "$_pr" "$_n" answered 0 || _talos_stop state-unavailable ;;
+      "dispatch stage=qa pr="*" issue="*)
+        # A conflict with the base is synced mechanically before QA (#983).
+        _pr="$(sed -n 's/.* pr=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
+        _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
+        case "$_pr$_n" in ''|*[!0-9]*) _talos_stop state-unavailable ;; esac
+        _talos_run_presync "$_pr" "$_n"
+        _talos_run_dispatch "$_RUN_ACT" ;;
       "dispatch stage="*)
         _talos_run_dispatch "$_RUN_ACT" ;;
       *)
@@ -6494,6 +6558,30 @@ _talos_run_lease() {
   esac
 }
 
+# _talos_run_presync <pr> <issue> (#983): before a QA dispatch (and the CI wait
+# that precedes it), a PR that conflicts with its base gets the mechanical sync
+# the merge gate's stale-base step uses, `pipeline-mergebase.sh`, under every
+# merge.queue value (it is not the sibling update-branch sync). Exit 0 with the
+# PR no longer conflicting: the run ends on `wait reason=base-synced` and QA is
+# not dispatched, so no attempt is counted; the pushed head is CI-verified by
+# the next pass, and the #862 patch rule keeps the approvals. Anything else
+# (mergeable, unreadable, exit 3 or 1, still conflicting) returns, and QA runs
+# as before: its "conflicts with base" FAIL and the developer merge-base round.
+# The caller holds the issue's lease, which this releases when it ends the run.
+_talos_run_presync() {
+  local _pr="$1" _n="$2" _r=0
+  _talos_cap _vcs pr-mergeable "$_pr"
+  [ "$_RC" -eq 1 ] || return 0
+  _talos_run_capture mergebase bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_pr"
+  [ "$_RC" -eq 0 ] || return 0
+  _vcs pr-mergeable "$_pr" > /dev/null || _r=$?
+  [ "$_r" -ne 1 ] || return 0
+  _talos_collect_drop   # the push moved the PR's head: the next pass reads it fresh
+  _talos_lease_release "$_n"
+  _talos_emit stop "action=wait reason=base-synced pr=$_pr issue=$_n"
+  _talos_flush; exit 0
+}
+
 # _talos_run_draft_complete <pr> <issue> (#516): the draft-window completion,
 # called from the run loop's wait arm when the resolver answered `ready` --
 # every enabled draft-window approval is fresh at the current head, so the
@@ -6561,6 +6649,8 @@ _talos_run_draft_complete() {
   case "$(cfg roles.qa | tr '[:upper:]' '[:lower:]')" in
     false) _talos_lease_release "$_n"; return 0 ;;
   esac
+  # A conflict with the base is synced mechanically before CI or QA is asked (#983).
+  _talos_run_presync "$_pr" "$_n"
   # The one CI wait, qa_mode: ci only (SKILL 3d's table): B =
   # min(cfg verify.ci_wait_s, cfg verify.timeout_ms/1000 - 30), clamped to the
   # verb's own 3600 bound, the flag omitted entirely when B is not a positive
