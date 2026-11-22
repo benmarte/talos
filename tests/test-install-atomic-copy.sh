@@ -24,6 +24,12 @@ _install() {
     bash "$src/install.sh" --global --no-agent-skills --no-statusline 2>&1
 }
 
+_install_flag() {
+  local src="$1" home="$2"; shift 2
+  env -u TALOS_HOME HOME="$home" CLAUDE_CONFIG_DIR="$home/.claude" \
+    bash "$src/install.sh" --global --no-agent-skills --no-statusline "$@" 2>&1
+}
+
 SRC="$SANDBOX/src"
 H="$SANDBOX/home"
 mkdir -p "$H"
@@ -69,5 +75,12 @@ else
   got="$(cd "$T" && ls -A | LC_ALL=C sort)"
   assert_eq "$want" "$got" "AC2 a failed copy leaves no temp file in the destination directory"
 fi
+
+# ── AC4: the skip-without-force rule and the manifest are unchanged ──────────
+printf '#!/usr/bin/env bash\n# my-edit-977\n' > "$T/$SCRIPT"
+out="$(_install_flag "$SRC" "$H" --no-overwrite)"
+assert_contains "$out" "skip (exists): $T/$SCRIPT" "AC4 --no-overwrite still skips an existing file and says so"
+assert_contains "$(cat "$T/$SCRIPT")" "my-edit-977" "AC4 --no-overwrite leaves the edited file untouched"
+assert_contains "$(cat "$H/.talos/.install-manifest")" "scripts/$SCRIPT" "AC4 the manifest still lists the installed script"
 
 finish
