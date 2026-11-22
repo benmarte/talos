@@ -5704,6 +5704,13 @@ _talos_run_loop() {
         _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
         case "$_pr$_n" in ''|*[!0-9]*) _talos_stop state-unavailable ;; esac
         _talos_run_blocked_fix "$_pr" "$_n" answered 0 || _talos_stop state-unavailable ;;
+      "dispatch stage=qa pr="*" issue="*)
+        # A conflict with the base is synced mechanically before QA (#983).
+        _pr="$(sed -n 's/.* pr=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
+        _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
+        case "$_pr$_n" in ''|*[!0-9]*) _talos_stop state-unavailable ;; esac
+        _talos_run_presync "$_pr" "$_n"
+        _talos_run_dispatch "$_RUN_ACT" ;;
       "dispatch stage="*)
         _talos_run_dispatch "$_RUN_ACT" ;;
       *)
@@ -6493,6 +6500,30 @@ _talos_run_lease() {
   esac
 }
 
+# _talos_run_presync <pr> <issue> (#983): before a QA dispatch (and the CI wait
+# that precedes it), a PR that conflicts with its base gets the mechanical sync
+# the merge gate's stale-base step uses, `pipeline-mergebase.sh`, under every
+# merge.queue value (it is not the sibling update-branch sync). Exit 0 with the
+# PR no longer conflicting: the run ends on `wait reason=base-synced` and QA is
+# not dispatched, so no attempt is counted; the pushed head is CI-verified by
+# the next pass, and the #862 patch rule keeps the approvals. Anything else
+# (mergeable, unreadable, exit 3 or 1, still conflicting) returns, and QA runs
+# as before: its "conflicts with base" FAIL and the developer merge-base round.
+# The caller holds the issue's lease, which this releases when it ends the run.
+_talos_run_presync() {
+  local _pr="$1" _n="$2" _r=0
+  _talos_cap _vcs pr-mergeable "$_pr"
+  [ "$_RC" -eq 1 ] || return 0
+  _talos_run_capture mergebase bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_pr"
+  [ "$_RC" -eq 0 ] || return 0
+  _vcs pr-mergeable "$_pr" > /dev/null || _r=$?
+  [ "$_r" -ne 1 ] || return 0
+  _talos_collect_drop   # the push moved the PR's head: the next pass reads it fresh
+  _talos_lease_release "$_n"
+  _talos_emit stop "action=wait reason=base-synced pr=$_pr issue=$_n"
+  _talos_flush; exit 0
+}
+
 # _talos_run_draft_complete <pr> <issue> (#516): the draft-window completion,
 # called from the run loop's wait arm when the resolver answered `ready` --
 # every enabled draft-window approval is fresh at the current head, so the
@@ -6560,6 +6591,8 @@ _talos_run_draft_complete() {
   case "$(cfg roles.qa | tr '[:upper:]' '[:lower:]')" in
     false) _talos_lease_release "$_n"; return 0 ;;
   esac
+  # A conflict with the base is synced mechanically before CI or QA is asked (#983).
+  _talos_run_presync "$_pr" "$_n"
   # The one CI wait, qa_mode: ci only (SKILL 3d's table): B =
   # min(cfg verify.ci_wait_s, cfg verify.timeout_ms/1000 - 30), clamped to the
   # verb's own 3600 bound, the flag omitted entirely when B is not a positive
