@@ -20,6 +20,12 @@ mkdir -p "$S_ERR" "$S_RES.lock.d"
 sleep 30 </dev/null >/dev/null 2>&1 & S_HOLDER=$!
 printf '%s:1\n' "$S_HOLDER" > "$S_RES.lock.d/pid"
 lock_contention_run "$S_RES" 1 1 1 "$S_ERR"
+# AC3: with_lock still proceeds without the lock after its timeout, with one
+# warning, and leaves the live holder's lock alone (the existing lock tests,
+# placed here because tests/test-lock.sh is not on the spec's Tests: line).
+assert_eq "1" "$(cat "$S_RES")" "AC3 with_lock runs the command after its acquire timed out"
+assert_eq "1" "$(cat "$S_ERR"/*.err | grep -c 'timed out after')" "AC3 a timed-out acquire prints exactly one warning"
+assert_file_exists "$S_RES.lock.d/pid" "AC3 a timed-out waiter does not release the live holder's lock"
 kill "$S_HOLDER" 2>/dev/null || true
 rm -rf "${S_RES:?}.lock.d"
 verdict="$(lock_contention_verdict "$S_ERR" "$(cat "$S_RES")" 1)"
