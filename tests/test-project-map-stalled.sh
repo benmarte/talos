@@ -28,16 +28,24 @@ STATE="$SANDBOX/.git/talos"
 META="$HOME/.cache/talos/meta"
 mkdir -p "$STATE" "$META"
 
-ev() {  # <event> <role> <issue> <pr> <verdict> <summary> <seconds ago> [<stage>]
+ts_ago() {  # <seconds ago>: the UTC timestamp then, one clock read
   python3 -I -c '
-import datetime, json, sys
+import datetime, sys
+print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=int(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"
+}
+ev_at() {  # <ts> <event> <role> <issue> <pr> <verdict> <summary> [<stage>]: an event at an absolute time
+  python3 -I -c '
+import json, sys
 a = sys.argv
-ts = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=int(a[7]))
-e = {"event": a[1], "role": a[2], "issue": int(a[3]), "pr": int(a[4]) if a[4] else None,
-     "verdict": a[5] or None, "summary": a[6], "ts": ts.strftime("%Y-%m-%dT%H:%M:%SZ")}
+e = {"event": a[2], "role": a[3], "issue": int(a[4]), "pr": int(a[5]) if a[5] else None,
+     "verdict": a[6] or None, "summary": a[7], "ts": a[1]}
 if len(a) > 8:
     e["stage"] = a[8]
 print(json.dumps(e))' "$@" >> "$STATE/events.jsonl"
+}
+ev() {  # <event> <role> <issue> <pr> <verdict> <summary> <seconds ago> [<stage>]; sets LAST_TS
+  LAST_TS="$(ts_ago "$7")"
+  ev_at "$LAST_TS" "$1" "$2" "$3" "$4" "$5" "$6" "${@:8}"
 }
 snap() {  # <run started seconds ago | none> <collect JSON | none>
   python3 -I -c '
@@ -88,7 +96,7 @@ cfg_with '{}'
 open_start 70 qa $(( 7 * H ))
 PAGE="$(render)"
 ROW="$(flight_row "$PAGE" 70)"
-assert_contains "$ROW" "stalled since $(secs_to_date $(( 7 * H )))" "AC1 a start older than the 6 h default reads stalled since its date" "$ROW"
+assert_contains "$ROW" "stalled since ${LAST_TS:0:10}" "AC1 a start older than the 6 h default reads stalled since its date" "$ROW"
 assert_not_contains "$ROW" "running" "AC1 a stalled stage is not marked running"
 assert_eq "0" "$(running_segments "$ROW")" "AC1 no segment of a stalled issue's stage bar is running" "$ROW"
 # the role's own key beats the global one; the global one beats 6 h
@@ -117,14 +125,15 @@ assert_eq "1" "$(tile "$PAGE" 'in flight')" "AC2 the in-flight tile counts it"
 # ── AC3: dated activity rows ─────────────────────────────────────────────────
 cfg_with '{}'
 : > "$STATE/events.jsonl"
-ev merged orchestrator 75 80 "" "" $(( 3 * 86400 ))
+# The old row is pinned to an absolute time 1 s before a minute boundary, and the
+# expected text is derived from that same string: no second clock read, so a render
+# that lands in a later minute still shows 10:59 (#967).
+OLD_TS="2020-03-01T10:59:59Z"
+ev_at "$OLD_TS" merged orchestrator 75 80 "" ""
 ev merged orchestrator 76 81 "" "" 20
 snap none none
 PAGE="$(render)"
-sleep $(( 61 - 10#$(date -u +%S) ))  # AC2 (#967) the render lands across a minute boundary
-OLD="$(python3 -I -c '
-import datetime
-print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=3 * 86400)).strftime("%Y-%m-%d %H:%M"))')"
+OLD="${OLD_TS:0:10} ${OLD_TS:11:5}"
 assert_contains "$PAGE" "<time>$OLD</time>" "AC3 a row from before today shows the date and the time" "$PAGE"
 NEW_ROW="$(grep -o '<time>[^<]*</time><span><a[^>]*>#76' <<< "$PAGE" | head -1)"
 assert_contains "$NEW_ROW" "<time>" "AC3 the row from today is on the page" "$PAGE"
