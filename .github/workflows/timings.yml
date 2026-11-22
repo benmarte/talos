@@ -1,0 +1,53 @@
+name: timings
+
+# Weekly drift check for tests/timings.txt (#971). The weights balance the 4 CI
+# shards (run-tests.sh --shard i/4); this refits them from the latest successful
+# `tests` push run on main and fails when the shards would run unevenly
+# ((max - min) / mean over 0.15). It opens no PR: a PR opened with the Actions
+# token does not trigger CI, and the job would need write permissions. The owner
+# refits from the uploaded artifact (tests/timings.txt.new) or with
+# `bash tests/update-timings.sh --from-ci`.
+
+on:
+  schedule:
+    # Mondays, 07:00 UTC.
+    - cron: '0 7 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shard drift
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rc=0
+          bash tests/update-timings.sh --from-ci --check > "$RUNNER_TEMP/timings-check.txt" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/timings-check.txt"
+          if [ "$rc" -ne 0 ]; then
+            {
+              echo '### tests/timings.txt drift check failed'
+              echo
+              echo '```'
+              cat "$RUNNER_TEMP/timings-check.txt"
+              echo '```'
+              echo
+              echo 'Refit from the `timings-refit` artifact (`tests/timings.txt.new`), then set `SHARD_WEIGHT_BOUND` in `tests/test-shard-weights.sh`.'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$rc"
+      - name: Upload the refit
+        if: failure() && steps.check.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: timings-refit
+          path: tests/timings.txt.new
+          if-no-files-found: ignore
