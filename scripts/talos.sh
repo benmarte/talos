@@ -4305,6 +4305,7 @@ _talos_spec_check() {
     "1:spec-check: refused tests-line-refused: "*) _SPEC_SLUG=tests-line-refused ;;
     "1:spec-check: refused tests-line-missing: "*) _SPEC_SLUG=tests-line-missing ;;
     "1:spec-check: refused tests-line-open: "*) _SPEC_SLUG=tests-line-open ;;
+    "1:spec-check: refused id-collision: "*) _SPEC_SLUG=id-collision ;;
     *) _talos_warn spec-check-unread "issue=$_n"; return 0 ;;
   esac
   # The reason is one line of fixed words, the fix, and at most 60 printable
