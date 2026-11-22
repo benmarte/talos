@@ -142,7 +142,9 @@ placement: GAP 1" "$RC:$OUT" "AC3 placement: the same id in a file off the Tests
 
 # ── AC4: spec-check and done pm refuse an open test file ─────────────────────
 OPEN="plus a new or existing file of the developer's choosing for AC2."
-sc() { OUT="$(bash "$GS/pipeline-criteria.sh" spec-check "$SANDBOX/spec.md" 2>"$ERR")"; RC=$?; }
+# From a directory with no tests/: spec-check's id-collision check (#975) reads the Tests: files there.
+mkdir -p "$SANDBOX/bare"
+sc() { OUT="$(cd "$SANDBOX/bare" && bash "$GS/pipeline-criteria.sh" spec-check "$SANDBOX/spec.md" 2>"$ERR")"; RC=$?; }
 reset_stubs
 spec "**Tests:** \`tests/test-a.sh\` $OPEN"
 sc
