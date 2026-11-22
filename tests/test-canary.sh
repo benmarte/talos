@@ -195,6 +195,51 @@ ok = (
 print('OK' if ok else 'STRUCTURE_MISMATCH')
 " 2>&1)"
   assert_eq "OK" "$yaml_out" "canary.yml: PyYAML structural check (schedule + workflow_dispatch triggers, both jobs present)"
+
+  # AC4: a nightly macOS job runs the whole suite as 4 shards.
+  mac_out="$(python3 -c "
+import yaml
+with open('$CANARY_YML') as f:
+    doc = yaml.safe_load(f)
+mac = (doc.get('jobs', {}) or {}).get('macos') or {}
+problems = []
+if not mac:
+    problems.append('no macos job')
+if 'macos-latest' not in str(mac.get('runs-on', '')):
+    problems.append('macos job must run on macos-latest')
+strategy = mac.get('strategy', {}) or {}
+if strategy.get('fail-fast') is not False:
+    problems.append('macos job must set fail-fast: false')
+if not mac.get('timeout-minutes'):
+    problems.append('macos job must set timeout-minutes')
+shards = sorted(str(s) for s in (strategy.get('matrix', {}) or {}).get('shard', []))
+if shards != ['1/4', '2/4', '3/4', '4/4']:
+    problems.append('macos job must run shards 1/4..4/4, got %r' % (shards,))
+steps = ' '.join(str(s.get('run', '')) for s in mac.get('steps', []))
+if 'run-tests.sh' not in steps or '--shard' not in steps or '--no-cache' not in steps:
+    problems.append('macos job must run run-tests.sh --no-cache ... --shard')
+print('OK' if not problems else '; '.join(problems))
+" 2>&1)"
+  assert_eq "OK" "$mac_out" "AC4 canary.yml: macos job runs shards 1/4..4/4 on macos-latest, fail-fast false, with a timeout"
+
+  # AC5: base-currency only counts files against origin/main, never the suite.
+  base_out="$(python3 -c "
+import yaml
+with open('$CANARY_YML') as f:
+    doc = yaml.safe_load(f)
+job = (doc.get('jobs', {}) or {}).get('base-currency') or {}
+runs = [str(s.get('run', '')) for s in job.get('steps', []) if 'run-tests.sh' in str(s.get('run', ''))]
+problems = []
+if len(runs) != 1:
+    problems.append('base-currency must run run-tests.sh exactly once, got %d' % len(runs))
+for r in runs:
+    if '--count-only' not in r or '--base-ref origin/main' not in r:
+        problems.append('base-currency must run run-tests.sh --count-only --base-ref origin/main, got %r' % r)
+    if '--shard' in r or '--no-cache' in r:
+        problems.append('base-currency must not run the full suite, got %r' % r)
+print('OK' if not problems else '; '.join(problems))
+" 2>&1)"
+  assert_eq "OK" "$base_out" "AC5 canary.yml: base-currency runs --count-only --base-ref origin/main and no full suite"
 else
   echo "  skip: PyYAML not installed -- falling back to a structural grep"
   yml_content="$(cat "$CANARY_YML")"
@@ -204,5 +249,23 @@ else
   assert_contains "$yml_content" "real-api:"           "canary.yml: has a real-api job"
   assert_contains "$yml_content" "tests/canary/run.sh" "canary.yml: real-api job runs tests/canary/run.sh"
 fi
+
+# AC4 / AC5 (#970), plain text so they hold without PyYAML: one job's
+# non-comment lines, from its `  <job>:` key to the next job key.
+canary_job() { grep -v '^[[:space:]]*#' "$CANARY_YML" | awk -v job="  $1:" '
+  $0 == job { on = 1; next }
+  on && /^  [A-Za-z0-9_-]+:/ { on = 0 }
+  on { print }'; }
+mac_job="$(canary_job macos)"
+assert_contains "$mac_job" "runs-on: macos-latest" "AC4 canary.yml: the macos job runs on macos-latest"
+assert_contains "$mac_job" "fail-fast: false" "AC4 canary.yml: the macos job does not fail fast"
+assert_contains "$mac_job" "timeout-minutes:" "AC4 canary.yml: the macos job has a timeout-minutes"
+assert_contains "$mac_job" "shard: ['1/4', '2/4', '3/4', '4/4']" "AC4 canary.yml: the macos job runs shards 1/4 to 4/4"
+assert_contains "$mac_job" "run-tests.sh --no-cache --quiet --shard" "AC4 canary.yml: the macos job runs run-tests.sh --no-cache --quiet --shard"
+base_job="$(canary_job base-currency)"
+assert_contains "$base_job" "run-tests.sh --count-only --base-ref origin/main" \
+  "AC5 canary.yml: base-currency runs run-tests.sh --count-only --base-ref origin/main"
+assert_not_contains "$base_job" "--no-cache" "AC5 canary.yml: base-currency runs no full suite (no --no-cache)"
+assert_not_contains "$base_job" "--quiet" "AC5 canary.yml: base-currency runs no full suite (no --quiet run)"
 
 finish
