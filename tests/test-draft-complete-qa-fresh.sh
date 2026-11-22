@@ -116,7 +116,7 @@ printf 1 > "$STUB_DIR/check-approval-sha.rc"
 printf 'stale role=qa approved=aaaaaaa head=bbbbbbb\n' > "$STUB_DIR/check-approval-sha.out"
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
 assert_eq "1" "$(qa_count)" "AC3 a stale qa:pass dispatches QA"
-assert_eq "pr-checks-required 12 --wait 570>agent qa" \
+assert_eq "pr-checks-required 12 --wait 900>agent qa" \
   "$(journal | grep -oE 'pr-checks-required 12 --wait [0-9]+|^agent qa$' | tr '\n' '>' | sed 's/>$//')" "AC3 the CI wait comes before QA"
 
 # ── AC4: no qa:pass label dispatches QA ──────────────────────────────────────
