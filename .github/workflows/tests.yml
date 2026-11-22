@@ -12,7 +12,8 @@
 #
 # Layout: the suite runs as 4 time-balanced shards (`run-tests.sh --shard i/n`,
 # weights in tests/timings.txt) in parallel, plus a tiny `count` job for the
-# base-ref test-file count check (once, not per shard). The final job `test`
+# base-ref test-file count check (once, not per shard), plus `workflow-lint`
+# (actionlint on every workflow file and CI template, #1006). The final job `test`
 # needs all of them and is the ONLY required status: its check name stays
 # "test (ubuntu-latest)", exactly what talos.pipeline.json merge.required_checks
 # and branch protection name, so the merge gate needs no change.
@@ -74,6 +75,34 @@ jobs:
           BASE: ${{ github.base_ref || 'main' }}
         run: bash tests/run-tests.sh --count-only --base-ref "origin/${BASE}"
 
+  # Lints every workflow file and CI template with a pinned actionlint (#1006). GitHub
+  # refuses to start a workflow with a syntax error (0 jobs, the required check never
+  # appears), so QA only saw a timeout; nothing else validates these files in CI
+  # (the YAML checks in test-ci-tests-workflow.sh need a library CI does not install).
+  # tests/test-workflow-lint.sh runs the same lint locally when actionlint is on PATH.
+  # Keep the -ignore regex in step with LINT_IGNORE there: SC2016 is shellcheck info,
+  # used on purpose by timings.yml.
+  workflow-lint:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ACTIONLINT_VERSION: '1.7.12'
+    steps:
+      - uses: actions/checkout@v4
+      # The release's own checksums file, from the pinned tag, must match the tarball.
+      - name: Install actionlint (pinned version, checksum verified)
+        run: |
+          base="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "${RUNNER_TEMP}/${tarball}" "${base}/${tarball}"
+          curl -fsSL -o "${RUNNER_TEMP}/checksums.txt" "${base}/actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          (cd "${RUNNER_TEMP}" && grep " ${tarball}\$" checksums.txt | sha256sum -c -)
+          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}" actionlint
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+      - name: Lint the workflow files and CI templates
+        run: actionlint -ignore 'SC2016' .github/workflows/*.yml templates/ci/*.yml
+
   shard:
     if: github.event.pull_request.draft != true
     name: shard ${{ matrix.shard }} (${{ matrix.os }})
@@ -110,16 +139,17 @@ jobs:
   # fails on any failure or cancellation. always() makes it report even when a
   # needed job failed (a skipped aggregator would read as a pass to the gate).
   test:
-    needs: [count, shard]
+    needs: [count, shard, workflow-lint]
     if: always() && github.event.pull_request.draft != true
     name: test (ubuntu-latest)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require every shard and the count check
+      - name: Require every shard, the count check and the workflow lint
         env:
           COUNT: ${{ needs.count.result }}
           SHARDS: ${{ needs.shard.result }}
+          LINT: ${{ needs.workflow-lint.result }}
         run: |
-          echo "count check: $COUNT; shards: $SHARDS"
-          [ "$COUNT" = success ] && [ "$SHARDS" = success ]
+          echo "count check: $COUNT; shards: $SHARDS; workflow lint: $LINT"
+          [ "$COUNT" = success ] && [ "$SHARDS" = success ] && [ "$LINT" = success ]

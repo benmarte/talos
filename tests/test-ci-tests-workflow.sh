@@ -130,8 +130,8 @@ assert_not_contains "$repo_code" "fromJSON" \
   "AC1 tests.yml: no event-dependent os matrix is left"
 assert_contains "$repo_code" "name: test (ubuntu-latest)" \
   "AC2 tests.yml: the required job is named test (ubuntu-latest) on every event"
-assert_contains "$repo_code" "needs: [count, shard]" \
-  "AC2 tests.yml: test needs exactly count and shard"
+assert_contains "$repo_code" "needs: [count, shard, workflow-lint]" \
+  "AC2 tests.yml: test needs exactly count, shard and workflow-lint"
 assert_contains "$repo_code" "if: always() &&" \
   "AC2 tests.yml: test runs with always()"
 shard_run="$(printf '%s\n' "$repo_code" | grep 'run-tests.sh.*--shard')"
@@ -157,8 +157,8 @@ with open('$REPO_WORKFLOW') as f:
 test, shard, count = jobs.get('test', {}), jobs.get('shard', {}), jobs.get('count', {})
 needs = test.get('needs') or []
 problems = []
-if sorted(needs) != ['count', 'shard']:
-    problems.append('AC2 test must need exactly count and shard, got %r' % (needs,))
+if sorted(needs) != ['count', 'shard', 'workflow-lint']:
+    problems.append('AC2 test must need exactly count, shard and workflow-lint, got %r' % (needs,))
 if 'always()' not in str(test.get('if', '')):
     problems.append('AC2 test must run with always() so a failed shard fails it instead of skipping it')
 if str(test.get('name', '')) != 'test (ubuntu-latest)':
