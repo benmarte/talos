@@ -164,6 +164,7 @@
 #         spec-check: refused tests-line-refused: <the parser's reason and its fix>
 #         spec-check: refused tests-line-missing: <n> test criteria and no usable Tests: line (<fix>)
 #         spec-check: refused tests-line-open: name the file, QA runs no file left open: <the line>
+#         spec-check: refused id-collision: AC<n> is already labelled in <file> (an earlier issue's id): name a new test file on the Tests: line
 #       Each refusal is one line and says how to fix it: a note beside the list
 #       moves to its own line, a path holds letters, digits and _ . / - ( ) [ ],
 #       the paths go on the `Tests:` line or in a bullet list right under a bare
@@ -173,6 +174,9 @@
 #       file open (`developer's choosing`, `developer's choice`, `new or existing
 #       file`, any case); every test criterion's file is on the `Tests:` line.
 #       Other sections (Files likely to change) are not scanned (#752).
+#       id-collision (#975): a (test)/(same) criterion id `AC<n>` that a `Tests:` file already in
+#       the working tree labels (red-check's label rule, shared) is refused before any developer
+#       round; a file not there yet and a (prose: ...) id never collide.
 #       Exit 1 on a refusal. A (same) criterion counts as a test criterion. A
 #       spec with none (prose only, or no checklist) needs no `Tests:` line and
 #       is ok.
@@ -709,6 +713,18 @@ _spec_check_file() {
       echo "spec-check: refused tests-line-missing: $n_test test criteria and no usable Tests: line (put the test paths on the Tests: line or in a bullet list right under it)"
       return 1
     fi
+  fi
+  # #975: red-check's pure-text id-collision rule, on the current checkout.
+  if [ "$n_test" -gt 0 ] && [ "$found" -eq 1 ]; then
+    local id p re
+    for id in $(cmd_ids "$spec" 2>/dev/null | awk '$2 == "test" || $2 == "same" { print $1 }'); do
+      re="$(_rc_label_re "$id")"
+      for p in ${paths[@]+"${paths[@]}"}; do
+        [ -f "$p" ] && grep -qE -e "$re" -- "$p" 2>/dev/null || continue
+        echo "spec-check: refused id-collision: $id is already labelled in $p (an earlier issue's id): name a new test file on the Tests: line"
+        return 1
+      done
+    done
   fi
   echo "spec-check: ok"
 }

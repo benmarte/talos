@@ -161,6 +161,7 @@
 7 test-lean-stage-prompts.sh
 106 test-llm-profiles.sh
 33 test-lock.sh
+20 test-lock-contention.sh
 2 test-lock-reclaim.sh
 8 test-map-no-runner-907.sh
 12 test-map-refresh-889.sh
@@ -273,6 +274,7 @@
 5 test-spec-check.sh
 12 test-spec-check-752.sh
 5 test-spec-check-stdin-892.sh
+12 test-spec-check-id-collision.sh
 39 test-spec-fault-648.sh
 6 test-spec-usable-suite-813.sh
 33 test-spend-cache-split.sh
