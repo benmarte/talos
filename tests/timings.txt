@@ -52,6 +52,7 @@
 1 test-callsite-literal-defaults.sh
 44 test-canary.sh
 2 test-ci-count-merge-base.sh
+8 test-ci-failure-excerpt.sh
 21 test-ci-gate.sh
 85 test-ci-parallel-qa.sh
 4 test-ci-runs-metric.sh
