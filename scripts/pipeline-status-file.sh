@@ -66,7 +66,9 @@
 # running read verb's process group before the script exits. Every python is
 # `python3 -I`.
 #
-# Exit codes: 0 done; 1 usage, config or read failure (nothing on stdout).
+# Exit codes: 0 done; 1 usage, config or read failure (nothing on stdout); 7 a
+# read verb met the provider's rate limit (#1004): one `rate-limited reset=<epoch>`
+# line on stderr, nothing on stdout (talos.sh turns it into a wait).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
