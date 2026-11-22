@@ -198,6 +198,7 @@
 4 test-pipeline-verify.sh
 6 test-planner.sh
 5 test-plugin-install.sh
+3 test-pr-change-selection.sh
 23 test-post-approval-body.sh
 13 test-post-approval-stdin.sh
 37 test-post-approval.sh
