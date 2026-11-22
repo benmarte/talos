@@ -314,6 +314,7 @@
 2 test-timing-guard.sh
 3 test-title-cache-886.sh
 6 test-unsafe-cleanup-guard.sh
+12 test-update-timings-ci.sh
 79 test-upsert-pr-comment.sh
 13 test-user-layer-hermetic.sh
 4 test-vcs-edit-pr-body-parity.sh
