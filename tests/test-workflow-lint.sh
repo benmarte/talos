@@ -114,6 +114,9 @@ case "$version" in
   [0-9]*.[0-9]*.[0-9]*) pass "AC4 the workflow-lint job pins an actionlint version ($version)" ;;
   *) fail "AC4 the workflow-lint job pins an actionlint version" "ACTIONLINT_VERSION line: ${version_line:-<none>}" ;;
 esac
+shard_job="$(job_block "$WORKFLOW" shard)"
+assert_contains "$shard_job" "ACTIONLINT_VERSION: '$version'" "AC4 the shard job installs the same pinned actionlint (the test fails under CI without it)"
+assert_contains "$shard_job" "sha256sum -c" "AC4 the shard job's actionlint install checks the checksum"
 assert_not_contains "$(printf '%s' "$lint_job" | tr '[:upper:]' '[:lower:]' | sed 's/ubuntu-latest//g')" "latest" "AC4 the workflow-lint job never names 'latest'"
 case "$lint_job" in
   *sha256sum*-c*|*shasum*-c*) pass "AC4 the workflow-lint job checks the download's checksum" ;;
