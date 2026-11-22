@@ -188,6 +188,8 @@ Public users update the plugin on tagged releases; the version in `plugin.json` 
 
 Talos runs on bash 3.2 (macOS) and BSD tools, so `tests/test-bash3-lint.sh` runs `scripts/bash3-lint.sh` over `scripts/` and `tests/` and refuses GNU-only or bash 4+ constructs (`sed -i`, `grep -P`, `readlink -f`, `date -d`, `tac`, `declare -A`, `${var,,}`, `mapfile`, `&>>`). It prints `file:line: construct` per hit. A line that needs one anyway ends with `# bash3-ok: <reason>`; comment-only lines are skipped.
 
+This repo's CI runs on ubuntu only. `.github/workflows/tests.yml` splits the suite into 4 shards (`run-tests.sh --shard i/4 --timings`) on every event (pull request, push to `main`, merge-queue candidate `talos/queue/**`), and `test (ubuntu-latest)`, the one name in `merge.required_checks`, needs all of them, so a macOS shard there would hold every merge for its 830-1,380 s. macOS runs in the nightly canary (`.github/workflows/canary.yml`, job `macos`: the full suite as 4 shards on `macos-latest`, 30 min each), so macOS drift shows the next night, not on the push. The canary's `base-currency` job runs only `run-tests.sh --count-only --base-ref origin/main`, which still exercises the base-ref resolution, the base-currency warning and the count check; the push to `main` already ran the full suite. `templates/ci/github-tests.yml` differs on purpose: a target repo has no canary and its `test` matrix jobs are independent, so it keeps macOS on push to the base branch without delaying `test (ubuntu-latest)`.
+
 To go back to the GitHub release source:
 
 ```bash

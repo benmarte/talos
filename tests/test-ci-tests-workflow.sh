@@ -27,8 +27,8 @@ REPO_WORKFLOW="$TALOS_ROOT/.github/workflows/tests.yml"
 # ─────────────────────────────────────────────────────────────────────────────
 assert_file_exists "$TEMPLATE" "templates/ci/github-tests.yml exists"
 
-check_workflow_structure() {  # $1=file $2=label prefix
-  local file="$1" label="$2"
+check_workflow_structure() {  # $1=file $2=label prefix $3=template|repo
+  local file="$1" label="$2" kind="${3:-template}"
   if python3 -c "import yaml" 2>/dev/null; then
     local out
     out="$(python3 -c "
@@ -55,9 +55,15 @@ ok = (
     and 'pull_request' in str(cancel)
     and 'ready_for_review' in pr.get('types', [])
     and 'draft' in str(test_job.get('if', ''))
-    and 'pull_request' in str(test_job.get('strategy', ''))
-    and 'macos-latest' in str(test_job.get('strategy', ''))
-    and 'ubuntu-latest' in str(test_job.get('strategy', ''))
+    and (
+        # AC6: the template keeps its PR-ubuntu / push-full matrix. This repo's
+        # own test job is the one ubuntu check, named literally (#970).
+        ('$kind' == 'repo' and str(test_job.get('name', '')) == 'test (ubuntu-latest)')
+        or ('$kind' == 'template'
+            and 'pull_request' in str(test_job.get('strategy', ''))
+            and 'macos-latest' in str(test_job.get('strategy', ''))
+            and 'ubuntu-latest' in str(test_job.get('strategy', '')))
+    )
     and permissions == {'contents': 'read'}
 )
 print('OK' if ok else 'STRUCTURE_MISMATCH')
@@ -75,7 +81,9 @@ print('OK' if ok else 'STRUCTURE_MISMATCH')
     assert_contains "$content" "ready_for_review" "$label: pull_request types include ready_for_review"
     assert_contains "$content" "draft != true" "$label: draft PRs are skipped"
     assert_contains "$content" "ubuntu-latest" "$label: matrix mentions ubuntu-latest"
-    assert_contains "$content" "macos-latest" "$label: matrix mentions macos-latest"
+    if [ "$kind" = template ]; then
+      assert_contains "$content" "macos-latest" "$label: matrix mentions macos-latest"
+    fi
     assert_contains "$content" "permissions:" "$label: has a permissions block"
     assert_contains "$content" "contents: read" "$label: permissions is contents: read"
   fi
@@ -96,7 +104,7 @@ assert_not_contains "$template_content" "cancel-in-progress: true" \
 # 2. Dogfooding: this repo's own tests.yml matches the template's structure.
 # ─────────────────────────────────────────────────────────────────────────────
 assert_file_exists "$REPO_WORKFLOW" ".github/workflows/tests.yml exists"
-check_workflow_structure "$REPO_WORKFLOW" ".github/workflows/tests.yml"
+check_workflow_structure "$REPO_WORKFLOW" ".github/workflows/tests.yml" repo
 
 repo_content="$(cat "$REPO_WORKFLOW")"
 assert_contains "$repo_content" "  test:" ".github/workflows/tests.yml: job id is \"test\""
@@ -108,6 +116,34 @@ assert_contains "$repo_content" "contents: read" \
   ".github/workflows/tests.yml: permissions is contents: read (least privilege)"
 assert_not_contains "$repo_content" "cancel-in-progress: true" \
   ".github/workflows/tests.yml: cancel-in-progress is not unconditionally true"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2b. #970: macOS left the required path. Plain-text assertions (no PyYAML
+#     needed) on the non-comment lines of this repo's tests.yml.
+# ─────────────────────────────────────────────────────────────────────────────
+repo_code="$(grep -v '^[[:space:]]*#' "$REPO_WORKFLOW")"
+assert_not_contains "$(printf '%s' "$repo_code" | tr 'A-Z' 'a-z')" "macos" \
+  "AC1 tests.yml: no job runs on macOS (the canary runs it nightly)"
+assert_contains "$repo_code" "os: ['ubuntu-latest']" \
+  "AC1 tests.yml: the shard matrix is ubuntu-latest only on every event"
+assert_not_contains "$repo_code" "fromJSON" \
+  "AC1 tests.yml: no event-dependent os matrix is left"
+assert_contains "$repo_code" "name: test (ubuntu-latest)" \
+  "AC2 tests.yml: the required job is named test (ubuntu-latest) on every event"
+assert_contains "$repo_code" "needs: [count, shard]" \
+  "AC2 tests.yml: test needs exactly count and shard"
+assert_contains "$repo_code" "if: always() &&" \
+  "AC2 tests.yml: test runs with always()"
+shard_run="$(printf '%s\n' "$repo_code" | grep 'run-tests.sh.*--shard')"
+assert_contains "$shard_run" "--timings" \
+  "AC3 tests.yml: the shard step runs run-tests.sh with --timings"
+assert_contains "$shard_run" "--shard" \
+  "AC3 tests.yml: the shard step runs run-tests.sh with --shard"
+
+# AC6: the template keeps macOS on push to the base branch.
+tmpl_code="$(grep -v '^[[:space:]]*#' "$TEMPLATE")"
+assert_contains "$tmpl_code" "macos-latest" "AC6 template: still runs macOS on push to the base branch"
+assert_contains "$tmpl_code" "github.event_name == 'pull_request'" "AC6 template: keeps its PR-ubuntu / push-full split"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Sharding (#556): the suite runs as parallel shards and the one required
@@ -122,24 +158,28 @@ test, shard, count = jobs.get('test', {}), jobs.get('shard', {}), jobs.get('coun
 needs = test.get('needs') or []
 problems = []
 if sorted(needs) != ['count', 'shard']:
-    problems.append('test must need exactly count and shard, got %r' % (needs,))
+    problems.append('AC2 test must need exactly count and shard, got %r' % (needs,))
 if 'always()' not in str(test.get('if', '')):
-    problems.append('test must run with always() so a failed shard fails it instead of skipping it')
-if str(test.get('name', '')) != 'test (\${{ matrix.os }})':
-    problems.append('test must be named test (<os>)')
+    problems.append('AC2 test must run with always() so a failed shard fails it instead of skipping it')
+if str(test.get('name', '')) != 'test (ubuntu-latest)':
+    problems.append('AC2 test must be named test (ubuntu-latest) on every event, got %r' % (test.get('name'),))
+if str(shard.get('strategy', {}).get('matrix', {}).get('os')) != \"['ubuntu-latest']\":
+    problems.append('AC1 shard os must be [ubuntu-latest] on every event, got %r' % (shard.get('strategy', {}).get('matrix', {}).get('os'),))
+if any('macos' in str(j.get('runs-on', '')).lower() or 'macos' in str(j.get('strategy', '')).lower() for j in jobs.values()):
+    problems.append('AC1 no job in tests.yml may run on macOS')
 if shard.get('strategy', {}).get('fail-fast') is not False:
     problems.append('shards must not fail-fast')
 shards = shard.get('strategy', {}).get('matrix', {}).get('shard', [])
 if sorted(s.split('/')[1] for s in shards) != ['4'] * 4 or sorted(s.split('/')[0] for s in shards) != ['1', '2', '3', '4']:
     problems.append('shards must be exactly 1/4..4/4, got %r' % (shards,))
 steps = ' '.join(str(s.get('run', '')) for s in shard.get('steps', []))
-if '--shard' not in steps:
-    problems.append('shard job must run run-tests.sh --shard')
+if '--shard' not in steps or '--timings' not in steps:
+    problems.append('AC3 shard step must run run-tests.sh with both --shard and --timings')
 if '--count-only' not in ' '.join(str(s.get('run', '')) for s in count.get('steps', [])):
     problems.append('count job must run run-tests.sh --count-only')
 print('OK' if not problems else '; '.join(problems))
 " 2>&1)"
-  assert_eq "OK" "$out" ".github/workflows/tests.yml: shards + count feed the single required job"
+  assert_eq "OK" "$out" "AC1 AC2 AC3 .github/workflows/tests.yml: ubuntu-only shards + count feed the single required job"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -160,22 +200,16 @@ required = set(cfg.get('merge', {}).get('required_checks', []) or [])
 
 with open('$REPO_WORKFLOW') as f:
     wf = yaml.safe_load(f)
-matrix_os = str(wf['jobs']['test']['strategy']['matrix']['os'])
+# AC2: the test job's name is a literal (no matrix), so the same check name
+# is produced on pull_request and on push (#970).
+test_job = wf['jobs']['test']
+produced = {str(test_job.get('name', ''))} if 'strategy' not in test_job else set()
 
-# The matrix os expression is:
-#   \${{ github.event_name == 'pull_request' && fromJSON('[...]') || fromJSON('[...]') }}
-# The FIRST fromJSON(...) is the value used when the expression's condition
-# (github.event_name == 'pull_request') is true -- i.e. what actually runs
-# on a PR push. Extract it without evaluating GHA expression syntax.
-m = re.search(r\"fromJSON\('(\[[^]]*\])'\)\", matrix_os)
-pr_os = json.loads(m.group(1)) if m else []
-pr_checks = {'test (%s)' % os for os in pr_os}
-
-missing = required - pr_checks
-print('OK' if not missing else 'HANGS_ON_PR: ' + ', '.join(sorted(missing)))
+missing = required - produced
+print('OK' if not missing else 'AC2 HANGS_ON_PR_OR_PUSH: ' + ', '.join(sorted(missing)))
 " 2>&1)"
   assert_eq "OK" "$out" \
-    "talos.pipeline.json merge.required_checks only names checks that actually run on pull_request"
+    "AC2 talos.pipeline.json merge.required_checks only names checks produced on pull_request and on push"
 else
   echo "  skip: talos.pipeline.json or PyYAML not available"
 fi
