@@ -132,6 +132,7 @@
 1 test-github-api-large-page.sh
 4 test-github-api-link-pinning.sh
 49 test-github-api.sh
+5 test-github-rate-limit-wait.sh
 78 test-github-transport-parity.sh
 3 test-gitlab-assignee-cli.sh
 22 test-gitlab-attempt-verbs.sh
