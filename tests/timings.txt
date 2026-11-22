@@ -222,6 +222,7 @@
 9 test-providers.sh
 12 test-python-safe-path.sh
 10 test-qa-ci-wait-driver.sh
+40 test-qa-draft-ready.sh
 88 test-qa-environment-751.sh
 46 test-qa-fail-verdict-814.sh
 40 test-qa-flaky-e2e-717.sh
