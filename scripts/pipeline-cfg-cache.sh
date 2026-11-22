@@ -47,11 +47,17 @@ _TALOS_EXIT_HOOKS=()
 # in addition to (never instead of) any hook already registered.
 _talos_on_exit() { _TALOS_EXIT_HOOKS+=("$1"); }
 
+# A hook reads the status the script is leaving with in _TALOS_EXIT_STATUS and
+# may set _TALOS_EXIT_OVERRIDE to leave with another one (pipeline-vcs.sh: a
+# GitHub rate limit is exit 7, #1004). Every hook still runs first.
 _talos_run_exit_hooks() {
+  _TALOS_EXIT_STATUS=$?
+  _TALOS_EXIT_OVERRIDE=""
   local _hook
   for _hook in "${_TALOS_EXIT_HOOKS[@]:-}"; do
     [ -n "$_hook" ] && eval "$_hook"
   done
+  [ -z "$_TALOS_EXIT_OVERRIDE" ] || exit "$_TALOS_EXIT_OVERRIDE"
 }
 
 trap _talos_run_exit_hooks EXIT

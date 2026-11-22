@@ -85,6 +85,24 @@ def die(msg):
     sys.exit(1)
 
 
+RATE_LIMITED = 7  # pipeline-vcs.sh: the provider's rate limit is on (#1004)
+RATE_LIMITED_RE = re.compile(r'^rate-limited reset=([0-9]{1,12})$', re.M)
+
+
+def rate_limit_reset(err):
+    """The epoch of the `rate-limited reset=<epoch>` line a verb printed, else 0."""
+    m = RATE_LIMITED_RE.search(err)
+    return int(m.group(1)) if m else 0
+
+
+def rate_limited(err):
+    """A read verb met the rate limit: not a failed read, a wait. Pass the one
+    `rate-limited reset=<epoch>` line on and leave with its exit code; talos.sh
+    turns it into `wait reason=rate-limited retry_after_s=<s>`."""
+    sys.stderr.write('rate-limited reset=%d\n' % rate_limit_reset(err))
+    sys.exit(RATE_LIMITED)
+
+
 def _num(item, key='number'):
     n = item.get(key) if isinstance(item, dict) else None
     return n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else None
@@ -158,6 +176,8 @@ def vcs(*args):
         die('the read verb %s timed out (read deadline %ds)' % (args[0], _read_deadline()))
     finally:
         _running = None
+    if p.returncode == RATE_LIMITED:
+        rate_limited(err.decode('utf-8', 'replace'))
     return p.returncode, out.decode('utf-8', 'replace'), err.decode('utf-8', 'replace')
 
 
@@ -675,6 +695,10 @@ def issue_side(data, o):
             p = subprocess.run(['bash', o['vcs']] + list(a), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except OSError:
             raise Stop('state-unavailable')
+        if p.returncode == RATE_LIMITED:
+            # The answer is a wait: `stop reason=rate-limited reset=<epoch>`, which talos.sh
+            # next turns into `action=wait reason=rate-limited retry_after_s=<s>` (#1004).
+            raise Stop('rate-limited reset=%d' % rate_limit_reset(p.stderr.decode('utf-8', 'replace')))
         return p.returncode, p.stdout.decode('utf-8', 'replace'), p.stderr.decode('utf-8', 'replace')
 
     docs = {}  # n -> the view-issue document, read once per walk

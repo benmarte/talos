@@ -664,6 +664,9 @@ unset CURL_RATE_LIMIT_RESET
 #    the cap has to be applied before scaling, not just make the test fast.
 : > "$CURL_LOG"
 : > "$_errfile"
+#    A Retry-After past the cap is no longer waited out in place at all (#1004):
+#    the verb gives up at once with the rate-limit exit (7), one `rate-limited
+#    reset=` line and one call; the caller waits. One inside the cap is waited out.
 export CURL_RETRY_AFTER=31536000
 printf '429\n%s\n' \
   '[{"number":3,"title":"Fix login bug","body":"Body text","labels":[]}]' \
@@ -671,9 +674,19 @@ printf '429\n%s\n' \
 
 out="$(bash "$VCS" list-issues 2>"$_errfile")"; rc=$?
 err="$(cat "$_errfile")"
-assert_eq "0" "$rc"                              "Retry-After cap: still succeeds after the retry"
-assert_contains "$err" "in 60s"                  "Retry-After cap: logged wait is clamped to 60s"
-assert_not_contains "$err" "31536000"            "Retry-After cap: the raw uncapped header value is never used as the wait"
+assert_eq "7" "$rc"                              "Retry-After cap: a Retry-After past the cap ends with the rate-limit exit"
+assert_not_contains "$err" "in 60s"              "Retry-After cap: no in-place wait of any length"
+assert_contains "$err" "rate-limited reset="     "Retry-After cap: the reset is reported"
+_calls="$(wc -l < "$CURL_LOG" | tr -d ' ')"
+assert_eq "1" "$_calls"                          "Retry-After cap: one call, no retry against the limit"
+: > "$CURL_LOG"
+export CURL_RETRY_AFTER=45
+printf '429\n%s\n' \
+  '[{"number":3,"title":"Fix login bug","body":"Body text","labels":[]}]' \
+  > "$CURL_QUEUE"
+out="$(bash "$VCS" list-issues 2>"$_errfile")"; rc=$?
+assert_eq "0" "$rc"                              "Retry-After inside the cap: waited out, then succeeds"
+assert_contains "$(cat "$_errfile")" "in 45s"    "Retry-After inside the cap: the logged wait is the header's"
 unset CURL_RETRY_AFTER
 
 # -- #194 review: TALOS_RETRY_SLEEP_SCALE accepts decimals. Bash's `$(( ))`

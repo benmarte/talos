@@ -338,8 +338,11 @@
 #                       open PR that names a pipeline.risk_areas entry in its title,
 #                       body or latest PM spec while the spec has no `## Threat model`)
 #           action=ask-owner issue=<N> question=<sanitised>
-#           action=wait reason=<draft|ci|human-merge|blocked|owner|lease|dependency|batched|cap|unassigned|none>
-#                       [retry_after_s=<s>]
+#           action=wait reason=<draft|ci|human-merge|blocked|owner|lease|dependency|batched|cap|unassigned|rate-limited|none>
+#                       [retry_after_s=<s>]  (rate-limited, #1004: the provider's rate
+#                       limit is on, pipeline-vcs.sh exit 7; retry_after_s is the seconds
+#                       to its reset; gate, queue run, sweep, state and run end on the
+#                       same wait with exit 0)
 #           The draft wait is key-carrying: action=wait reason=draft pr=<M> issue=<N>
 #         A planner or adversarial dispatch and the draft wait end in ` ref=<topic>`.
 #         The issue queue is the in-flight issues (confirmed, in development) and
@@ -1071,6 +1074,43 @@ _talos_run_capture() {
   _RC=$?
   _ERR="$(cat "$_CFG_CACHE_DIR/err")"
   _talos_relay "$_tag" "$_ERR"
+  # A rate-limited provider (pipeline-vcs.sh exit 7, #1004) is a wait for the
+  # verbs that set a mode, never a failed read or a failed stage.
+  if [ "$_RC" -eq 7 ] && [ -n "${_TALOS_RL_MODE:-}" ]; then _talos_rate_wait "$_ERR"; fi
+}
+
+# ── rate limit (#1004) ───────────────────────────────────────────────────────
+# _TALOS_RL_MODE says how a verb ends on a rate limit: next (the action line),
+# run (its stop line), verdict (a gate: verdict=wait), queue (the pass's wait) or
+# wait (a `wait` line). No label is written and no attempt is counted: nothing
+# after the failed read runs, and the verb exits 0 like any wait.
+_TALOS_RL_MODE=""
+
+# _talos_rl_retry_s <text with a `rate-limited reset=<epoch>` line>: the seconds
+# to the reset, at least 1; 60 when the text names no reset.
+_talos_rl_retry_s() {
+  local _e
+  _e="$(printf '%s\n' "$1" | sed -n 's/^rate-limited reset=\([0-9]\{1,12\}\)$/\1/p' | tail -n 1)"
+  case "$_e" in
+    '' | 0) printf '60' ;;
+    *) _e=$((_e - $(_talos_now))); [ "$_e" -ge 1 ] || _e=1; printf '%s' "$_e" ;;
+  esac
+}
+
+# _talos_rate_wait <text>: end the verb on `wait reason=rate-limited
+# retry_after_s=<s>`, in the shape its mode says.
+_talos_rate_wait() {
+  local _r
+  _r="$(_talos_rl_retry_s "$1")"
+  case "$_TALOS_RL_MODE" in
+    next) : > "$_TALOS_OUT"; _talos_emit_next_wait "action=wait reason=rate-limited retry_after_s=$_r" ;;
+    run) _talos_emit stop "action=wait reason=rate-limited retry_after_s=$_r" ;;
+    verdict) _talos_emit reason rate-limited; _talos_emit retry_after_s "$_r"; _talos_verdict wait ;;
+    queue) _talos_emit retry_after_s "$_r"; _talos_queue_end wait rate-limited ;;
+    *) _talos_emit wait "reason=rate-limited retry_after_s=$_r" ;;
+  esac
+  _talos_flush
+  exit 0
 }
 
 # _talos_relay <verb> <text>: a gate's stderr can hold PR-author text (a file
@@ -1456,6 +1496,7 @@ _talos_gate_fix_round() {
   [ "$_ok" -eq 0 ] || _talos_stop usage 2
   _talos_prepare gate-fix-round pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh \
                                 pipeline-budget.sh pipeline-hooks.sh pipeline-status.sh
+  _TALOS_RL_MODE=verdict
 
   # Exit 1 (exceeded) is the signal, so it is captured and never aborts.
   # With limits.tokens_per_issue unset the check prints nothing and exits 0,
@@ -2029,21 +2070,27 @@ _talos_queue_stale() {
 # lookup that counts as pending (`warn reason=checks-read-failed sha= attempt=`);
 # the 3rd in a row is wait reason=checks-unverified: the pass ends there, on the
 # batch or on any bisection step, with nothing merged and nothing more ejected.
-_talos_queue_nap() {
+_talos_queue_nap() {  # [<seconds>, default 30]
   local _scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
   case "$_scale" in '' | *[!0-9.]*) _scale=1 ;; esac
-  sleep "$(awk -v k="$_scale" 'BEGIN { print 30 * k }')"
+  sleep "$(awk -v k="$_scale" -v s="${1:-30}" 'BEGIN { print s * k }')"
 }
 _talos_queue_poll() {
-  local _calls=0 _failed=0
+  local _calls=0 _failed=0 _m _w
   while :; do
+    # A rate limit (exit 7, #1004) is read here, not by _talos_run_capture: the
+    # loop waits for the reset inside its own budget (the calls it has left, 30 s
+    # each), and only a limit still on at the budget ends the pass.
+    _m="$_TALOS_RL_MODE"; _TALOS_RL_MODE=""
     _talos_cap _vcs ref-checks-required "$_QR_SHA"
+    _TALOS_RL_MODE="$_m"
     _calls=$((_calls + 1))
     # A failed lookup (#982) is pending: it warns and is asked again at the next
     # tick, inside the same budget; 3 in a row end the pass. Red and green are
     # judged only from a successful read, which resets the count.
     case "$_RC" in
       0 | 1 | 2) _failed=0 ;;
+      7) ;;  # a rate limit is a wait (#1004), not a failed read
       *) _failed=$((_failed + 1))
          _talos_warn checks-read-failed "sha=$_QR_SHA attempt=$_failed"
          [ "$_failed" -lt 3 ] || _talos_queue_end wait checks-unverified ;;
@@ -2051,6 +2098,11 @@ _talos_queue_poll() {
     case "$_RC" in
       0) return 0 ;;
       1) _QR_RED="$_OUT"; return 1 ;;
+      7) [ "$_calls" -lt "$_QR_POLLS" ] || _talos_rate_wait "$_ERR"
+         _w="$(_talos_rl_retry_s "$_ERR")"
+         [ "$_w" -le $(((_QR_POLLS - _calls) * 30)) ] || _w=$(((_QR_POLLS - _calls) * 30))
+         _talos_queue_nap "$_w"
+         _calls=$((_calls + (_w + 29) / 30)) ;;
       *) [ "$_calls" -lt "$_QR_POLLS" ] || _talos_queue_end wait candidate-timeout
          # With `restart` (#965), a candidate gone stale is 3: the caller re-cuts.
          [ "${1:-}" != restart ] || ! _talos_queue_stale || return 3
@@ -2125,6 +2177,7 @@ _talos_queue_run() {
   local _picked="" _csv="" _size=0 _n1="" _branches=() _a _recuts=0 _stale=0 _prc=0 _retry _rt=0
   _talos_prepare queue pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-hooks.sh \
                        pipeline-mergebase.sh pipeline-lock.sh
+  _TALOS_RL_MODE=queue
   [ "$(cfg merge.queue)" = "talos" ] || _talos_verdict off
   _base="$(_talos_base_branch)"
   _prefix="$(cfg merge.queue_branch_prefix)"
@@ -2304,6 +2357,7 @@ _talos_gate_merge() {
   _talos_isnum "$_pr" && _talos_isnum "$_n" || _talos_stop usage 2
   _talos_prepare gate-merge pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
                             pipeline-draft-check.sh pipeline-notify.sh pipeline-mergebase.sh
+  _TALOS_RL_MODE=verdict
   . "$SCRIPT_DIR/pipeline-contract.sh"
 
   # 1. Ready: no pipeline:blocked on the PR or the issue; every approval label of
@@ -3018,6 +3072,7 @@ _talos_sweep() {
                        pipeline-status.sh \
                        pipeline-worktree.sh pipeline-notify.sh pipeline-hooks.sh pipeline-events.sh \
                        pipeline-mergebase.sh
+  _TALOS_RL_MODE=wait
   . "$SCRIPT_DIR/pipeline-contract.sh"
   _TALOS_NOTE_KEY=sweep
   _talos_emit sweep done
@@ -4827,6 +4882,27 @@ _talos_gate() {
 # from pipeline-status-file.sh collect (read verbs only). A
 # failure there (unreadable config, failed read, timeout) is a stop; the JSON
 # is emitted only when the whole collect succeeded, so no partial JSON.
+# _talos_quota_line (#1004): `where=quota: ...` with the remaining core and graphql
+# quota when either is under 10%, so an operator sees a spent quota before a run
+# meets it. Best effort: a provider without a quota (exit 2) or a failed read
+# prints nothing.
+_talos_quota_line() {
+  local _q
+  _q="$(_vcs rate-limit 2>/dev/null | python3 -I -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    now = int(sys.argv[1])
+    low = [k for k in ("core", "graphql") if d[k]["limit"] > 0 and d[k]["remaining"] * 10 < d[k]["limit"]]
+    if low:
+        resets = min(max(0, d[k]["reset"] - now) for k in low)
+        print("quota: " + ", ".join("%s %d/%d" % (k, d[k]["remaining"], d[k]["limit"]) for k in ("core", "graphql"))
+              + " (resets in %d s)" % resets)
+except Exception:
+    pass' "$(_talos_now)" 2>/dev/null)" || return 0
+  [ -z "$_q" ] || _talos_emit where "$_q"
+}
+
 _talos_state() {
   local _sum=0 _where _l
   if [ "${1:-}" = "--summary" ]; then _sum=1; shift; fi
@@ -4834,6 +4910,7 @@ _talos_state() {
   _talos_prepare state pipeline-config.sh pipeline-cfg-cache.sh pipeline-status-file.sh \
                      pipeline-contract.sh pipeline-next.py pipeline-draft-check.sh pipeline-vcs.sh
   local _json
+  _TALOS_RL_MODE=wait
   _talos_run_capture state bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
   [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
   _json="$_OUT"
@@ -4849,6 +4926,7 @@ _talos_state() {
     printf '%s' "$_json" | _talos_run_snapshot active
     _where="$(python3 -I "$SCRIPT_DIR/pipeline-next.py" where "$_CFG_CACHE_DIR/state.json" 2>/dev/null)" || _talos_stop state-unavailable
     while IFS= read -r _l; do _talos_emit where "$_l"; done <<< "$_where"
+    _talos_quota_line
     _talos_flush
     return 0
   fi
@@ -5037,6 +5115,7 @@ _talos_next() {
   _talos_prepare next pipeline-config.sh pipeline-cfg-cache.sh pipeline-status-file.sh \
                      pipeline-contract.sh pipeline-next.py pipeline-draft-check.sh \
                      pipeline-vcs.sh pipeline-budget.sh pipeline-lock.sh
+  _TALOS_RL_MODE=next
 
   if _OUT="$(_talos_collect_get)"; then
     : # inside a run: the state it already collected (#554)
@@ -5082,6 +5161,7 @@ _talos_next() {
     _r=$?
     if [ "$_r" -ne 0 ]; then
       case "$_a" in
+        "stop reason=rate-limited reset="*) _talos_rate_wait "rate-limited reset=${_a##*reset=}" ;;
         "stop reason="*) _talos_stop "${_a#stop reason=}" ;;
         *) _talos_stop state-unavailable ;;
       esac
@@ -5634,6 +5714,7 @@ _talos_run_loop() {
                      pipeline-contract.sh pipeline-next.py pipeline-draft-check.sh \
                      pipeline-vcs.sh pipeline-budget.sh pipeline-lock.sh pipeline-agent.sh \
                      pipeline-notify.sh pipeline-hooks.sh pipeline-events.sh
+  _TALOS_RL_MODE=run
   # #517: self-ignore the deliberately in-tree .talos/ files (per-worktree
   # .talos/env, providers.json) via info/exclude before
   # the first stage dispatch -- never via a tracked .gitignore commit.
@@ -5719,6 +5800,9 @@ _talos_run_loop() {
       "action=merge pr="*" issue="*) : ;;
       "action=ask-owner"*)
         _talos_emit stop "$_act"; _talos_flush; exit 0 ;;
+      "action=wait reason=rate-limited"*)
+        # The provider's quota is spent (#1004): every walk below reads it again.
+        _talos_emit stop "$_act"; _talos_flush; exit 0 ;;
       "action=wait reason="*)
         # The queue drained (or the issue is lease-held): work the in-flight
         # issues, one `next --issue` at a time, until one answers with an
@@ -5739,6 +5823,8 @@ _talos_run_loop() {
           case "$_act" in
             "action=dispatch stage="*" issue="*|"action=dispatch stage="*" pr="*" issue="*|"action=merge pr="*" issue="*)
               break ;;
+            "action=wait reason=rate-limited"*)
+              _talos_emit stop "$_act"; _talos_flush; exit 0 ;;
             "action=wait reason="*) continue ;;
             "action=ask-owner"*)
               _talos_emit stop "$_act"; _talos_flush; exit 0 ;;
