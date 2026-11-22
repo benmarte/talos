@@ -52,11 +52,24 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Depth 2 so a pull_request run has the merge commit's base parent (HEAD^1).
+          fetch-depth: 2
+      # pull_request: the checkout is GitHub's merge commit, built from the base as it
+      # was when the PR event fired. HEAD^1 is that base, so a test file another PR
+      # merged to the base since cannot read as missing (#996). A PR that deletes a
+      # base test file still fails: the merge commit lacks it and HEAD^1 has it.
+      - name: Check no test file went missing (against the merge commit's base)
+        if: github.event_name == 'pull_request'
+        run: bash tests/run-tests.sh --count-only --base-ref HEAD^1
+      # push (main, talos/queue/**): compare against the base branch as it is now.
       - name: Fetch the base branch
+        if: github.event_name != 'pull_request'
         env:
           BASE: ${{ github.base_ref || 'main' }}
         run: git fetch --no-tags --depth=1 origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
       - name: Check no test file went missing
+        if: github.event_name != 'pull_request'
         env:
           BASE: ${{ github.base_ref || 'main' }}
         run: bash tests/run-tests.sh --count-only --base-ref "origin/${BASE}"
