@@ -137,7 +137,11 @@
 #            TALOS_RETRY_SLEEP_SCALE), at most merge.queue_timeout_s / 30 calls
 #            (default 3600 s: 120; a value outside 30-86400 is stop
 #            reason=config-unreadable before step 1): 0 green, 1 red, 2 at
-#            the last call wait reason=candidate-timeout, anything else wait
+#            the last call wait reason=candidate-timeout. Any other exit (#982) is
+#            a failed lookup that counts as pending: `warn reason=checks-read-failed
+#            sha=<sha> attempt=<n>`, asked again at the next tick in the same
+#            budget (also in the bisection and the retry); a successful answer
+#            resets the count, the 3rd failed lookup in a row is wait
 #            reason=checks-unverified. While a candidate's check answer is 2
 #            (pending), a candidate gone stale (origin's base is not B, or a PR
 #            of it is no longer an open PR of the base) is deleted without
@@ -181,11 +185,11 @@
 #         (--pr, --sha the PR head), each with --duration-s (since the first
 #         push) and --batch-size; queue_eject per ejected PR (its issue, --pr,
 #         --sha its cut head, --batch-size the red set it was isolated from).
-# queue-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable trust-unverified queue-state-unverified no-candidate candidate-unverified candidate-timeout checks-unverified base-moved head-moved merge-failed cleanup-failed post-merge-failed queue-busy
+# queue-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable trust-unverified queue-state-unverified no-candidate candidate-unverified candidate-timeout checks-unverified base-moved head-moved merge-failed cleanup-failed post-merge-failed checks-read-failed queue-busy
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         trust-unverified (exit 2 for usage; else 1), and queue list's
 #         queue-state-unverified
-#   warn: cleanup-failed post-merge-failed (queue run)
+#   warn: cleanup-failed post-merge-failed checks-read-failed (queue run)
 #
 # post-merge, sweep, summary   Bookkeeping; each item is non-fatal (a `warn` line,
 #         the next item still runs). First line `post_merge=done|handoff`,
@@ -488,7 +492,7 @@
 #         qa-fail-unchanged-head spec-unusable fix-round-unchanged-head
 #         checkout-return-failed same-verdict-same-head qa-flaky; plus the stop reasons
 #         of `next`, passed through (exit 1)
-#   warn: qa-ci-red notify-failed board-failed spend-upsert-failed lease-release-failed
+#   warn: notify-failed board-failed spend-upsert-failed lease-release-failed
 #         map-failed (the run's first map failure only, then the map is off for the
 #         run; at the run's end: one stderr line, the end line already out)
 #         model-invalid label-failed comment-failed budget-check-failed
@@ -620,7 +624,7 @@ for i in range(0, len(parts) - 1, 2):
     val = "\\n".join(esc(x) for x in val.split("\n")) if is_list else esc(val)
     if cut:
         val += "[truncated]"
-    out.append(key + (" " if key in ("stop", "warn", "note") else "=") + val)
+    out.append(key + (" " if key in ("stop", "warn", "note", "wait") else "=") + val)
 sys.stdout.buffer.write(("\n".join(out + warns) + "\n").encode("utf-8"))
 '
 
@@ -2021,8 +2025,9 @@ _talos_queue_stale() {
 # 30 s (times TALOS_RETRY_SLEEP_SCALE), at most _QR_POLLS calls (merge.queue_timeout_s
 # / 30, 120 by default). 0 green; 1 red, its stdout in _QR_RED; 3 (only with
 # `restart`) stale while pending, see _talos_queue_stale. Exit 2 at the
-# last call is wait reason=candidate-timeout,
-# any other exit wait reason=checks-unverified: the pass ends there, on the
+# last call is wait reason=candidate-timeout. Any other exit (#982) is a failed
+# lookup that counts as pending (`warn reason=checks-read-failed sha= attempt=`);
+# the 3rd in a row is wait reason=checks-unverified: the pass ends there, on the
 # batch or on any bisection step, with nothing merged and nothing more ejected.
 _talos_queue_nap() {
   local _scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
@@ -2030,18 +2035,26 @@ _talos_queue_nap() {
   sleep "$(awk -v k="$_scale" 'BEGIN { print 30 * k }')"
 }
 _talos_queue_poll() {
-  local _calls=0
+  local _calls=0 _failed=0
   while :; do
     _talos_cap _vcs ref-checks-required "$_QR_SHA"
     _calls=$((_calls + 1))
+    # A failed lookup (#982) is pending: it warns and is asked again at the next
+    # tick, inside the same budget; 3 in a row end the pass. Red and green are
+    # judged only from a successful read, which resets the count.
+    case "$_RC" in
+      0 | 1 | 2) _failed=0 ;;
+      *) _failed=$((_failed + 1))
+         _talos_warn checks-read-failed "sha=$_QR_SHA attempt=$_failed"
+         [ "$_failed" -lt 3 ] || _talos_queue_end wait checks-unverified ;;
+    esac
     case "$_RC" in
       0) return 0 ;;
       1) _QR_RED="$_OUT"; return 1 ;;
-      2) [ "$_calls" -lt "$_QR_POLLS" ] || _talos_queue_end wait candidate-timeout
+      *) [ "$_calls" -lt "$_QR_POLLS" ] || _talos_queue_end wait candidate-timeout
          # With `restart` (#965), a candidate gone stale is 3: the caller re-cuts.
          [ "${1:-}" != restart ] || ! _talos_queue_stale || return 3
          _talos_queue_nap ;;
-      *) _talos_queue_end wait checks-unverified ;;
     esac
   done
 }
@@ -3272,6 +3285,21 @@ _talos_verify_timeout_ms() {
   printf '%s' "$_t"
 }
 
+# _talos_qa_ci_budget <timeout_ms> (#991): QA's CI wait, B = min(verify.ci_wait_s,
+# timeout_ms/1000 - 30) at most the verb's own 3600, so the wait ends inside the
+# stage's foreground cap. Empty when B is not a positive integer.
+_talos_qa_ci_budget() {
+  local _w _b
+  _w="$(cfg verify.ci_wait_s)"
+  case "$_w" in '' | *[!0-9]*) return 0 ;; esac
+  case "$1" in '' | *[!0-9]*) return 0 ;; esac
+  _w=$((10#$_w)); _b=$((10#$1 / 1000 - 30))
+  [ "$_w" -lt "$_b" ] && _b="$_w"
+  [ "$_b" -gt 3600 ] && _b=3600
+  [ "$_b" -gt 0 ] && printf '%s' "$_b"
+  return 0
+}
+
 # _talos_prompt_checks: the `Required checks:` line, one check per line.
 _talos_prompt_checks() {
   local _c
@@ -3557,7 +3585,7 @@ _talos_review_delta() {
 #        [--preamble-file F] [--worktree DIR] [--embed-change]
 _talos_prompt() {
   local _role="${1:-}" _issue="" _pr="" _shape=first _draft=0 _spec=pm _prior="" _title="" _body="" _ci="" _docs="" _rs="" _pre="" _wt="" _embed=0
-  local _f _h _v _tpl _pf _r _base _td
+  local _f _h _v _tpl _pf _r _base _td _vt _cb
   [ "$#" -eq 0 ] || shift
   case " $_TALOS_ROLES " in *" $_role "*) : ;; *) _talos_stop unknown-role 2 ;; esac
   while [ "$#" -gt 0 ]; do
@@ -3711,7 +3739,9 @@ _talos_prompt() {
       # #610: the checkout QA runs in, never a placeholder for it to fill.
       _talos_pv WORKTREE_PATH "${_wt:-your working directory (git rev-parse --show-toplevel)}"
       _talos_pv VERIFY_QA_MODE "$(cfg verify.qa_mode)"
-      _talos_pv VERIFY_TIMEOUT_MS "$(_talos_verify_timeout_ms qa)"
+      _vt="$(_talos_verify_timeout_ms qa)"
+      _talos_pv VERIFY_TIMEOUT_MS "$_vt"
+      _cb="$(_talos_qa_ci_budget "$_vt")"
       # #824: step 2's `run-tests.sh --changed` is Talos's own runner. A QA
       # checkout without it is told the targeted run is the one qa-run did.
       _r="${_wt:-$(git rev-parse --show-toplevel 2>/dev/null)}"
@@ -3767,18 +3797,25 @@ ${_r:-none}
 post-approval stamps the head SHA you verified (the PR head, not a stale checkout)."
       else
         _talos_pv REQUIRED_CHECKS_LINE "$(_talos_prompt_checks)"
-        _talos_pv QA_CI_WAIT_LINE "CI wait budget: $(cfg verify.ci_wait_s) seconds"
+        _talos_pv QA_CI_WAIT_LINE "CI wait budget: ${_cb:-none (pass no --wait)}${_cb:+ seconds}"
         _talos_pv QA_GATE_STEP ""
         if [ "$_v" = parallel ]; then
           _talos_pf QA_RULE "$_tpl/_qa-ci-parallel.md"
           _r="$(cfg ci.known_flakes | paste -sd, - | sed 's/,/, /g')"
           _talos_pv QA_CI_STEP "CI wait, after every local check above is done (CI has been running the full suite since the PR was marked ready): one bounded foreground command, run once.
-  bash $SCRIPT_DIR/pipeline-vcs.sh pr-checks-required ${_pr} --wait <CI wait budget above>
+  bash $SCRIPT_DIR/pipeline-vcs.sh pr-checks-required ${_pr}${_cb:+ --wait $_cb}
 Exit 0: every required check is green. Any other exit is a FAIL (a red job: name it; still pending at the budget: fail closed). Do not wait on CI earlier.
 Put a \`CI per-job results\` table in the verdict, read from \`bash $SCRIPT_DIR/pipeline-vcs.sh pr-checks ${_pr}\`: job, result, and a known flake named as one${_r:+ (known flakes: $_r)}.
 Then post the verdict. The approval verb refuses unless the required CI is green at the head, and re-runs a listed known flake once."
         else
           _talos_pf QA_RULE "$_tpl/_qa-ci.md"
+          # #991: under qa_mode ci the run driver has already waited for CI, so
+          # this returns at once on a finished run; its wait is B, never more.
+          if [ "$(cfg verify.qa_mode)" = ci ]; then
+            _talos_pv QA_CI_STEP "CI wait (the driver already waited; returns at once), one foreground command:
+  bash $SCRIPT_DIR/pipeline-vcs.sh pr-checks-required ${_pr}${_cb:+ --wait $_cb}
+Exit 0: green. Any other exit is a FAIL (a red job: name it; pending: fail closed)."
+          fi
         fi
       fi ;;
     reviewer | security)
@@ -5771,6 +5808,7 @@ _talos_run_loop() {
         _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
         case "$_pr$_n" in ''|*[!0-9]*) _talos_stop state-unavailable ;; esac
         _talos_run_presync "$_pr" "$_n"
+        _talos_run_ci_wait "$_pr" "$_n"
         _talos_run_dispatch "$_RUN_ACT" ;;
       "dispatch stage="*)
         _talos_run_dispatch "$_RUN_ACT" ;;
@@ -6585,6 +6623,38 @@ _talos_run_presync() {
   _talos_flush; exit 0
 }
 
+# _talos_run_ci_wait <pr> <issue> (#991): before QA is dispatched, under
+# verify.qa_mode: ci (and not ci.parallel_with_qa, #836: CI runs the full suite
+# while QA works), the driver waits for the PR's required checks in code, so no
+# LLM stage waits on a slow CI: one `pr-checks-required --wait verify.ci_wait_s`
+# (at most the verb's own 3600), no stage cap, and a `wait reason=ci` line.
+# Exit 0 (green) and exit 1 (a red check, which QA reports) return and QA is
+# dispatched; exit 2 at the budget ends the run with `wait reason=ci-pending`,
+# exit 0, no QA, no pipeline:blocked and no attempt, and the next run resumes.
+# The caller holds the issue's lease, which this releases when it ends the run.
+_talos_run_ci_wait() {
+  local _pr="$1" _n="$2" _w _args=() _par
+  [ "$(cfg verify.qa_mode)" = ci ] || return 0
+  _par="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ci-parallel 2>/dev/null)" || _par=false
+  [ "$_par" != true ] || return 0
+  _w="$(cfg verify.ci_wait_s)"
+  case "$_w" in '' | *[!0-9]*) ;; *)
+    _w=$((10#$_w))
+    [ "$_w" -le 3600 ] || _w=3600
+    [ "$_w" -le 0 ] || _args=(--wait "$_w") ;;
+  esac
+  _talos_emit wait "reason=ci pr=$_pr issue=$_n"
+  _talos_cap _vcs pr-checks-required "$_pr" ${_args[@]+"${_args[@]}"}
+  case "$_RC" in
+    0 | 1) : ;;
+    2)
+      _talos_lease_release "$_n"
+      _talos_emit stop "action=wait reason=ci-pending pr=$_pr issue=$_n"
+      _talos_flush; exit 0 ;;
+    *) _talos_stop state-unavailable ;;
+  esac
+}
+
 # _talos_run_draft_complete <pr> <issue> (#516): the draft-window completion,
 # called from the run loop's wait arm when the resolver answered `ready` --
 # every enabled draft-window approval is fresh at the current head, so the
@@ -6601,7 +6671,7 @@ _talos_run_presync() {
 # the next pass's existing merge arm runs (the gate reads ci_runs before the
 # write that deletes the head branch).
 _talos_run_draft_complete() {
-  local _pr="$1" _n="$2" _r _b _ci_wait _t_ms _wait_args _l _fresh _par
+  local _pr="$1" _n="$2" _r _l _fresh
   # The write is leased first: a held lease or an unavailable ledger/lock ends
   # the run with the lease wait, zero ready-pr.
   _talos_run_lease "$_n"
@@ -6654,43 +6724,8 @@ _talos_run_draft_complete() {
   esac
   # A conflict with the base is synced mechanically before CI or QA is asked (#983).
   _talos_run_presync "$_pr" "$_n"
-  # The one CI wait, qa_mode: ci only (SKILL 3d's table): B =
-  # min(cfg verify.ci_wait_s, cfg verify.timeout_ms/1000 - 30), clamped to the
-  # verb's own 3600 bound, the flag omitted entirely when B is not a positive
-  # integer. rc 0 or 2 dispatches QA; rc 1 with the failed line in stderr ends
-  # the run with the ci wait shape (a red build is scheduling, not a fault);
-  # rc 1 without it dispatches QA.
-  # CI in parallel with QA (#836): the one CI run IS the full suite, and it runs
-  # while QA works, so there is no wait here -- QA waits for it once, right
-  # before post-approval, after its own local checks.
-  _par="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ci-parallel 2>/dev/null)" || _par=false
-  if [ "$_par" != "true" ] && [ "$(cfg verify.qa_mode)" = "ci" ]; then
-    _ci_wait="$(cfg verify.ci_wait_s)"; _t_ms="$(cfg verify.timeout_ms)"
-    _b=""
-    case "$_ci_wait" in ''|*[!0-9]*) ;; *)
-      case "$_t_ms" in ''|*[!0-9]*) ;; *)
-        _b=$((_t_ms / 1000 - 30))
-        [ "$_ci_wait" -lt "$_b" ] && _b="$_ci_wait"
-        [ "$_b" -gt 3600 ] && _b=3600
-        [ "$_b" -le 0 ] && _b=""
-      ;; esac ;;
-    esac
-    _wait_args=()
-    [ -n "$_b" ] && _wait_args=(--wait "$_b")
-    _talos_cap _vcs pr-checks-required "$_pr" ${_wait_args[@]+"${_wait_args[@]}"}
-    case "$_RC" in
-      0|2) : ;;
-      1)
-        case "$_ERR" in
-          *"pr-checks-required: failed:"*)
-            _talos_emit warn "reason=qa-ci-red pr=$_pr issue=$_n"
-            _talos_emit stop "action=wait reason=ci pr=$_pr issue=$_n"
-            _talos_flush; exit 0 ;;
-          *) : ;;
-        esac ;;
-      *) _talos_stop state-unavailable ;;
-    esac
-  fi
+  # The CI wait, in code (#991): qa_mode ci only, and not under ci.parallel_with_qa.
+  _talos_run_ci_wait "$_pr" "$_n"
   # The QA dispatch, the driver's one dispatch path (prompt qa, the agent with
   # the rendered prompt on stdin, the verdict word, done's bookkeeping). A QA
   # FAIL under PR_DRAFT converts the PR back inside done -- no new code.

@@ -176,6 +176,7 @@
 61 test-merge-queue-930.sh
 31 test-merge-queue-931.sh
 10 test-merge-queue-932.sh
+60 test-merge-queue-checks-retry.sh
 60 test-merge-queue-drain.sh
 40 test-merge-queue-retry-950.sh
 28 test-merge-queue-runner-lock.sh
@@ -221,6 +222,7 @@
 0 test-prompt-rules.sh
 9 test-providers.sh
 12 test-python-safe-path.sh
+10 test-qa-ci-wait-driver.sh
 88 test-qa-environment-751.sh
 46 test-qa-fail-verdict-814.sh
 40 test-qa-flaky-e2e-717.sh
