@@ -421,9 +421,18 @@ lock_contention_run() {
 }
 
 # lock_contention_verdict <errdir> <final> <expected>: "ok", or what went wrong.
+# A timed-out acquire (with_lock then runs WITHOUT the lock, by design) is a
+# starved waiter -- a loaded runner -- and is reported first, whatever the
+# counter says; only a short counter with no timeout is a real exclusion bug.
 lock_contention_verdict() {
-  if [ "$2" = "$3" ]; then printf 'ok'; else
+  local _lv_timeouts
+  _lv_timeouts="$(cat "$1"/*.err 2>/dev/null | grep -c 'timed out after' || true)"
+  if [ "${_lv_timeouts:-0}" -gt 0 ]; then
+    printf 'a waiter timed out (starved), %s of %s' "$_lv_timeouts" "$3"
+  elif [ "$2" != "$3" ]; then
     printf 'lost update with no timeout, %s of %s' "$2" "$3"
+  else
+    printf 'ok'
   fi
 }
 
