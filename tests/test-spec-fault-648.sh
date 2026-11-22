@@ -142,7 +142,9 @@ placement: GAP 1" "$RC:$OUT" "AC3 placement: the same id in a file off the Tests
 
 # ── AC4: spec-check and done pm refuse an open test file ─────────────────────
 OPEN="plus a new or existing file of the developer's choosing for AC2."
-sc() { OUT="$(bash "$GS/pipeline-criteria.sh" spec-check "$SANDBOX/spec.md" 2>"$ERR")"; RC=$?; }
+# From a directory with no tests/: spec-check's id-collision check (#975) reads the Tests: files there.
+mkdir -p "$SANDBOX/bare"
+sc() { OUT="$(cd "$SANDBOX/bare" && bash "$GS/pipeline-criteria.sh" spec-check "$SANDBOX/spec.md" 2>"$ERR")"; RC=$?; }
 reset_stubs
 spec "**Tests:** \`tests/test-a.sh\` $OPEN"
 sc
@@ -176,6 +178,16 @@ set_stub record-attempt 1 "" "pipeline-vcs: record-attempt: max_fix_attempts (3)
 dn
 assert_eq "next=stop" "$(printf '%s\n' "$OUT" | tail -n 1)" "AC4 done pm: at the attempt ceiling it ends next=stop"
 assert_contains "$(journal)" "vcs label-issue 9 --add pipeline:blocked" "AC4 done pm: at the ceiling the issue is blocked"
+
+# #975: an id already labelled in an existing Tests file is a refusal under done pm too, not a warning.
+reset_stubs
+mk_test tests/test-a.sh "AC1 greet prints hello"
+spec '**Tests:** `tests/test-a.sh`'
+OUT="$(cd "$SANDBOX" && bash "$RUN" done pm --issue 9 --summary-file "$SANDBOX/summary.txt" 2>"$ERR" < /dev/null)"; RC=$?
+assert_contains "$OUT" "spec_check=id-collision" "AC4 done pm: an id-collision is spec_check=id-collision"
+assert_eq "next=fix-round stage=pm" "$(printf '%s\n' "$OUT" | tail -n 1)" "AC4 done pm: an id-collision ends next=fix-round stage=pm"
+assert_contains "$(journal)" "vcs label-issue 9 --add pipeline:confirmed --remove pipeline:dev" "AC4 done pm: an id-collision sends the label back to pipeline:confirmed"
+rm -rf "${SANDBOX:?}/tests"
 
 # ── AC5 / AC6: talos.sh run after a QA FAIL ──────────────────────────────────
 rn() { OUT="$(TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 bash "$RUN" run --max-iterations 5 2>"$ERR")"; RC=$?; }
