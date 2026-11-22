@@ -187,7 +187,7 @@ OUT="$(cd "$SANDBOX" && bash "$RUN" done pm --issue 9 --summary-file "$SANDBOX/s
 assert_contains "$OUT" "spec_check=id-collision" "AC4 done pm: an id-collision is spec_check=id-collision"
 assert_eq "next=fix-round stage=pm" "$(printf '%s\n' "$OUT" | tail -n 1)" "AC4 done pm: an id-collision ends next=fix-round stage=pm"
 assert_contains "$(journal)" "vcs label-issue 9 --add pipeline:confirmed --remove pipeline:dev" "AC4 done pm: an id-collision sends the label back to pipeline:confirmed"
-rm -rf "$SANDBOX/tests"
+rm -rf "${SANDBOX:?}/tests"
 
 # ── AC5 / AC6: talos.sh run after a QA FAIL ──────────────────────────────────
 rn() { OUT="$(TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 bash "$RUN" run --max-iterations 5 2>"$ERR")"; RC=$?; }
