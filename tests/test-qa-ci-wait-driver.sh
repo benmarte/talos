@@ -30,6 +30,8 @@ cw_fixture() {
   printf '%s' "$CW_QA" > "$STUB_DIR/collect.json"
   printf '%s' "$CW_DONE" > "$STUB_DIR/collect.after"
   printf 'PASS: criteria met\n' > "$STUB_DIR/message"
+  # A ready PR: the QA draft guard (#1002) asks pr-is-draft before it dispatches QA.
+  printf ready > "$STUB_DIR/pr-is-draft.12"; printf 1 > "$STUB_DIR/pr-is-draft.12.rc"
   printf 'cp "$d/collect.after" "$d/collect.json"\n' > "$STUB_DIR/hook.qa.1"
 }
 cw_run() { TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --issue 9 --max-iterations 3; }
