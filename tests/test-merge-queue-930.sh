@@ -199,14 +199,16 @@ merged=13 issue=43" "$(printf '%s\n' "$OUT" | grep '^merged=')" "AC4 three merge
 assert_eq "0" "$(queue_left)" "AC4 no talos/queue/ branch is left on origin"
 assert_eq "0" "$(jc 'update-branch')" "AC4 no update-branch call"
 
-# ── AC5: 4 queued, batch 3 -> only the first 3 ───────────────────────────────
+# ── AC5: 4 queued, batch 3 -> the first candidate holds the first 3 ──────────
+# (#981: the 4th is not in that candidate; the same invocation drains it in a
+# second pass, which leaves its own candidate tree.)
 q_reset; q_three; q_pr 14 44 a14.txt x14; q_cfg talos ', "queue_batch": 3'
 qr
 assert_eq "verdict=merged" "$(line1)" "AC5 the batch merges"
-assert_eq "CHANGELOG.md a11.txt a12.txt a13.txt base.txt " "$(cat "$STUB_DIR/cand.tree" 2>/dev/null)" "AC5 only the first 3 PRs are in the candidate"
-assert_eq "3|0" "$(jc '^vcs merge-pr ')|$(jc '^vcs merge-pr 14')" "AC5 3 merge-pr calls, none for the 4th"
+assert_eq "CHANGELOG.md a14.txt base.txt " "$(cat "$STUB_DIR/cand.tree" 2>/dev/null)" "AC5 the drain's second candidate holds only the 4th PR"
+assert_eq "4|1" "$(jc '^vcs merge-pr ')|$(jc '^vcs merge-pr 14')" "AC5 3 merge-pr calls for the batch, the 4th in the drain's second pass"
 assert_eq "0" "$(jc '^vcs upsert-pr-comment')" "AC5 no queue marker is rewritten"
-assert_contains "$OUT" "prs=11,12,13" "AC5 the candidate line lists the first 3"
+assert_eq "candidate prs=11,12,13|candidate prs=14" "$(printf '%s\n' "$OUT" | sed -n 's/^candidate=[^ ]* sha=[0-9a-f]* \(prs=.*\)/candidate \1/p' | paste -sd'|' -)" "AC5 the first candidate lists the first 3, the second the 4th"
 
 # ── AC6: merge.method shapes the candidate ───────────────────────────────────
 q6() {
