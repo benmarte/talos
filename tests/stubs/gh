@@ -453,6 +453,14 @@ print(json.dumps(c))
     fi ;;
   "run list --commit "*)
     printf '[{"databaseId":111,"conclusion":"failure"},{"databaseId":112,"conclusion":"success"}]\n' ;;
+  "run view "*)
+    # ci-failure-excerpt (#993): `gh run view <run> [--repo ..] [--job <id>]
+    # --log-failed`. The log is the file $STUB_RUN_LOG_DIR/<run> (absent: a log
+    # gh cannot read, exit 1); STUB_RUN_VIEW_EXIT forces that exit code.
+    _rv_run="${3:-}"
+    [ -n "${STUB_RUN_VIEW_EXIT:-}" ] && exit "$STUB_RUN_VIEW_EXIT"
+    [ -f "${STUB_RUN_LOG_DIR:-/nonexistent}/$_rv_run" ] || { echo "gh: no log for run $_rv_run" >&2; exit 1; }
+    cat "$STUB_RUN_LOG_DIR/$_rv_run" ;;
   "pr checks "*)
     # Used by pr-checks (#195: QA's qa_mode: ci oracle). Override
     # STUB_PR_CHECKS to supply canned `gh pr checks` output; defaults to all
