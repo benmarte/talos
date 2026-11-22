@@ -203,6 +203,7 @@
 38 test-post-approval.sh
 55 test-pr-draft.sh
 3 test-pr-mergeable.sh
+5 test-preqa-union-sync.sh
 7 test-project-map-dashboard.sh
 34 test-project-map-live.sh
 7 test-project-map-readable.sh
