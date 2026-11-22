@@ -311,8 +311,22 @@ install_file() {
     echo "  skip (exists): $(printable "$dest")  (pass --force to overwrite)"
     return
   fi
-  mkdir -p "$(dirname "$dest")"
-  cp "$src" "$dest"
+  local dir tmp mode
+  dir="$(dirname "$dest")"
+  mkdir -p "$dir"
+  # Copy beside the destination and rename over it (#977): a process that has
+  # the old file open keeps it, the next reader gets the new one. A failed copy
+  # leaves the destination as it was and removes the temp file.
+  tmp="$(mktemp "$dir/.install-file.XXXXXX")" || return 1
+  if ! cp "$src" "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  # mktemp makes a 0600 file; give it the mode a plain cp would have created.
+  mode=$(( 0666 & ~$(umask) ))
+  [ -x "$src" ] && mode=$(( 0777 & ~$(umask) ))
+  chmod "$(printf '%o' "$mode")" "$tmp"
+  mv -f "$tmp" "$dest"
   echo "  installed: $(printable "$dest")"
 }
 

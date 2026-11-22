@@ -151,6 +151,7 @@
 10 test-import-usage-911.sh
 5 test-install-agents-md.sh
 53 test-install-agents-skills.sh
+10 test-install-atomic-copy.sh
 68 test-install-harness.sh
 17 test-install-manifest.sh
 35 test-install-statusline.sh
