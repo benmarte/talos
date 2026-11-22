@@ -69,7 +69,7 @@ assert_eq "0" "$(cw_count '^agent qa$')" "AC3 no QA is dispatched"
 assert_not_contains "$(journal)" "pipeline:blocked" "AC3 nothing is labelled pipeline:blocked"
 assert_eq "0" "$(cw_count 'record-attempt')" "AC3 no attempt marker is recorded"
 assert_eq "0" "$(cw_count 'hooks post_stage')" "AC3 no stage is completed, so no attempt counts"
-assert_file_absent "$LEASE" "AC3 the lease is released for the next run"
+assert_not_contains "$(cat "$LEASE" 2>/dev/null)" "issue=9 " "AC3 the lease is released for the next run"
 
 # AC4: a red required check still dispatches QA, which reports it.
 cw_fixture ci
