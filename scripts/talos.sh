@@ -137,7 +137,11 @@
 #            TALOS_RETRY_SLEEP_SCALE), at most merge.queue_timeout_s / 30 calls
 #            (default 3600 s: 120; a value outside 30-86400 is stop
 #            reason=config-unreadable before step 1): 0 green, 1 red, 2 at
-#            the last call wait reason=candidate-timeout, anything else wait
+#            the last call wait reason=candidate-timeout. Any other exit (#982) is
+#            a failed lookup that counts as pending: `warn reason=checks-read-failed
+#            sha=<sha> attempt=<n>`, asked again at the next tick in the same
+#            budget (also in the bisection and the retry); a successful answer
+#            resets the count, the 3rd failed lookup in a row is wait
 #            reason=checks-unverified. While a candidate's check answer is 2
 #            (pending), a candidate gone stale (origin's base is not B, or a PR
 #            of it is no longer an open PR of the base) is deleted without
@@ -181,11 +185,11 @@
 #         (--pr, --sha the PR head), each with --duration-s (since the first
 #         push) and --batch-size; queue_eject per ejected PR (its issue, --pr,
 #         --sha its cut head, --batch-size the red set it was isolated from).
-# queue-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable trust-unverified queue-state-unverified no-candidate candidate-unverified candidate-timeout checks-unverified base-moved head-moved merge-failed cleanup-failed post-merge-failed queue-busy
+# queue-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable trust-unverified queue-state-unverified no-candidate candidate-unverified candidate-timeout checks-unverified base-moved head-moved merge-failed cleanup-failed post-merge-failed checks-read-failed queue-busy
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         trust-unverified (exit 2 for usage; else 1), and queue list's
 #         queue-state-unverified
-#   warn: cleanup-failed post-merge-failed (queue run)
+#   warn: cleanup-failed post-merge-failed checks-read-failed (queue run)
 #
 # post-merge, sweep, summary   Bookkeeping; each item is non-fatal (a `warn` line,
 #         the next item still runs). First line `post_merge=done|handoff`,
@@ -2018,8 +2022,9 @@ _talos_queue_stale() {
 # 30 s (times TALOS_RETRY_SLEEP_SCALE), at most _QR_POLLS calls (merge.queue_timeout_s
 # / 30, 120 by default). 0 green; 1 red, its stdout in _QR_RED; 3 (only with
 # `restart`) stale while pending, see _talos_queue_stale. Exit 2 at the
-# last call is wait reason=candidate-timeout,
-# any other exit wait reason=checks-unverified: the pass ends there, on the
+# last call is wait reason=candidate-timeout. Any other exit (#982) is a failed
+# lookup that counts as pending (`warn reason=checks-read-failed sha= attempt=`);
+# the 3rd in a row is wait reason=checks-unverified: the pass ends there, on the
 # batch or on any bisection step, with nothing merged and nothing more ejected.
 _talos_queue_nap() {
   local _scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
@@ -2027,18 +2032,26 @@ _talos_queue_nap() {
   sleep "$(awk -v k="$_scale" 'BEGIN { print 30 * k }')"
 }
 _talos_queue_poll() {
-  local _calls=0
+  local _calls=0 _failed=0
   while :; do
     _talos_cap _vcs ref-checks-required "$_QR_SHA"
     _calls=$((_calls + 1))
+    # A failed lookup (#982) is pending: it warns and is asked again at the next
+    # tick, inside the same budget; 3 in a row end the pass. Red and green are
+    # judged only from a successful read, which resets the count.
+    case "$_RC" in
+      0 | 1 | 2) _failed=0 ;;
+      *) _failed=$((_failed + 1))
+         _talos_warn checks-read-failed "sha=$_QR_SHA attempt=$_failed"
+         [ "$_failed" -lt 3 ] || _talos_queue_end wait checks-unverified ;;
+    esac
     case "$_RC" in
       0) return 0 ;;
       1) _QR_RED="$_OUT"; return 1 ;;
-      2) [ "$_calls" -lt "$_QR_POLLS" ] || _talos_queue_end wait candidate-timeout
+      *) [ "$_calls" -lt "$_QR_POLLS" ] || _talos_queue_end wait candidate-timeout
          # With `restart` (#965), a candidate gone stale is 3: the caller re-cuts.
          [ "${1:-}" != restart ] || ! _talos_queue_stale || return 3
          _talos_queue_nap ;;
-      *) _talos_queue_end wait checks-unverified ;;
     esac
   done
 }
