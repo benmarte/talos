@@ -218,6 +218,7 @@ gate_reset() {  # PR without the security and adversarial labels, the key set
   set_stub pr-head 0 "$SHA"
   set_stub read-comments 0 '{"comments":[]}'
   set_stub draft-check 0 "false"
+  set_stub current-user 0 "talos-bot"
   printf '{"roles": {"adversarial": true, "required_when": {"security": ["internal/auth/**"], "adversarial": ["internal/auth/**"]}}}' > "$SANDBOX/talos.pipeline.json"
 }
 journal() { cat "$STUB_DIR/journal" 2>/dev/null; }

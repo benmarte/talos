@@ -1146,9 +1146,10 @@ print(sum(1 for c in json.load(sys.stdin).get("comments", [])
 # (check-approval-sha and read-attempt): markers.trusted_authors plus the
 # authenticated login, unless markers.verify_authors is false. Sets _TRUST_ON
 # (1 or 0) and _TRUST_SET. An identity that cannot be looked up and no
-# trusted_authors (an exit 0 with no login included) is the same fail-open as those readers (every marker counts),
-# except under _TALOS_TRUST_SOFT (post-merge), where it counts none; one that
-# was refused and no trusted_authors stops, as nothing could be counted.
+# trusted_authors (an exit 0 with no login included) is the same fail-open as
+# those readers (every marker counts), except under _TALOS_TRUST_SOFT
+# (post-merge), where it counts none; one that was refused and no
+# trusted_authors stops, as nothing could be counted.
 _talos_trust() {
   _TRUST_ON=0; _TRUST_SET=""
   [ "$(cfg markers.verify_authors)" != "false" ] || return 0
