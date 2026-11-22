@@ -15,35 +15,16 @@ assert_file_exists "$LOCK_SH" "pipeline-lock.sh exists"
 # lost update certain without the lock -- a no-op with_lock ends near 25 of 80
 # -- so a few dozen increments prove what 200 racing ones used to, in a
 # fraction of the time (the waiters' 0.2 s spin dominated the old run).
+# The 120 s lock timeout is far above any fair wait. A waiter starved past it
+# proceeds without the lock (by design) and loses one update, so a timed-out
+# acquire is reported on its own, apart from a real exclusion bug (#978).
 COUNTER="$SANDBOX/counter"
+COUNTER_ERR="$SANDBOX/counter-err"
 printf '0' > "$COUNTER"
-INCR_SCRIPT="$SANDBOX/incr.sh"
-cat > "$INCR_SCRIPT" <<EOF
-#!/usr/bin/env bash
-set -u
-. "$LOCK_SH"
-n="\$1"
-i=0
-while [ "\$i" -lt "\$n" ]; do
-  with_lock "$COUNTER" 10 -- bash -c '
-    val=\$(cat "$COUNTER")
-    sleep 0.01
-    printf "%s" "\$((val + 1))" > "$COUNTER"
-  '
-  i=\$((i + 1))
-done
-EOF
-chmod +x "$INCR_SCRIPT"
-
-pids=""
-for w in 1 2 3 4; do
-  bash "$INCR_SCRIPT" 20 &
-  pids="$pids $!"
-done
-for p in $pids; do wait "$p"; done
-
+mkdir -p "$COUNTER_ERR"
+lock_contention_run "$COUNTER" 4 20 120 "$COUNTER_ERR"
 final="$(cat "$COUNTER")"
-assert_eq "80" "$final" "4 parallel workers x 20 with_lock increments each = exactly 80, no lost updates"
+assert_eq "ok" "$(lock_contention_verdict "$COUNTER_ERR" "$final" 80)" "4 parallel workers x 20 with_lock increments each = exactly 80, no lost updates, no acquire timed out"
 assert_file_absent "$COUNTER.lock.d" "lock dir is cleaned up after all workers finish"
 
 # ── AC: stale lock (dead PID) is reclaimed, not waited out ──────────────────
