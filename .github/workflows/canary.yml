@@ -17,8 +17,11 @@ permissions:
   contents: read
 
 jobs:
-  # Roadmap 3.4: exercise tests/run-tests.sh's base-currency check in CI --
-  # today it only ever runs locally, where it is easy to never trigger.
+  # Roadmap 3.4: exercise tests/run-tests.sh's base-ref resolution, base-currency
+  # warning and count check in CI -- today they only ever run locally, where it
+  # is easy to never trigger. --count-only skips the suite: on a checkout of
+  # main against origin/main there is nothing to compare, and the push to main
+  # already ran the full suite (#970).
   base-currency:
     runs-on: ubuntu-latest
     steps:
@@ -28,7 +31,25 @@ jobs:
       - name: Fetch origin/main
         run: git fetch origin main
       - name: Base-currency check
-        run: bash tests/run-tests.sh --no-cache --base-ref origin/main --quiet
+        run: bash tests/run-tests.sh --count-only --base-ref origin/main
+
+  # The full suite on macOS, nightly. tests.yml runs ubuntu only, so the required
+  # `test (ubuntu-latest)` check never waits on a macOS shard (830-1,380 s each);
+  # macOS drift is caught here, the next night, instead of on the push (#970).
+  macos:
+    name: macos shard ${{ matrix.shard }}
+    strategy:
+      # Let every shard finish: a red shard should still report its own failures.
+      fail-fast: false
+      matrix:
+        shard: ['1/4', '2/4', '3/4', '4/4']
+    # A hung test must cost half an hour, not GitHub's 6-hour default.
+    timeout-minutes: 30
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run test shard
+        run: bash tests/run-tests.sh --no-cache --quiet --shard ${{ matrix.shard }}
 
   # Roadmap 3.3: a real gh/REST run against a dedicated sandbox repo, so
   # schema drift in GitHub's responses or gh CLI output fails here instead of
