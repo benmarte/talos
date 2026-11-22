@@ -1,7 +1,14 @@
 # Dogfoods templates/ci/github-tests.yml (#260) -- see that file for the
-# full explanation of paths-ignore, concurrency, and the PR-vs-push matrix
-# split. Keep this file and the template in sync, except for the sharding
-# below (#556), which only this repo's tests/run-tests.sh supports.
+# full explanation of paths-ignore and concurrency. Keep this file and the
+# template in sync, except for the sharding below (#556), which only this
+# repo's tests/run-tests.sh supports, and macOS, which differs on purpose:
+# the template keeps macOS on push to the base branch because a target repo
+# has no canary and its `test` matrix jobs are independent, so
+# `test (ubuntu-latest)` never waits for macOS there. Here `test` needs every
+# shard, so a macOS shard (830-1,380 s each) would hold the one required check
+# on every push to main and every merge-queue candidate. No job in this file
+# runs on macOS: the nightly canary (canary.yml, job `macos`) runs the full
+# suite there instead, so macOS drift is caught the next night (#970).
 #
 # Layout: the suite runs as 4 time-balanced shards (`run-tests.sh --shard i/n`,
 # weights in tests/timings.txt) in parallel, plus a tiny `count` job for the
@@ -61,17 +68,17 @@ jobs:
       # Let every shard finish: a red shard should still report its own failures.
       fail-fast: false
       matrix:
-        # PR pushes: ubuntu-latest only. Push to main: the full matrix (macOS
-        # included; it is not a required check, see the template's CAVEAT).
-        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
+        # ubuntu-latest only, on every event (PR, push to main, merge-queue candidate).
+        os: ['ubuntu-latest']
         shard: ['1/4', '2/4', '3/4', '4/4']
     # A hung test must cost half an hour, not GitHub's 6-hour default (#479). A shard takes a few minutes.
     timeout-minutes: 30
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # --timings: each shard log carries a TIMINGS block, the input for refitting tests/timings.txt.
       - name: Run test shard
-        run: bash tests/run-tests.sh --no-cache --quiet --shard ${{ matrix.shard }}
+        run: bash tests/run-tests.sh --no-cache --quiet --timings --shard ${{ matrix.shard }}
 
   # The one required status. It exists so the check name "test (ubuntu-latest)"
   # is stable: it passes only when the count check and every shard passed, and
@@ -80,10 +87,7 @@ jobs:
   test:
     needs: [count, shard]
     if: always() && github.event.pull_request.draft != true
-    name: test (${{ matrix.os }})
-    strategy:
-      matrix:
-        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
+    name: test (ubuntu-latest)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
