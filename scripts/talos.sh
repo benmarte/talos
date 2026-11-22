@@ -3597,9 +3597,13 @@ _talos_ci_excerpt() {
   _CI_EXCERPT=""
   [ -f "$SCRIPT_DIR/pipeline-vcs.sh" ] || return 0
   [ -n "$(cfg merge.required_checks)" ] || return 0
-  _o="$(_vcs pr-checks-required "$1" 2>&1 > /dev/null)" || _rc=$?
-  [ "$_rc" -eq 1 ] || return 0
-  case "$_o" in *"pr-checks-required: failed:"*) : ;; *) return 0 ;; esac
+  # --red: the caller already knows a required check is red (the driver's own
+  # CI wait answered exit 1), so no second checks read is made (#993).
+  if [ "${2:-}" != --red ]; then
+    _o="$(_vcs pr-checks-required "$1" 2>&1 > /dev/null)" || _rc=$?
+    [ "$_rc" -eq 1 ] || return 0
+    case "$_o" in *"pr-checks-required: failed:"*) : ;; *) return 0 ;; esac
+  fi
   _o="$(_vcs ci-failure-excerpt "$1" 2> /dev/null)" || return 0
   case "$_o" in "" | "ci-failure-excerpt: unavailable ("*) return 0 ;; esac
   printf '%s\n' "$_o" > "$_f" 2> /dev/null && _CI_EXCERPT="$_f"
@@ -3854,8 +3858,18 @@ Exit 0: green. Any other exit is a FAIL (a red job: name it; pending: fail close
       fi
       # #993: required CI red at the head (never in the pre-CI shape: CI has not
       # run). QA cannot read the job log; the driver did.
+      # Under `talos.sh run` the driver's CI wait (_talos_run_ci_wait) records its
+      # answer in TALOS_QA_CI_RC: 1 is a red required check (excerpt it, no second
+      # checks read), 0 or none (no wait: qa_mode local, ci.parallel_with_qa) is
+      # no excerpt. Unset (a standalone `talos.sh prompt`) reads the checks itself.
       _CI_EXCERPT=""
-      if [ "$_shape" = first ] && [ -n "$_pr" ] && [ "$_v" != pre-ci ]; then _talos_ci_excerpt "$_pr"; fi
+      if [ "$_shape" = first ] && [ -n "$_pr" ] && [ "$_v" != pre-ci ]; then
+        case "${TALOS_QA_CI_RC-unset}" in
+          1) _talos_ci_excerpt "$_pr" --red ;;
+          unset) _talos_ci_excerpt "$_pr" ;;
+          *) : ;;
+        esac
+      fi
       if [ -n "$_CI_EXCERPT" ]; then
         _f="$_CFG_CACHE_DIR/ci-failure-block"
         {
@@ -6683,6 +6697,9 @@ _talos_run_presync() {
 # The caller holds the issue's lease, which this releases when it ends the run.
 _talos_run_ci_wait() {
   local _pr="$1" _n="$2" _w _args=() _par
+  # #993: the QA prompt reads this to build the CI failure excerpt without a
+  # second checks read; none means no wait ran here.
+  export TALOS_QA_CI_RC=none
   [ "$(cfg verify.qa_mode)" = ci ] || return 0
   _par="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ci-parallel 2>/dev/null)" || _par=false
   [ "$_par" != true ] || return 0
@@ -6695,7 +6712,7 @@ _talos_run_ci_wait() {
   _talos_emit wait "reason=ci pr=$_pr issue=$_n"
   _talos_cap _vcs pr-checks-required "$_pr" ${_args[@]+"${_args[@]}"}
   case "$_RC" in
-    0 | 1) : ;;
+    0 | 1) export TALOS_QA_CI_RC="$_RC" ;;
     2)
       _talos_lease_release "$_n"
       _talos_emit stop "action=wait reason=ci-pending pr=$_pr issue=$_n"
