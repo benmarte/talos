@@ -2,9 +2,13 @@
 # pipeline-lock.sh -- portable advisory locking for shared local state (two
 # stages racing on one on-disk file or on one repo's worktree metadata).
 #
-# macOS ships no flock(1), so `mkdir` is the atomic primitive: it creates the
-# directory or fails with EEXIST. The lock directory is "<resource>.lock.d", next
-# to the resource it protects, so two checkouts never collide.
+# macOS ships no flock(1). The lock directory is "<resource>.lock.d", next to the
+# resource it protects, so two checkouts never collide. `mkdir` makes the
+# directory but is NOT the claim: uutils mkdir (Ubuntu 26.04) lets several
+# concurrent callers all exit 0 on one new path (#999). The claim is the O_EXCL
+# create of "<lockdir>/pid" (bash noclobber, a builtin, so it does not depend on
+# the coreutils in use): only the process whose write of its token succeeds
+# holds the lock, and one whose mkdir "succeeded" but whose write failed waits.
 #
 # Sourceable API:
 #   with_lock <resource> <timeout_s> -- <cmd...>
@@ -24,12 +28,15 @@
 # exit hook from an earlier acquisition can never destroy another holder's lock.
 # Staleness: a lock whose pid is no longer a running process is reclaimed
 # (#871, #923). The lock dir is never moved: a waiter that finds the holder
-# dead takes the gate "<lockdir>.reclaim" (mkdir), re-reads the pid file under
-# it, and deletes the lock only if it still holds the dead holder's token. Only
-# that holder (dead) or a gated reclaimer can remove a lock, so a stale reading
-# -- the lock changed hands after the check -- is a no-op, and a live lock is
-# never absent for a third process to mkdir. A gate over a minute old is left
-# by a reclaimer that died inside it and is cleared.
+# dead takes the gate "<lockdir>.reclaim" (an O_EXCL file create, like the
+# claim), re-reads the pid file under it, and deletes the lock only if it still
+# holds the dead holder's token. Only that holder (dead) or a gated reclaimer
+# can remove a lock, so a stale reading -- the lock changed hands after the
+# check -- is a no-op, and a live lock is never absent for a third process to
+# claim. A gate over a minute old is left by a reclaimer that died inside it
+# and is cleared. A lock is removed by renaming the dir aside and deleting that,
+# so a racer that created its pid file in the dying dir cannot be unlinked
+# halfway and left believing it holds a lock that is gone.
 # Only EXIT is trapped (it also fires on SIGINT/SIGTERM; a trap of their own
 # would stop bash terminating). The release hook uses _talos_on_exit from
 # pipeline-cfg-cache.sh when loaded, else a minimal registry defined below.
@@ -54,6 +61,47 @@ _lock_dir_for() { printf '%s.lock.d' "$1"; }
 _LOCK_ACQUIRED_TOKEN=""
 _LOCK_TOKEN_SEQ=0
 
+# _lock_self_pid -- set _LOCK_SELF_PID to the pid of the CURRENT (sub)shell. `$$`
+# is the parent shell's pid inside a subshell, so sibling workers would share it
+# and their tokens would collide (#990). $BASHPID is the real one (bash 4+); bash
+# 3.2 (macOS /bin/bash) has none, so ask a child whose parent is this shell:
+# `exec sh` replaces the command-substitution subshell, and that sh's PPID is the
+# shell that ran the substitution. A variable, not stdout: a caller's own `$(...)`
+# would be one subshell too deep and report that subshell's pid instead.
+_LOCK_SELF_PID=""
+_lock_self_pid() {
+  if [ -n "${BASHPID:-}" ]; then
+    _LOCK_SELF_PID="$BASHPID"
+  else
+    _LOCK_SELF_PID="$(exec sh -c 'echo "$PPID"')"
+  fi
+}
+
+# _lock_excl_create FILE CONTENT -- create FILE holding CONTENT with O_EXCL
+# (noclobber): 0 if this call created it, 1 if it already existed. The caller's
+# own noclobber setting is restored.
+_lock_excl_create() {
+  local _was_set=0 _rc
+  case $- in *C*) _was_set=1 ;; esac
+  set -C
+  printf '%s\n' "$2" 2>/dev/null > "$1"
+  _rc=$?
+  [ "$_was_set" -eq 1 ] || set +C
+  return "$_rc"
+}
+
+# _lock_remove_dir DIR -- remove a lock dir by renaming it aside first (atomic),
+# then deleting the renamed copy; a plain rm -rf is a readdir/unlink/rmdir walk
+# in which a late pid file can be unlinked, leaving its writer holding nothing.
+_lock_remove_dir() {
+  local aside="$1.rm.$$.$RANDOM"
+  if mv "$1" "$aside" 2>/dev/null; then
+    rm -rf "$aside" 2>/dev/null || true
+  else
+    rm -rf "$1" 2>/dev/null || true
+  fi
+}
+
 # _lock_acquire RESOURCE TIMEOUT_S
 _lock_acquire() {
   local resource="$1" timeout="${2:-5}" lockdir pidfile tries max_tries holder holder_pid token gate
@@ -65,13 +113,17 @@ _lock_acquire() {
   [ "$max_tries" -lt 1 ] && max_tries=1
   tries=0
   while :; do
+    # mkdir only makes sure the dir exists; its exit status is not the claim
+    # (uutils mkdir succeeds for every racer). The O_EXCL pid-file create is.
     if mkdir "$lockdir" 2>/dev/null; then
+      _lock_self_pid
       _LOCK_TOKEN_SEQ=$((_LOCK_TOKEN_SEQ + 1))
-      token="$$:$_LOCK_TOKEN_SEQ"
-      printf '%s\n' "$token" > "$pidfile" 2>/dev/null
-      _LOCK_ACQUIRED_TOKEN="$token"
-      _talos_on_exit "_lock_release_owned $(printf '%q' "$resource") $(printf '%q' "$token")"
-      return 0
+      token="$_LOCK_SELF_PID:$RANDOM$RANDOM-$_LOCK_TOKEN_SEQ"
+      if _lock_excl_create "$pidfile" "$token"; then
+        _LOCK_ACQUIRED_TOKEN="$token"
+        _talos_on_exit "_lock_release_owned $(printf '%q' "$resource") $(printf '%q' "$token")"
+        return 0
+      fi
     fi
     # Someone else holds it (or lost a race creating it just now) -- check
     # whether the recorded holder is still alive before waiting it out.
@@ -84,17 +136,18 @@ _lock_acquire() {
         # still holds that dead holder's token. Tokens are unique (pid:seq),
         # nobody else can remove this lock meanwhile, and the lock dir is never
         # moved, so it is never absent while a live process holds it.
-        if mkdir "$gate" 2>/dev/null; then
+        if _lock_excl_create "$gate" "$$"; then
           if [ "$(cat "$pidfile" 2>/dev/null || true)" = "$holder" ]; then
-            rm -rf "$lockdir" 2>/dev/null || true
+            _lock_remove_dir "$lockdir"
           fi
-          rmdir "$gate" 2>/dev/null || true
-          continue    # retry mkdir immediately, doesn't count as a wait
+          rm -f "$gate" 2>/dev/null || true
+          continue    # retry the claim immediately, doesn't count as a wait
         fi
         # Another reclaimer holds the gate; clear it only when it is over a
         # minute old (its owner died inside it -- a reclaim takes milliseconds).
+        # rm -rf: a gate left by an older version is a directory.
         if [ -n "$(find "$gate" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-          rmdir "$gate" 2>/dev/null || true
+          rm -rf "$gate" 2>/dev/null || true
           continue
         fi
       fi
@@ -117,7 +170,7 @@ _lock_release_owned() {
   lockdir="$(_lock_dir_for "$resource")"
   cur="$(cat "$lockdir/pid" 2>/dev/null || true)"
   if [ -n "$token" ] && [ "$cur" = "$token" ]; then
-    rm -rf "$lockdir" 2>/dev/null || true
+    _lock_remove_dir "$lockdir"
   fi
 }
 
