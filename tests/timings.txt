@@ -176,6 +176,7 @@
 61 test-merge-queue-930.sh
 31 test-merge-queue-931.sh
 10 test-merge-queue-932.sh
+60 test-merge-queue-checks-retry.sh
 60 test-merge-queue-drain.sh
 40 test-merge-queue-retry-950.sh
 28 test-merge-queue-runner-lock.sh
