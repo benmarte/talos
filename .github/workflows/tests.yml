@@ -76,8 +76,20 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # A PR checks out the merge commit; depth 2 holds its first parent,
+          # HEAD^1, the base the PR is diffed against (#972).
+          fetch-depth: 2
       # --timings: each shard log carries a TIMINGS block, the input for refitting tests/timings.txt.
-      - name: Run test shard
+      # A PR runs only the tests its changes select. That is safe here because nothing
+      # merges without a full run: the Talos merge queue (docs/reference.md) runs the whole
+      # suite on every talos/queue/** candidate and every push to main runs it again, so a
+      # test a PR run missed fails at the candidate and the queue ejects the PR (#972).
+      - name: Run test shard (PR: the tests the changes select)
+        if: github.event_name == 'pull_request'
+        run: bash tests/run-tests.sh --no-cache --quiet --timings --changed HEAD^1 --shard ${{ matrix.shard }}
+      - name: Run test shard (full suite)
+        if: github.event_name != 'pull_request'
         run: bash tests/run-tests.sh --no-cache --quiet --timings --shard ${{ matrix.shard }}
 
   # The one required status. It exists so the check name "test (ubuntu-latest)"
