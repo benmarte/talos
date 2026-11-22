@@ -422,13 +422,13 @@ assert_contains "$OUT" "reason=iterations-exhausted max=1" "AC12: the capped run
 assert_contains "$(journal)" "vcs ready-pr 12" "AC2: the pass continued (ready-pr called)"
 assert_eq "1" "$(journal | grep -c 'vcs ready-pr 12')" "AC4: ready-pr is called exactly once for that PR"
 assert_contains "$(journal)" "vcs pr-is-draft 12" "AC6: the Draft guard asked the PR, never memory"
-assert_contains "$(journal)" "vcs pr-checks-required 12 --wait 570" "AC7: the one CI wait uses B=570 (min(900, 600000/1000-30))"
+assert_contains "$(journal)" "vcs pr-checks-required 12 --wait 900" "AC7: the one CI wait uses verify.ci_wait_s, no stage cap (#991)"
 assert_eq "1" "$(journal | grep -c 'vcs pr-checks-required 12')" "AC7: exactly one CI wait before QA"
 assert_contains "$(journal)" "agent qa" "AC9: QA dispatched through the driver's one dispatch path"
 grep -q "You are QA" "$STUB_DIR/agent.stdin"
 assert_eq "0" "$?" "AC9: the agent received prompt qa's render on stdin, never argv"
 assert_contains "$(journal)" "post_stage qa" "AC12: the journal holds the full continuation"
-assert_eq "ready-pr 12>pr-is-draft 12>pr-checks-required 12 --wait 570>agent qa>post_stage qa" "$(draft_order)" \
+assert_eq "ready-pr 12>pr-is-draft 12>pr-checks-required 12 --wait 900>agent qa>post_stage qa" "$(draft_order)" \
   "AC12: the continuation's order is the Draft stage order (ready-pr, the guard, the CI wait, QA, its post_stage)"
 
 # AC8 (#535): pr.ready_gate qa-local. QA already passed on the draft head (the
@@ -457,7 +457,7 @@ draft_collect ready
 draft_ready
 printf 'PASS: verified\n' > "$STUB_DIR/message.qa"
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
-assert_eq "ready-pr 12>pr-is-draft 12>pr-checks-required 12 --wait 570>agent qa>post_stage qa" "$(draft_order)" \
+assert_eq "ready-pr 12>pr-is-draft 12>pr-checks-required 12 --wait 900>agent qa>post_stage qa" "$(draft_order)" \
   "AC8 gate off: ready-pr, the guard, the CI wait under qa_mode ci, then QA (unchanged)"
 
 # AC8: qa_mode local -- the continuation calls no pr-checks-required at all;
@@ -522,8 +522,7 @@ assert_eq "1" "$RC" "AC6: any other rc/output stops draft-unverified"
 assert_contains "$OUT" "stop reason=draft-unverified" "AC6: the stop line"
 assert_not_contains "$(journal)" "agent qa" "AC6: 0 agent qa"
 
-# AC7: a red required check is scheduling -- the qa-ci-red warn, then the ci
-# wait stop, no QA, no merge gate, exit 0.
+# AC7 (#991): a red required check still dispatches QA, which reports it.
 reset_stubs
 LEASE_RESET
 draft_cfg '"qa_mode": "ci", "timeout_ms": 600000, "ci_wait_s": 900' ', "merge": {"required_checks": ["test (ubuntu-latest)"]}'
@@ -531,14 +530,14 @@ draft_collect ready
 draft_ready
 printf 'pr-checks-required: failed: test (ubuntu-latest)\n' > "$STUB_DIR/pr-checks-required.12.err"
 printf 1 > "$STUB_DIR/pr-checks-required.12.rc"
+printf 'PASS: verified\n' > "$STUB_DIR/message.qa"
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
-assert_eq "0" "$RC" "AC7: a red required check is scheduling (exit 0)"
-assert_contains "$OUT" "warn reason=qa-ci-red pr=12 issue=9" "AC7: the warn line names the reason and the PR"
-assert_contains "$OUT" "stop action=wait reason=ci pr=12 issue=9" "AC7: the stop carries the ci wait shape"
-assert_not_contains "$(journal)" "agent qa" "AC7: no QA dispatch"
+assert_eq "0" "$RC" "AC7: a red required check does not fail the run (exit 0)"
+assert_not_contains "$OUT" "reason=ci-pending" "AC7: a red check is not a pending wait"
+assert_contains "$(journal)" "agent qa" "AC7: a red required check still dispatches QA"
 
 # AC7: rc 1 without the failed: line still dispatches QA; rc 2 (pending at the
-# deadline) dispatches QA too.
+# budget) ends the run with wait reason=ci-pending and no QA (#991).
 reset_stubs
 LEASE_RESET
 draft_cfg '"qa_mode": "ci", "timeout_ms": 600000, "ci_wait_s": 900' ', "merge": {"required_checks": ["test (ubuntu-latest)"]}'
@@ -558,10 +557,11 @@ draft_ready
 printf 2 > "$STUB_DIR/pr-checks-required.12.rc"
 printf 'PASS: verified\n' > "$STUB_DIR/message.qa"
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
-assert_contains "$(journal)" "agent qa" "AC7: rc 2 (pending at the deadline) dispatches QA"
+assert_eq "0" "$RC" "AC7: rc 2 (pending at the budget) ends the run with exit 0"
+assert_contains "$OUT" "wait reason=ci-pending pr=12 issue=9" "AC7: rc 2 (pending at the budget) is wait reason=ci-pending"
+assert_not_contains "$(journal)" "agent qa" "AC7: rc 2 (pending at the budget) dispatches no QA"
 
-# AC7: the wait bound clamps at 3600, and a non-positive B omits the flag
-# entirely.
+# AC7: the wait bound clamps at 3600, and verify.timeout_ms is not part of it.
 reset_stubs
 LEASE_RESET
 draft_cfg '"qa_mode": "ci", "timeout_ms": 6000000, "ci_wait_s": 4000' ', "merge": {"required_checks": ["x"]}'
@@ -578,8 +578,7 @@ draft_collect ready
 draft_ready
 printf 'PASS: verified\n' > "$STUB_DIR/message.qa"
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
-assert_contains "$(journal)" "vcs pr-checks-required 12" "AC7: the CI-wait call happens even when B is not a positive integer"
-assert_not_contains "$(journal)" "pr-checks-required 12 --wait" "AC7: a non-positive B omits the --wait flag entirely"
+assert_contains "$(journal)" "vcs pr-checks-required 12 --wait 900" "AC7: verify.timeout_ms no longer caps the driver's wait (#991)"
 
 # AC9: qa off -- no dispatch, return to the loop.
 reset_stubs
