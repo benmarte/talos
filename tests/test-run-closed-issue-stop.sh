@@ -5,6 +5,7 @@
 #   AC1 a CLOSED issue: `stop reason=issue-closed issue=<n>`, exit 0, no stage, no blocked label
 #   AC2 a MERGED PR: the same stop
 #   AC3 the run's lease is released on that stop
+#   AC6 a run started on an already-CLOSED issue: no state change, no label
 #   AC4 (same) an open issue with an open PR is dispatched as before
 #   (no id) an unreadable pre-dispatch read keeps today's behaviour, with one warn line
 set -u
@@ -58,6 +59,22 @@ flip_after 2
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=3000 rn --issue 9 --max-iterations 3
 assert_contains "$OUT" "stop reason=issue-closed issue=9" "AC3 the run stopped on the closed issue"
 assert_not_contains "$(cat "$LEASE" 2>/dev/null)" "issue=9 " "AC3 the run's lease on the issue is released"
+
+# ── AC6 ─────────────────────────────────────────────────────────────────────
+# The issue reads CLOSED from the very first read, so the run is started on it.
+reset_stubs; LEASE_RESET
+printf '%s' "$CLOSED9" > "$STUB_DIR/view-issue.9"
+printf 'CONFIRMED: ok\n' > "$STUB_DIR/message"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=3500 rn --issue 9 --max-iterations 3
+assert_eq "0" "$RC" "AC6 a run started on a closed issue exits 0"
+assert_contains "$OUT" "stop reason=issue-closed issue=9" "AC6 the run stops on the closed issue"
+assert_not_contains "$(journal)" "agent " "AC6 no stage is dispatched"
+assert_not_contains "$(journal)" "label-issue" "AC6 no label is added or removed"
+assert_not_contains "$(journal)" "close-issue" "AC6 the issue's state is never written (close)"
+assert_not_contains "$(journal)" "reopen" "AC6 the issue's state is never written (reopen)"
+assert_not_contains "$(journal)" "record-attempt" "AC6 no attempt is recorded"
+assert_not_contains "$(journal)" "post-verdict" "AC6 no verdict is posted on the closed issue"
+assert_not_contains "$(journal)" "comment-issue" "AC6 no comment is posted on the closed issue"
 
 # ── AC4 (same) ──────────────────────────────────────────────────────────────
 reset_stubs; LEASE_RESET
