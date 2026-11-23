@@ -468,11 +468,15 @@ gm
 assert_eq "verdict=merge" "$OUT" "provider: gitlab, pr-mergeable MERGEABLE reaches merge"
 assert_eq "0" "$(called conflict-files)" "provider: gitlab never calls conflict-files"
 assert_eq "1" "$(called pr-mergeable)" "provider: gitlab asks pr-mergeable"
-set_stub pr-mergeable 1 "CONFLICTING"
+set_stub pr-mergeable 1 "CONFLICTING"; set_stub conflict-files 0 "scripts/talos.sh"
 gm
 assert_eq "verdict=redispatch
-reason=merge-conflict" "$OUT" "provider: gitlab, CONFLICTING is the merge-conflict verdict, never a merge"
+reason=merge-conflict" "$OUT" "provider: gitlab, CONFLICTING with a real local conflict is the merge-conflict verdict, never a merge"
 assert_gate "redispatch (gitlab merge-conflict)"
+set_stub conflict-files 0 ""
+gm
+assert_eq "verdict=wait
+reason=base-synced" "$OUT" "provider: gitlab, CONFLICTING but a clean local trial merge is wait base-synced (#1056)"
 set_stub pr-mergeable 2 "UNKNOWN"
 gm
 assert_eq "verdict=wait

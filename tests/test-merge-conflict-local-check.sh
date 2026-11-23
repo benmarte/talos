@@ -15,8 +15,8 @@ set -u
 TALOS_RUN_PART=1056 TALOS_RUN_EMBED=1 . "$(dirname "$0")/talos-run-sections.sh"
 
 printf '%s' "$STUB_BODY" > "$GS/pipeline-mergebase.sh"
-lc_fixture() {  # a PR at the merge gate, CONFLICTING as GitHub reads it, auto_sync off
-  merge_fixture "$ALL_APPROVALS" ', "merge": {"auto_sync": false}'
+lc_fixture() {  # a PR at the merge gate, CONFLICTING as the provider reads it; $1 = extra config members
+  merge_fixture "$ALL_APPROVALS" ', "merge": {"auto_sync": false}'"${1:-}"
   draft_ready
   printf 'CONFLICTING' > "$STUB_DIR/pr-mergeable.out"
   printf 1 > "$STUB_DIR/pr-mergeable.rc"
@@ -26,8 +26,9 @@ lc_fixture() {  # a PR at the merge gate, CONFLICTING as GitHub reads it, auto_s
 lc_run() { TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --issue 9 --max-iterations "${1:-3}"; }
 lc_count() { journal | grep -c "$1"; }
 
-# AC1 (merge gate): CONFLICTING by GitHub's field, clean by the local trial merge.
-lc_fixture
+# AC1 (merge gate): CONFLICTING by the provider's field, clean by the local trial merge.
+# A provider judged by pr-mergeable alone (here gitlab) is where the field is trusted.
+lc_fixture ', "vcs": {"provider": "gitlab"}'
 : > "$STUB_DIR/conflict-files.out"
 lc_run
 assert_eq "0" "$RC" "AC1 a lazily CONFLICTING PR ends the run clean"
@@ -56,6 +57,9 @@ assert_eq "0" "$(lc_count 'record-attempt')" "AC1 pre-QA: no attempt is recorded
 lc_fixture
 printf 'CHANGELOG.md\n' > "$STUB_DIR/conflict-files.out"
 printf 0 > "$STUB_DIR/mergebase.rc"
+# The sync pushes a merged head: the trial merge is clean afterwards, while the
+# provider's field still reads CONFLICTING (lc_fixture) until it catches up.
+printf ': > "$d/conflict-files.out"\n' > "$STUB_DIR/hook.mergebase"
 lc_run
 assert_contains "$OUT" "stop verdict=wait reason=base-synced" "AC2 a synced CHANGELOG.md conflict answers wait reason=base-synced"
 assert_eq "1" "$(lc_count '^mergebase 12$')" "AC2 pipeline-mergebase.sh ran on PR 12"
