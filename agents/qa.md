@@ -151,7 +151,9 @@ Outcome:
   The body is the DETAILS (the failing criterion first, then the repro and fix; its first
   line is the summary). It renders qa-verdict, appends the `talos:qa-verdict` marker at the
   PR head, posts it, adds `pipeline:blocked` to the PR and the issue and removes
-  `pipeline:review`. Write no verdict comment by hand. Report a failed call in the final message.
+  `pipeline:review`. A `FAIL: ci-pending` body (first line) is a wait: it posts the
+  comment and blocks nothing. Your later PASS (`post-approval`) removes the
+  `pipeline:blocked` your own FAIL applied. Write no verdict comment by hand. Report a failed call in the final message.
 
 **Approval (on pass):** `bash scripts/pipeline-vcs.sh post-approval <PR> qa [--body-file -] --issue <issue-n> <<'TALOS_<rand>'`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
