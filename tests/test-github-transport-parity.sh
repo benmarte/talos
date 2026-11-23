@@ -166,7 +166,7 @@ assert_contains "$(req_of)" "pulls?state=open&head=acme:fix/issue-42-guard" "vie
 Q="$(printf '%s\n' "[$PR9]")"
 parity "list-prs" list-prs
 json_is "list-prs: lane fields" \
-  '[{"number":9,"title":"fix: x","headRefName":"fix/issue-42-guard","baseRefName":"main","labels":[{"name":"pipeline:review"}],"isCrossRepository":false}]'
+  '[{"number":9,"title":"fix: x","headRefName":"fix/issue-42-guard","baseRefName":"main","labels":[{"name":"pipeline:review"}],"isCrossRepository":false,"headRefOid":"0123456789abcdef0123456789abcdef01234567","isDraft":false}]'
 
 Q="$(printf '%s\n' "[$PR9]")"
 CFG=',"base_branch":"lane"'

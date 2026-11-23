@@ -1139,23 +1139,55 @@ _talos_relay() {
 # two minutes is not used; and every verb that writes (done, gate, docs-gate,
 # post-merge, sweep, claim) empties it first, so
 # a pass after a stage's labels changed reads the state that stage left.
-_talos_collect_get() {  # prints the cached state; non-zero on a miss
-  local _c="${TALOS_COLLECT_CACHE:-}"
-  [ -n "$_c" ] && [ -f "$_c" ] && [ ! -L "$_c" ] && [ -O "$_c" ] && [ -s "$_c" ] || return 1
-  [ -n "$(find "$_c" -mmin -2 2>/dev/null)" ] || return 1
-  cat "$_c"
+#
+# A collect scoped to one issue (`collect --issue <N>`, #1038) holds only that
+# issue's own PR, so it is kept apart (<cache>.issue-<N>): it answers the same
+# scope again and never an unscoped read, while the unscoped copy (a superset)
+# answers either. The map's snapshot takes a scoped state too, keeping the
+# stored PRs of the other issues (_talos_run_snapshot).
+_talos_collect_get() {  # [<issue>]: prints the cached state; non-zero on a miss
+  local _c="${TALOS_COLLECT_CACHE:-}" _f
+  [ -n "$_c" ] || return 1
+  for _f in "$_c" ${1:+"$_c.issue-$1"}; do
+    [ -f "$_f" ] && [ ! -L "$_f" ] && [ -O "$_f" ] && [ -s "$_f" ] || continue
+    [ -n "$(find "$_f" -mmin -2 2>/dev/null)" ] || continue
+    cat "$_f"
+    return 0
+  done
+  return 1
 }
-_talos_collect_put() {  # $1 = a successful collect's stdout
-  local _c="${TALOS_COLLECT_CACHE:-}"
+_talos_collect_put() {  # $1 = a successful collect's stdout, $2 = the issue it was scoped to
+  local _c="${TALOS_COLLECT_CACHE:-}" _f="${TALOS_COLLECT_CACHE:-}${2:+.issue-$2}"
   case "$1" in '{'*'}') ;; *) return 0 ;; esac
   if [ -n "$_c" ]; then
-    printf '%s' "$1" > "$_c.$$" && mv "$_c.$$" "$_c" 2>/dev/null || rm -f "$_c.$$"
+    printf '%s' "$1" > "$_f.$$" && mv "$_f.$$" "$_f" 2>/dev/null || rm -f "$_f.$$"
   fi
   # The map's snapshot keeps it past the next write (#614); with or without the
   # cache, so a skill-driven `next` feeds the map too (#887).
   printf '%s' "$1" | _talos_run_snapshot active
 }
-_talos_collect_drop() { [ -z "${TALOS_COLLECT_CACHE:-}" ] || rm -f "$TALOS_COLLECT_CACHE"; }
+_talos_collect_drop() {
+  local _c="${TALOS_COLLECT_CACHE:-}"
+  [ -z "$_c" ] || rm -f "$_c" "$_c".issue-*
+}
+
+# _talos_collect_live <tag> [<issue>] (#1038): one live collect, scoped to <issue>
+# when given, through _talos_run_capture (so _OUT, _RC). The read that failed
+# names itself in a file the collect writes (TALOS_STATE_DETAIL_FILE).
+_talos_collect_live() {
+  rm -f "$_CFG_CACHE_DIR/state-detail"
+  TALOS_STATE_DETAIL_FILE="$_CFG_CACHE_DIR/state-detail" \
+    _talos_run_capture "$1" bash "$SCRIPT_DIR/pipeline-status-file.sh" collect ${2:+--issue "$2"}
+}
+
+# _talos_state_stop: end on a failed collect as `stop reason=state-unavailable`,
+# with `detail=<read>:<cause>` (list-prs:deadline, list-issues:failed,
+# check-approval-sha:auth) when the collect said which read it was.
+_talos_state_stop() {
+  local _d=""
+  [ ! -f "$_CFG_CACHE_DIR/state-detail" ] || _d="$(head -c 80 "$_CFG_CACHE_DIR/state-detail" | tr -cd 'a-z0-9:._-')"
+  _talos_stop "state-unavailable${_d:+ detail=$_d}"
+}
 
 # _talos_post <pr> <text>: a PR comment; the text reaches the verb in a file.
 _talos_post() {
@@ -4928,8 +4960,8 @@ _talos_state() {
                      pipeline-contract.sh pipeline-next.py pipeline-draft-check.sh pipeline-vcs.sh
   local _json
   _TALOS_RL_MODE=wait
-  _talos_run_capture state bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
-  [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
+  _talos_collect_live state
+  [ "$_RC" -eq 0 ] || _talos_state_stop
   _json="$_OUT"
   case "$_json" in
     '{'*'}') : ;;
@@ -5134,12 +5166,14 @@ _talos_next() {
                      pipeline-vcs.sh pipeline-budget.sh pipeline-lock.sh
   _TALOS_RL_MODE=next
 
-  if _OUT="$(_talos_collect_get)"; then
+  # --issue <N> reads only issue N and its own PR (#1038): the issue-side answer
+  # below depends on nothing else. Without it the walk needs every PR's stage.
+  if _OUT="$(_talos_collect_get "$_issue")"; then
     : # inside a run: the state it already collected (#554)
   else
-    _talos_run_capture next bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
-    [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
-    _talos_collect_put "$_OUT"
+    _talos_collect_live next "$_issue"
+    [ "$_RC" -eq 0 ] || _talos_state_stop
+    _talos_collect_put "$_OUT" "$_issue"
   fi
   printf '%s' "$_OUT" > "$_CFG_CACHE_DIR/state.json"
 
@@ -5321,8 +5355,8 @@ _talos_map_render() {  # extra arguments go to talos-map.py (--missing-titles)
 _talos_map_refresh() {
   local _since _miss _f="$_CFG_CACHE_DIR/merged.json"
   _TALOS_MAP_FORCE=1
-  _talos_run_capture map bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
-  [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
+  _talos_collect_live map
+  [ "$_RC" -eq 0 ] || _talos_state_stop
   _talos_collect_put "$_OUT"
   _since="$(python3 -I -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)).strftime("%Y-%m-%d"))')"
   _talos_run_capture map bash "$SCRIPT_DIR/pipeline-vcs.sh" list-merged-prs --since "$_since"
@@ -5426,6 +5460,14 @@ try:
 except ValueError:
     col = None
 if isinstance(col, dict) and col:
+    scope = col.pop("scope", None)
+    if isinstance(scope, int) and not isinstance(scope, bool):
+        # A collect scoped to one issue (#1038) looked up only the PR of that issue:
+        # the stored PRs of the other issues stay, the ones of the scoped issue are replaced.
+        old = snap.get("collect") if isinstance(snap.get("collect"), dict) else {}
+        keep = [p for p in old.get("prs") or [] if isinstance(p, dict) and p.get("issue") != scope]
+        col["prs"] = sorted(keep + [p for p in col.get("prs") or [] if isinstance(p, dict)],
+                            key=lambda p: p.get("n") if isinstance(p.get("n"), int) else 0)
     snap["collect"], snap["collect_ts"] = col, now
     # The collect is the word on the issues it lists; the rest keep their tier.
     prio = snap.get("priority") if isinstance(snap.get("priority"), dict) else {}
@@ -6748,8 +6790,8 @@ _talos_run_blocked_fix() {
 # review finding, goes to the fix round. Returns 1 when there is none.
 _talos_run_blocked_pr() {
   local _st _pr
-  if ! _st="$(_talos_collect_get)"; then
-    _talos_run_capture collect bash "$SCRIPT_DIR"/pipeline-status-file.sh collect
+  if ! _st="$(_talos_collect_get "$1")"; then
+    _talos_collect_live collect "$1"
     [ "$_RC" -eq 0 ] || return 1
     _st="$_OUT"
   fi
@@ -6919,10 +6961,10 @@ _talos_run_qa_draft_guard() {
     *) _talos_stop draft-unverified ;;
   esac
   _talos_collect_drop
-  _talos_run_capture collect bash "$SCRIPT_DIR"/pipeline-status-file.sh collect
-  [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
+  _talos_collect_live collect "$_n"
+  [ "$_RC" -eq 0 ] || _talos_state_stop
   _st="$_OUT"
-  _talos_collect_put "$_st"
+  _talos_collect_put "$_st" "$_n"
   _stage="$(python3 -I -c 'import json, sys
 for p in json.loads(sys.stdin.read()).get("prs") or []:
     if isinstance(p, dict) and p.get("n") == int(sys.argv[1]) and isinstance(p.get("stage"), str):
