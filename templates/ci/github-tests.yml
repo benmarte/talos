@@ -30,6 +30,14 @@
 #     first merge's still-running macOS job and silently lose that
 #     coverage (queue rather than cancel, same reasoning as
 #     .github/workflows/canary.yml).
+#     The group also carries the draft state of the PR payload. A branch
+#     pushed as a draft and marked ready seconds later starts two runs for
+#     one head: the `synchronize` run, whose payload still says draft (every
+#     job skipped), and the `ready_for_review` run. In one shared group the
+#     second to start cancelled the first, and when that was the real run
+#     the PR was left with no CI. With `-draft` / `-ready` in the group the
+#     skipped run can never cancel the real one; a newer ready push still
+#     cancels an older ready run.
 #
 #   pull_request: ubuntu-latest only
 #     Full cross-OS runs are the expensive half of CI cost, and on most repos
@@ -79,7 +87,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
-  group: tests-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  group: tests-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}-${{ github.event.pull_request.draft == true && 'draft' || 'ready' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

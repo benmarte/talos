@@ -51,12 +51,14 @@
 0 test-callsite-guard.sh
 1 test-callsite-literal-defaults.sh
 44 test-canary.sh
+1 test-ci-concurrency-draft-race.sh
 2 test-ci-count-merge-base.sh
 2 test-ci-excerpt-marker-safe.sh
 8 test-ci-failure-excerpt.sh
 21 test-ci-gate.sh
 85 test-ci-parallel-qa.sh
 4 test-ci-runs-metric.sh
+4 test-ci-scope-wording.sh
 1 test-ci-tests-workflow.sh
 58 test-claim.sh
 26 test-claude-hook-neutralise.sh
@@ -228,6 +230,7 @@
 0 test-prompt-rules.sh
 9 test-providers.sh
 12 test-python-safe-path.sh
+10 test-qa-ci-pending-driver-wait.sh
 10 test-qa-ci-wait-driver.sh
 40 test-qa-draft-ready.sh
 88 test-qa-environment-751.sh
@@ -245,11 +248,13 @@
 5 test-qa-targeted-budget.sh
 5 test-rate-limit-raw-sites.sh
 3 test-ready-gate.sh
+5 test-record-attempt-stage-check.sh
 60 test-red-check-747.sh
 24 test-red-check-drop-773.sh
 32 test-red-ci-routes-to-gate.sh
 42 test-ref-checks-required-928.sh
 1 test-reference-reasons-documented.sh
+6 test-repo-derive-no-api.sh
 163 test-repo-guides-789.sh
 15 test-require-roles-848.sh
 26 test-required-when-835.sh
