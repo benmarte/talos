@@ -89,6 +89,19 @@ STUB_PR_HEAD_SHA="$SHA_B" approve
 STUB_PR_HEAD_SHA="$SHA_C" approve
 assert_eq "0" "$(blocked_removed 9)" "AC3 a block QA's earlier PASS already cleared is not QA's again"
 
+fresh   # AC3 a forged QA FAIL comment (another author) is not QA's block
+STUB_CURRENT_USER=mallory verdict "$BODY_DEFECT"
+: > "$GH_LOG"
+STUB_PR_HEAD_SHA="$SHA_B" approve
+assert_eq "0" "$(blocked_removed 9)" "AC3 a verdict comment by an untrusted author: the PR's pipeline:blocked stays"
+assert_eq "0" "$(blocked_removed 5)" "AC3 a verdict comment by an untrusted author: the issue's pipeline:blocked stays"
+fresh   # AC3 no trust set resolved (no identity, no markers.trusted_authors): nothing is cleared
+verdict "$BODY_DEFECT"
+: > "$GH_LOG"
+STUB_CURRENT_USER= STUB_PR_HEAD_SHA="$SHA_B" approve
+assert_eq "0" "$(blocked_removed 9)" "AC3 trust unresolved: the PR's pipeline:blocked stays (fail closed)"
+assert_eq "0" "$(blocked_removed 5)" "AC3 trust unresolved: the issue's pipeline:blocked stays (fail closed)"
+
 # ── AC4: after the wait and the PASS, routing merges ─────────────────────────
 # The labels the verbs leave are replayed from the gh log; the collect stage is
 # what the router makes of them (a blocked label wins, else the PR is merge-ready).

@@ -11816,11 +11816,29 @@ print(sum(1 for c in data.get('comments', []) if body_last_line(c.get('body', ''
 # approval at <sha> (a repeated call) does not end it. A block from any other
 # source (a gate, a human) has no such comment and is never touched. The
 # label calls are idempotent: removing an absent label is no error.
+# The verdict comment must come from a trusted author, as for every marker
+# reader (_vcs_shared_trust_py): anyone who can comment could otherwise forge the
+# pair of lines and have a PASS lift a gate's or a person's block. With
+# markers.verify_authors on and no trust set resolved (no markers.trusted_authors,
+# no identity) nothing is cleared. An approval marker needs no author check:
+# it can only end the clearing, never start it.
 _pa_clear_qa_block() {
-  local _cb_armed
-  _cb_armed="$(printf '%s' "$1" | PA_SHA="$2" python3 -I -c "$(_vcs_shared_trust_py)
+  local _cb_armed _cb_trusted _cb_verify _cb_user="" _cb_refused="" _cb_rc=0
+  _cb_trusted="$(cfg markers.trusted_authors)"
+  _cb_verify="$(cfg markers.verify_authors)"
+  if [ "$_cb_verify" = "true" ]; then
+    _cb_user="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" current-user ${REPO:+--repo "$REPO"} 2>/dev/null)" || _cb_rc=$?
+    [ "$_cb_rc" -eq 0 ] || _cb_user=""
+    [ "$_cb_rc" -ne 3 ] || _cb_refused=1
+  fi
+  _cb_armed="$(printf '%s' "$1" | PA_SHA="$2" TRUSTED_AUTHORS="$_cb_trusted" VERIFY_AUTHORS="$_cb_verify" CURRENT_USER="$_cb_user" CURRENT_USER_REFUSED="$_cb_refused" TALOS_CFG="$_TALOS_CFG" python3 -I -c "$(_vcs_shared_trust_py)
 import json, os, sys
 sha = os.environ.get('PA_SHA', '')
+verify, trusted = load_trust()
+enforced = author_check_enforced(verify, trusted)
+if verify and not enforced:
+    print('no')   # trust unresolved: fail closed, clear nothing
+    sys.exit(0)
 try:
     data = json.load(sys.stdin)
 except Exception:
@@ -11830,7 +11848,10 @@ armed = False
 for c in data.get('comments', []):
     last = body_last_line(c.get('body', '') or '')
     lines = [l.strip() for l in (c.get('body', '') or '').splitlines()]
+    author = c.get('author', {}).get('login', '') if isinstance(c.get('author'), dict) else ''
     if last.startswith('<!-- talos:qa-verdict ') and '<!-- talos:blocked-by=qa -->' in lines:
+        if enforced and author not in trusted:
+            continue
         armed = True
     elif last.startswith('<!-- talos:approval ') and last.endswith(' role=qa -->') and ('sha=' + sha + ' ') not in last:
         armed = False
