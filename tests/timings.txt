@@ -234,6 +234,7 @@
 9 test-providers.sh
 12 test-python-safe-path.sh
 10 test-qa-ci-pending-driver-wait.sh
+30 test-qa-ci-pending-no-block.sh
 10 test-qa-ci-wait-driver.sh
 40 test-qa-draft-ready.sh
 88 test-qa-environment-751.sh
