@@ -408,6 +408,12 @@
 #                                             cannot be read. github, github-api,
 #                                             gitlab, azure; file mode has no PR
 #                                             (exit 1).
+#   pr-state <n>                              Print `open`, `closed` or `merged` for the
+#                                             PR (#1057: `talos.sh run` asks before a
+#                                             dispatch). Exits 1 with nothing on stdout
+#                                             when it cannot be read. github only; the
+#                                             other providers answer "not implemented
+#                                             for provider".
 #   pr-mergeable <n>                          Print MERGEABLE / CONFLICTING / UNKNOWN
 #                                             for the PR's mergeability with its base
 #                                             (#214). Exit 0/1/2 respectively. UNKNOWN
@@ -6013,6 +6019,7 @@ d = json.loads(issue)
 print(json.dumps({
     'title': d.get('title', ''),
     'body': d.get('body') or '',
+    'state': d.get('state', ''),
     'labels': [{'name': l['name']} for l in d.get('labels', [])],
     'comments': [dict(c, url=c.get('html_url', '')) for c in json.loads(head)['comments']]}))
 "
@@ -6698,6 +6705,20 @@ json.dump([dict(p, headRefName=(p.get('head') or {}).get('ref', '')) for p in pr
       ref="$(_gh_pull_cached "$n" | _gh_field head.ref)"
       [ -z "$ref" ] && { echo "pipeline-vcs: pr-head-ref: could not resolve the head branch of PR #$n" >&2; exit 1; }
       printf '%s\n' "$ref"
+      ;;
+    pr-state)
+      # pr-state <n> (#1057): open, closed or merged, from the one pulls/<n> read.
+      local n="${1:-}" _ps_pr
+      _gh_num "$verb" PR "$n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$n (.state, .merged_at)"; return 0; }
+      _ps_pr="$(_gh_req GET "$_GH_API/pulls/$n")" || exit 1
+      printf '%s' "$_ps_pr" | python3 -I -c '
+import json, sys
+d = json.load(sys.stdin)
+s = "merged" if d.get("merged_at") else d.get("state")
+if s not in ("open", "closed", "merged"):
+    sys.exit(1)
+print(s)' || { echo "pipeline-vcs: pr-state: PR #$n has no readable state" >&2; exit 1; }
       ;;
     pr-mergeable)
       # pr-mergeable <n> (#214): REST `mergeable` is true/false/null (null = not
