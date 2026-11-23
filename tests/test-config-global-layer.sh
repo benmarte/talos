@@ -95,6 +95,7 @@ vcs.file.source.path
 vcs.provider
 vcs.repo
 verify
+verify.ci_scope
 verify.commands
 verify.dev_tests
 verify.e2e
