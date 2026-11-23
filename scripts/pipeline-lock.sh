@@ -33,8 +33,11 @@
 # holds the dead holder's token. Only that holder (dead) or a gated reclaimer
 # can remove a lock, so a stale reading -- the lock changed hands after the
 # check -- is a no-op, and a live lock is never absent for a third process to
-# claim. A gate over a minute old is left by a reclaimer that died inside it
-# and is cleared. A lock is removed by renaming the dir aside and deleting that,
+# claim. A lock dir with no pid file, or an empty one, is a holder that died
+# inside the claim window (#1011): it is reclaimed the same way once the dir's
+# mtime is over a minute old. A gate over a minute old is left by a reclaimer
+# that died inside it and is cleared by renaming it aside, so of several waiters
+# only the one whose rename succeeds proceeds. A lock is removed by renaming the dir aside and deleting that,
 # so a racer that created its pid file in the dying dir cannot be unlinked
 # halfway and left believing it holds a lock that is gone.
 # Only EXIT is trapped (it also fires on SIGINT/SIGTERM; a trap of their own
@@ -102,9 +105,34 @@ _lock_remove_dir() {
   fi
 }
 
+# _lock_older_than_grace PATH -- 0 when PATH's mtime is over a minute old (the
+# grace a claim, or a reclaimer inside the gate, has to finish).
+_lock_older_than_grace() {
+  [ -n "$(find "$1" -maxdepth 0 -mmin +1 2>/dev/null)" ]
+}
+
+# _lock_clear_stale_gate GATE -- 0 if this call cleared a gate left by a dead
+# reclaimer. The gate is renamed aside (atomic), so of several waiters that all
+# read it as stale only the one whose rename succeeds proceeds. If what it moved
+# turns out to be fresh (another waiter cleared the stale gate and a new
+# reclaimer took the gate in between), it is linked back and this call reports 1.
+# A gate left by an older version is a directory: removed with rm -rf.
+_lock_clear_stale_gate() {
+  local gate="$1" aside="$1.stale.$$.$RANDOM"
+  _lock_older_than_grace "$gate" || return 1
+  mv "$gate" "$aside" 2>/dev/null || return 1
+  if ! _lock_older_than_grace "$aside"; then
+    ln "$aside" "$gate" 2>/dev/null || true
+    rm -rf "$aside" 2>/dev/null || true
+    return 1
+  fi
+  rm -rf "$aside" 2>/dev/null || true
+  return 0
+}
+
 # _lock_acquire RESOURCE TIMEOUT_S
 _lock_acquire() {
-  local resource="$1" timeout="${2:-5}" lockdir pidfile tries max_tries holder holder_pid token gate
+  local resource="$1" timeout="${2:-5}" lockdir pidfile tries max_tries holder holder_pid token gate dead
   lockdir="$(_lock_dir_for "$resource")"
   pidfile="$lockdir/pid"
   gate="$lockdir.reclaim"
@@ -126,18 +154,28 @@ _lock_acquire() {
       fi
     fi
     # Someone else holds it (or lost a race creating it just now) -- check
-    # whether the recorded holder is still alive before waiting it out.
-    if [ -f "$pidfile" ]; then
+    # whether the recorded holder is still alive before waiting it out. A holder
+    # that died inside the claim window leaves no pid file or an empty one
+    # (#1011): that counts as a dead holder once the dir is over the grace period.
+    if [ -d "$lockdir" ]; then
       holder="$(cat "$pidfile" 2>/dev/null || true)"
       holder_pid="${holder%%:*}"
-      if [ -n "$holder_pid" ] && ! kill -0 "$holder_pid" 2>/dev/null; then
+      dead=0
+      if [ -n "$holder_pid" ]; then
+        kill -0 "$holder_pid" 2>/dev/null || dead=1
+      elif _lock_older_than_grace "$lockdir"; then
+        dead=1
+      fi
+      if [ "$dead" -eq 1 ]; then
         # Gated reclaim (#923): the lock may have changed hands since the
         # holder was read, so act only under the gate and only if the pid file
-        # still holds that dead holder's token. Tokens are unique (pid:seq),
+        # still holds that dead holder's token (still no token and the dir still
+        # old, for a holder that never wrote one). Tokens are unique (pid:seq),
         # nobody else can remove this lock meanwhile, and the lock dir is never
         # moved, so it is never absent while a live process holds it.
         if _lock_excl_create "$gate" "$$"; then
-          if [ "$(cat "$pidfile" 2>/dev/null || true)" = "$holder" ]; then
+          if [ "$(cat "$pidfile" 2>/dev/null || true)" = "$holder" ] &&
+             { [ -n "$holder_pid" ] || _lock_older_than_grace "$lockdir"; }; then
             _lock_remove_dir "$lockdir"
           fi
           rm -f "$gate" 2>/dev/null || true
@@ -145,9 +183,7 @@ _lock_acquire() {
         fi
         # Another reclaimer holds the gate; clear it only when it is over a
         # minute old (its owner died inside it -- a reclaim takes milliseconds).
-        # rm -rf: a gate left by an older version is a directory.
-        if [ -n "$(find "$gate" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-          rm -rf "$gate" 2>/dev/null || true
+        if _lock_clear_stale_gate "$gate"; then
           continue
         fi
       fi
