@@ -165,6 +165,7 @@
 160 test-llm-profiles.sh
 20 test-lock-claim-atomic.sh
 20 test-lock-contention.sh
+4 test-lock-empty-pid-reclaim.sh
 4 test-lock-reclaim.sh
 4 test-lock.sh
 4 test-map-no-runner-907.sh
