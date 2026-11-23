@@ -189,6 +189,7 @@
 4 test-mergesync.sh
 63 test-multi-user.sh
 41 test-needs-owner.sh
+12 test-next-router-golden.sh
 20 test-no-pyyaml-install-step.sh
 16 test-notify-buzz.sh
 12 test-notify-cmd.sh
