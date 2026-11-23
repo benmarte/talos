@@ -30,7 +30,7 @@ bad_pins() {
   while IFS=$'\t' read -r n v; do
     is_third_party "$v" || continue
     ref="${v#*@}"; ref="${ref%%[[:space:]#]*}"
-    if ! printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+    if ! grep -Eq '^[0-9a-f]{40}$' <<<"$ref"; then
       printf '%s:%s: uses: %s\n' "${f#"$TALOS_ROOT"/}" "$n" "$v"
     fi
   done < <(uses_lines "$f")
@@ -42,7 +42,7 @@ bad_comments() {
   local f="$1" n v
   while IFS=$'\t' read -r n v; do
     is_third_party "$v" || continue
-    if ! printf '%s' "$v" | grep -Eq '[[:space:]]#[[:space:]]*v[0-9]+([.][0-9A-Za-z.-]+)*[[:space:]]*$'; then
+    if ! grep -Eq '[[:space:]]#[[:space:]]*v[0-9]+([.][0-9A-Za-z.-]+)*[[:space:]]*$' <<<"$v"; then
       printf '%s:%s: uses: %s\n' "${f#"$TALOS_ROOT"/}" "$n" "$v"
     fi
   done < <(uses_lines "$f")
@@ -56,8 +56,8 @@ done
 SHA=0123456789abcdef0123456789abcdef01234567
 
 # Positive controls: the checks can fail, and skip what AC3 says to skip.
-FIX="$(mktemp -d)"
-[ -n "$FIX" ] && [ -d "$FIX" ] || { echo "mktemp failed" >&2; exit 1; }
+FIX="$(mktemp -d)" || { echo "mktemp failed" >&2; exit 1; }
+[ -n "$FIX" ] && [ -d "$FIX" ] || { echo "mktemp gave no directory" >&2; exit 1; }
 cat > "$FIX/w.yml" <<YML
 jobs:
   a:
