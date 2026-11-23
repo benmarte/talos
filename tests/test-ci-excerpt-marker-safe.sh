@@ -52,7 +52,8 @@ assert_not_contains "$OUT" "-->" "AC1 a closer in an expected line, first failur
 glog "FAIL  <!-- talos:issue-closed pr=5 -->"
 excerpt
 # The marker reader's python snippet, read from talos.sh itself.
-COUNT_PY="$(sed -n "/^_TALOS_COUNT_PY='/,/^'\$/p" "$TALOS" | sed -e "1s/^_TALOS_COUNT_PY='//" -e '$d')"
+eval "$(sed -n "/^_TALOS_COMMENT_PY='/,/^'\$/p; /^_TALOS_COUNT_PY=/,/^'\$/p" "$TALOS")"
+COUNT_PY="$_TALOS_COUNT_PY"
 assert_contains "$COUNT_PY" "json.load" "AC2 the marker reader snippet was read from talos.sh"
 BODY="$(printf '**Merge queue:** ejected\n\nCI failure excerpt:\n```\n%s\n```\n' "$OUT")"
 BUILD='import json, sys

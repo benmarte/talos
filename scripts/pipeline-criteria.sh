@@ -1079,18 +1079,12 @@ if out:
   fi
 }
 
-# The walk's selection (#827). argv: repo top, merge-base, the collected files
-# (<p>.list holds the flat names in sorted path order, <p>.groups name -> folder),
-# max_mb, the number of spec globs, then the spec globs and the ui_paths globs.
-# Prints `T <touched specs>`, `U <1 when the PR changes a ui path>`, `S <selected>`,
-# `V <1 when a video was selected>`, `F <name>` per file under the cap, `K <skipped>`
-# and `A <1 when a video is among the F files>`.
-_QA_WALK_PY='
-import os, re, subprocess, sys
-top, mb, art, maxmb, nspec = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5])
-spec_g, ui_g = sys.argv[6:6 + nspec], sys.argv[6 + nspec:]
-
-def glob_re(g):
+# The one glob translator (#1014), the start of the walk's and the targeted-command
+# programs below: glob_re(g) is the compiled anchored regex of a path glob (`**/`
+# any directories, `*` within a segment, `?` one character); glob_re(g, True) is
+# the same pattern as an anchored ERE string, for bash `=~`.
+_GLOB_PY='
+def glob_re(g, ere=False):
     out, i = "", 0
     while i < len(g):
         if g.startswith("**/", i):
@@ -1101,9 +1095,23 @@ def glob_re(g):
             out += "[^/]*"
         elif g[i] == "?":
             out += "[^/]"; i += 1
+        elif ere:
+            out += ("\\" if g[i] in ".^$+(){}[]|\\" else "") + g[i]; i += 1
         else:
             out += re.escape(g[i]); i += 1
-    return re.compile("^" + out + "$")
+    return "^" + out + "$" if ere else re.compile("^" + out + "$")
+'
+
+# The walk's selection (#827). argv: repo top, merge-base, the collected files
+# (<p>.list holds the flat names in sorted path order, <p>.groups name -> folder),
+# max_mb, the number of spec globs, then the spec globs and the ui_paths globs.
+# Prints `T <touched specs>`, `U <1 when the PR changes a ui path>`, `S <selected>`,
+# `V <1 when a video was selected>`, `F <name>` per file under the cap, `K <skipped>`
+# and `A <1 when a video is among the F files>`.
+_QA_WALK_PY="$_GLOB_PY"'
+import os, re, subprocess, sys
+top, mb, art, maxmb, nspec = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5])
+spec_g, ui_g = sys.argv[6:6 + nspec], sys.argv[6 + nspec:]
 
 spec_re, ui_re = [glob_re(g) for g in spec_g], [glob_re(g) for g in ui_g]
 is_spec = lambda p: any(r.match(p) for r in spec_re)
@@ -1334,7 +1342,7 @@ _qa_env_blocked() {
 # record per line, `E idx ere run =pass =fail` for a usable entry (ere is the
 # `match` glob as an anchored ERE; `=` guards an empty field) and `S idx reason`
 # for a skipped one, `W reason` for a value that is not a list. Nothing here runs.
-_TC_PY='
+_TC_PY="$_GLOB_PY"'
 import json, re, sys
 try:
     d = json.loads(sys.stdin.read())
@@ -1345,21 +1353,6 @@ if not isinstance(d, list):
     print("W\tnot a list")
     sys.exit(0)
 CTRL = re.compile(r"[\x00-\x1f\x7f]")
-
-def glob_ere(g):
-    out, i = "", 0
-    while i < len(g):
-        if g.startswith("**/", i):
-            out += "(.*/)?"; i += 3
-        elif g[i] == "*":
-            while i < len(g) and g[i] == "*":
-                i += 1
-            out += "[^/]*"
-        elif g[i] == "?":
-            out += "[^/]"; i += 1
-        else:
-            out += ("\\" if g[i] in ".^$+(){}[]|\\" else "") + g[i]; i += 1
-    return "^" + out + "$"
 
 for i, e in enumerate(d):
     if not isinstance(e, dict):
@@ -1377,7 +1370,7 @@ for i, e in enumerate(d):
         if any(CTRL.search(x) for x in (m, r, opt[0], opt[1])):
             print("S\t%d\ta control character in a field" % i)
         else:
-            print("E\t%d\t%s\t%s\t=%s\t=%s" % (i, glob_ere(m), r, opt[0], opt[1]))
+            print("E\t%d\t%s\t%s\t=%s\t=%s" % (i, glob_re(m, True), r, opt[0], opt[1]))
 '
 
 # _tc_load: sets the TC_* arrays (idx, glob ERE, run, pass, fail) from the config,

@@ -8,6 +8,11 @@
 # already exists), then adjust the paths, job name, and test command for your
 # project. Talos dogfoods this exact template in its own repo.
 #
+# Every `uses:` is pinned to a full commit SHA with the release tag in a trailing
+# comment (`actions/checkout@<sha> # v4.4.0`), because a moveable tag lets whoever
+# controls it decide what code runs. To update a pin, resolve the new tag's commit
+# (`git ls-remote --tags https://github.com/actions/checkout`) and change both.
+#
 # Pull requests run the FULL suite here, unlike Talos's own .github/workflows/tests.yml,
 # which runs only the tests a PR's changes select (run-tests.sh --changed HEAD^1). That
 # partial run is safe only because Talos has a merge queue that runs the full suite on
@@ -116,6 +121,6 @@ jobs:
     timeout-minutes: 60
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Run test suite
         run: bash tests/run-tests.sh --no-cache
