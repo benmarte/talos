@@ -178,6 +178,7 @@
 6 test-map-usage-elsewhere-914.sh
 19 test-marker-author-trust.sh
 0 test-marker-contract.sh
+10 test-merge-conflict-local-check.sh
 23 test-merge-pr-sha-941.sh
 55 test-merge-queue-929.sh
 61 test-merge-queue-930.sh
