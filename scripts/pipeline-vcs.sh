@@ -5441,11 +5441,29 @@ _gh_sha_check_table() {
     _stat="$(_gh_try GET "$_GH_API/commits/$_sha/status")" || return 1
     _tbl="$(printf '%s\n%s' "$_runs" "$_stat" | _gh_check_table_py)"
   fi
+  # (#1054) A required check whose newest run is cancelled or skipped is pending
+  # while a newer run of its workflow for this sha is queued or in progress: a
+  # `needs:` aggregate job has no check run in the newer run until its shards end.
+  # The workflow runs are read once, and only when such a check is there to judge.
+  if [ -n "${2:-}" ]; then
+    local _wf _need_wf=0
+    while IFS= read -r _name; do
+      [ -n "$_name" ] || continue
+      printf '%s\n' "$_tbl" | awk -F'\t' -v n="$_name" '$1 == n && ($2 == "cancel" || $2 == "skipping") { f = 1 } END { exit !f }' && _need_wf=1
+    done <<<"$2"
+    if [ "$_need_wf" = 1 ]; then
+      _wf="$(_gh_pages "$_GH_API/actions/runs?head_sha=$_sha&per_page=100" "" "workflow runs" workflow_runs)" || return 1
+      _tbl="$(printf '%s\n%s' "$_runs" "$_stat" | _gh_check_table_py 3<<<"$_wf")"
+    fi
+  fi
   printf '%s\n' "$_tbl"
 }
+# _gh_check_table_py reads the check runs and statuses on stdin; when fd 3 holds
+# the sha's workflow runs (#1054), a cancelled or skipped check with a newer live
+# run of its workflow reads as pending.
 _gh_check_table_py() {
   python3 -I -c '
-import json, sys
+import json, os, re, sys
 from datetime import datetime
 runs, _, stat = sys.stdin.read().partition("\n")
 runs = json.loads(runs).get("check_runs") or []
@@ -5453,6 +5471,28 @@ try:
     stat = json.loads(stat).get("statuses") or []
 except ValueError:
     stat = []
+try:
+    wf = json.loads(os.fdopen(3).read() or "{}").get("workflow_runs") or []
+except (OSError, ValueError, AttributeError):
+    wf = []
+
+def live(w):
+    return w.get("status") != "completed"
+
+def run_of(c):
+    # The check suite names the workflow run; the details URL is the fallback.
+    sid = (c.get("check_suite") or {}).get("id")
+    m = re.search(r"/actions/runs/([0-9]+)", c.get("details_url") or "")
+    for w in wf:
+        if (sid is not None and w.get("check_suite_id") == sid) or (m and str(w.get("id")) == m.group(1)):
+            return w
+
+def superseded(c):
+    r = run_of(c)
+    if r is None:
+        return False
+    return live(r) or any(live(w) and w.get("workflow_id") == r.get("workflow_id")
+                          and (w.get("id") or 0) > (r.get("id") or 0) for w in wf)
 
 def secs(a, b):
     try:
@@ -5483,6 +5523,8 @@ for c in runs:
     else:
         state = {"success": "pass", "skipped": "skipping", "neutral": "skipping",
                  "cancelled": "cancel"}.get(c.get("conclusion"), "fail")
+        if state in ("cancel", "skipping") and superseded(c):
+            state = "pending"
     print("\t".join([c["name"], state, fmt(secs(c.get("started_at") or "", c.get("completed_at") or "")),
                      c.get("html_url") or c.get("details_url") or ""]))
 for s in stat:

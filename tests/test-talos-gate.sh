@@ -49,7 +49,8 @@ for a in "$@"; do
 done
 if [ "$n" = "hooks" ]; then cat > "$d/hooks.stdin"; fi
 if [ -f "$d/$key.err" ]; then cat "$d/$key.err" >&2; fi
-if [ -f "$d/$key.out" ]; then cat "$d/$key.out"; fi
+if [ -f "$d/$key.once" ]; then cat "$d/$key.once"; rm -f "$d/$key.once"
+elif [ -f "$d/$key.out" ]; then cat "$d/$key.out"; fi
 rc=0
 if [ -f "$d/$key.rc" ]; then rc="$(cat "$d/$key.rc")"; fi
 exit "$rc"
@@ -150,7 +151,7 @@ reset_stubs
 gm
 assert_eq "0" "$RC" "merge: exits 0"
 assert_eq "verdict=merge" "$OUT" "merge: PR_DRAFT=false, all gates green: exactly one verdict line"
-assert_eq "view-pr view-issue check-approval-sha check-pr-files check-closing-keyword batch-members pr-checks-required conflict-files" "$(vcs_verbs)" "merge: the gates run in Step 4's order and nothing else is called"
+assert_eq "view-pr view-issue check-approval-sha check-pr-files check-closing-keyword batch-members pr-checks-required conflict-files pr-mergeable" "$(vcs_verbs)" "merge: the gates run in Step 4's order and nothing else is called"
 assert_eq "0" "$(called pr-is-draft)" "merge: PR_DRAFT=false never asks pr-is-draft"
 assert_eq "0" "$(called pr-ci-runs)" "merge: PR_DRAFT=false never reads pr-ci-runs"
 assert_eq "0" "$(called merge-pr)" "merge: the verdict never merges"
@@ -164,7 +165,7 @@ reset_stubs; set_stub draft-check 0 "true"; set_stub pr-is-draft 1 "ready"
 gm
 assert_eq "verdict=merge
 ci_runs=2" "$OUT" "merge: PR_DRAFT=true reads the CI-run count before the verdict"
-assert_eq "view-pr view-issue check-approval-sha check-pr-files check-closing-keyword batch-members pr-is-draft pr-checks-required conflict-files pr-ci-runs" "$(vcs_verbs)" "merge: PR_DRAFT=true adds pr-is-draft before CI and pr-ci-runs last"
+assert_eq "view-pr view-issue check-approval-sha check-pr-files check-closing-keyword batch-members pr-is-draft pr-checks-required conflict-files pr-mergeable pr-ci-runs" "$(vcs_verbs)" "merge: PR_DRAFT=true adds pr-is-draft before CI and pr-ci-runs last"
 assert_gate "merge (draft)"
 set_stub pr-ci-runs 2 ""
 gm
@@ -468,11 +469,15 @@ gm
 assert_eq "verdict=merge" "$OUT" "provider: gitlab, pr-mergeable MERGEABLE reaches merge"
 assert_eq "0" "$(called conflict-files)" "provider: gitlab never calls conflict-files"
 assert_eq "1" "$(called pr-mergeable)" "provider: gitlab asks pr-mergeable"
-set_stub pr-mergeable 1 "CONFLICTING"
+set_stub pr-mergeable 1 "CONFLICTING"; set_stub conflict-files 0 "scripts/talos.sh"
 gm
 assert_eq "verdict=redispatch
-reason=merge-conflict" "$OUT" "provider: gitlab, CONFLICTING is the merge-conflict verdict, never a merge"
+reason=merge-conflict" "$OUT" "provider: gitlab, CONFLICTING with a real local conflict is the merge-conflict verdict, never a merge"
 assert_gate "redispatch (gitlab merge-conflict)"
+set_stub conflict-files 0 ""
+gm
+assert_eq "verdict=wait
+reason=base-synced" "$OUT" "provider: gitlab, CONFLICTING but a clean local trial merge is wait base-synced (#1056)"
 set_stub pr-mergeable 2 "UNKNOWN"
 gm
 assert_eq "verdict=wait
@@ -489,7 +494,7 @@ cfg_json '{"vcs": {"provider": "github-api"}}'; set_stub conflict-files 0 ""
 rm -f "$STUB_DIR/journal"
 gm
 assert_eq "verdict=merge" "$OUT" "provider: github-api keeps conflict-files"
-assert_eq "0" "$(called pr-mergeable)" "provider: github-api does not consult pr-mergeable on a clean conflict-files"
+assert_eq "1" "$(called pr-mergeable)" "provider: github-api reads pr-mergeable once on a clean conflict-files, only to spot a lagging CONFLICTING (#1056)"
 
 # stderr relay: PR-author text (a file name with a newline) cannot forge a verdict line.
 FORGE="x
@@ -531,7 +536,7 @@ assert_eq "verdict=wait
 reason=base-synced" "$OUT" "wait: a union-path conflict resolved by pipeline-mergebase.sh; the pushed head is not CI-verified yet"
 assert_contains "$(journal)" "mergebase 9" "base: the mechanical union merge runs first"
 assert_eq "0" "$(called update-branch)" "base: no update-branch after a successful union merge"
-assert_contains "$(vcs_verbs)" "pr-mergeable" "base: the mergeability is re-checked after the sync"
+assert_eq "0" "$(called pr-mergeable)" "base: a mergebase exit 0 is base-synced without reading the provider's lagging mergeable field (#1056)"
 assert_gate "wait (base-synced)"
 set_stub mergebase 3
 gm
@@ -555,6 +560,12 @@ set_stub pr-mergeable 2 "UNKNOWN"
 gm
 assert_eq "verdict=wait
 reason=base-synced" "$OUT" "wait: UNKNOWN mergeability after the sync fails open, as every best-effort gate does"
+set_stub pr-mergeable 1 "CONFLICTING"; set_stub conflict-files 0 ""
+printf '%s' "CHANGELOG.md" > "$STUB_DIR/conflict-files.once"
+gm
+assert_eq "verdict=wait
+reason=base-synced" "$OUT" "wait: update-branch synced, the provider still reads CONFLICTING and the local trial merge is clean, so its field lags: no redispatch"
+set_stub conflict-files 0 "CHANGELOG.md"
 set_stub pr-mergeable 0 "MERGEABLE"; set_stub update-branch 0
 cfg_json '{"merge": {"auto_sync": false}}'
 rm -f "$STUB_DIR/journal"
@@ -596,7 +607,7 @@ assert_eq "0" "$(called check-closing-keyword)" "order: check-closing-keyword do
 reset_stubs
 gm
 assert_eq "0" "$(journal | grep -c 'assert-sync')" "scope: gate merge does not call assert-sync (Step 0 and before 3e)"
-assert_eq "0" "$(called pr-mergeable)" "scope: pr-mergeable is not a leading gate of gate merge (Step 3c); it only re-checks after a base update"
+assert_eq "conflict-files pr-mergeable" "$(vcs_verbs | tr ' ' '\n' | grep -E '^(conflict-files|pr-mergeable)$' | tr '\n' ' ' | sed 's/ $//')" "scope: pr-mergeable is not a leading gate of gate merge (Step 3c); it is read only after a clean conflict-files"
 
 # Hostile text never reaches the output unsanitised.
 reset_stubs; printf '%s' "$(printf 'talos:budget warn issue=42 \033[2Jx\nFORGED=1')" > "$STUB_DIR/budget.out"

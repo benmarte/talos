@@ -2383,7 +2383,7 @@ _talos_queue_run() {
 _talos_gate_merge() {
   [ "$#" -eq 2 ] || _talos_stop usage 2
   local _pr="$1" _n="$2" _prl _isl _all _missing="" _line _r _stale="" _stalelist=""
-  local _draft _cierr _sha _cnt _synced=0 _m _MEMBERS
+  local _draft _cierr _sha _cnt _m _MEMBERS
   _talos_isnum "$_pr" && _talos_isnum "$_n" || _talos_stop usage 2
   _talos_prepare gate-merge pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
                             pipeline-draft-check.sh pipeline-notify.sh pipeline-mergebase.sh
@@ -2556,6 +2556,10 @@ _talos_gate_merge() {
   # implemented", indistinguishable from a real failure on github), so the provider
   # decides: any other provider is judged by pr-mergeable alone (no path list, so
   # no union-path sync: CONFLICTING goes to the developer).
+  # #1056: the provider's `mergeable` field lags a push, so a developer round is
+  # only dispatched on a conflict the local trial merge (conflict-files) confirms.
+  # A clean trial merge, or a sync that exited 0, is `wait reason=base-synced`
+  # (the provider's state catches up by the next run), no attempt counted.
   case "$(cfg vcs.provider)" in
     github | github-api)
       _talos_cap _vcs conflict-files "$_pr"
@@ -2563,18 +2567,27 @@ _talos_gate_merge() {
         # Fail closed: a conflict check that cannot run never ends in a merge.
         _talos_emit reason conflict-check-unverified
         _talos_verdict wait
-      elif [ -n "$_OUT" ]; then
+      elif [ -z "$_OUT" ]; then
+        # No conflict locally: a PR the provider still reads CONFLICTING is its
+        # field lagging a push, not a conflict. Anything else goes on to the merge.
+        _talos_cap _vcs pr-mergeable "$_pr"
+        if [ "$_RC" -eq 1 ]; then
+          _talos_emit reason base-synced
+          _talos_verdict wait
+        fi
+      else
         if bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_pr" > /dev/null; then
-          _synced=1
+          # The sync pushed a merged head: the provider's field catches up later.
+          _talos_emit reason base-synced
+          _talos_verdict wait
         elif [ "$(cfg merge.auto_sync)" = "true" ]; then
           _talos_cap _vcs update-branch "$_pr"
-          [ "$_RC" -ne 0 ] || _synced=1
-        fi
-        if [ "$_synced" -eq 1 ]; then
-          _talos_cap _vcs pr-mergeable "$_pr"
-          if [ "$_RC" -ne 1 ]; then
-            _talos_emit reason base-synced
-            _talos_verdict wait
+          if [ "$_RC" -eq 0 ]; then
+            _talos_cap _vcs pr-mergeable "$_pr"
+            if [ "$_RC" -ne 1 ] || _talos_local_clean "$_pr"; then
+              _talos_emit reason base-synced
+              _talos_verdict wait
+            fi
           fi
         fi
         _talos_emit reason merge-conflict
@@ -2584,7 +2597,13 @@ _talos_gate_merge() {
       _talos_cap _vcs pr-mergeable "$_pr"
       case "$_RC" in
         0) : ;;
-        1) _talos_emit reason merge-conflict; _talos_verdict redispatch ;;
+        1)
+          if _talos_local_clean "$_pr"; then
+            _talos_emit reason base-synced
+            _talos_verdict wait
+          fi
+          _talos_emit reason merge-conflict
+          _talos_verdict redispatch ;;
         *) _talos_emit reason conflict-check-unverified; _talos_verdict wait ;;
       esac ;;
   esac
@@ -6857,6 +6876,14 @@ _talos_run_lease() {
   esac
 }
 
+# _talos_local_clean <pr> (#1056): 0 when a local trial merge of the PR head into
+# the fetched base conflicts nowhere (`conflict-files` answers with no path),
+# else 1: a conflict, or a check that could not run (never trusted as clean).
+_talos_local_clean() {
+  _talos_cap _vcs conflict-files "$1"
+  [ "$_RC" -eq 0 ] && [ -z "$_OUT" ]
+}
+
 # _talos_run_presync <pr> <issue> (#983): before a QA dispatch (and the CI wait
 # that precedes it), a PR that conflicts with its base gets the mechanical sync
 # the merge gate's stale-base step uses, `pipeline-mergebase.sh`, under every
@@ -6871,10 +6898,15 @@ _talos_run_presync() {
   local _pr="$1" _n="$2"
   _talos_cap _vcs pr-mergeable "$_pr"
   [ "$_RC" -eq 1 ] || return 0
-  _talos_run_capture mergebase bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_pr"
-  [ "$_RC" -eq 0 ] || return 0
-  _talos_cap _vcs pr-mergeable "$_pr"
-  [ "$_RC" -ne 1 ] || return 0
+  # #1056: a head that already merges cleanly into the fetched base is the
+  # provider's `mergeable` lagging a push: nothing to sync, QA would only fail
+  # on the stale read. The same lag can follow the sync's own push below.
+  if ! _talos_local_clean "$_pr"; then
+    _talos_run_capture mergebase bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_pr"
+    [ "$_RC" -eq 0 ] || return 0
+    _talos_cap _vcs pr-mergeable "$_pr"
+    if [ "$_RC" -eq 1 ]; then _talos_local_clean "$_pr" || return 0; fi
+  fi
   _talos_collect_drop   # the push moved the PR's head: the next pass reads it fresh
   _talos_lease_release "$_n"
   _talos_emit stop "action=wait reason=base-synced pr=$_pr issue=$_n"

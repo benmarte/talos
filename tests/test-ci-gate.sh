@@ -187,7 +187,8 @@ printf '{"vcs": {"provider": "github-api", "repo": "acme/widget"}, "merge": {"re
 export GITHUB_TOKEN="test-token-435"
 ga_run() {  # $1 = check-runs JSON
   : > "$CURL_LOG"; : > "$CURL_LINK_QUEUE"
-  printf '%s\n' '{"head":{"sha":"dd11223344556677889900aabbccddeeff11223"}}' "$1" > "$CURL_QUEUE"
+  # The third reply is the sha's workflow runs (#1054), read for a cancelled or skipped check.
+  printf '%s\n' '{"head":{"sha":"dd11223344556677889900aabbccddeeff11223"}}' "$1" '{"workflow_runs":[]}' > "$CURL_QUEUE"
   out="$(bash "$VCS" pr-checks-required 9 2>&1)"; rc=$?
 }
 ga_run '{"check_runs":[{"name":"test","status":"completed","conclusion":"skipped"}]}'
