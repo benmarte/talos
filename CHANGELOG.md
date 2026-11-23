@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: `pr-checks-required` and `ref-checks-required` no longer hang or misread when the caller has its own file descriptor 3 open: every call of the check-table helper in `scripts/pipeline-vcs.sh` now gets an explicit fd 3 instead of inheriting the caller's
 - fix: a developer merge-conflict round now needs a local trial merge to confirm the conflict: a PR the provider still reads CONFLICTING after a sync push, but whose head merges cleanly into the fetched base, ends `wait reason=base-synced` before QA and at the merge gate, with no developer dispatch and no attempt counted
 - fix: `pr-checks-required` and `ref-checks-required` (so the merge queue and the QA wait) no longer judge a required check as failed when its newest check run is cancelled or skipped while a newer workflow run for the same head is queued or in progress; it is pending until that run ends (the workflow runs are read once per judgement, and only then).
 - fix: every `uses:` in `.github/workflows/*.yml` and `templates/ci/github-tests.yml` (`actions/checkout`, `actions/upload-artifact`) is pinned to a full commit SHA with the release tag in a trailing `# v<version>` comment, so a moved tag can no longer change what code CI runs; repos that installed the template should re-copy it
