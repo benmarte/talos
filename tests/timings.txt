@@ -57,6 +57,7 @@
 21 test-ci-gate.sh
 85 test-ci-parallel-qa.sh
 4 test-ci-runs-metric.sh
+4 test-ci-scope-wording.sh
 1 test-ci-tests-workflow.sh
 58 test-claim.sh
 26 test-claude-hook-neutralise.sh
@@ -228,6 +229,7 @@
 0 test-prompt-rules.sh
 9 test-providers.sh
 12 test-python-safe-path.sh
+10 test-qa-ci-pending-driver-wait.sh
 10 test-qa-ci-wait-driver.sh
 40 test-qa-draft-ready.sh
 88 test-qa-environment-751.sh
