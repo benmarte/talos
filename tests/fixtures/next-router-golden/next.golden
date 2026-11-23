@@ -1,0 +1,1122 @@
+## ready-queue-validator
+rc=0
+out: action=dispatch stage=validator issue=3
+call: view-issue 3
+## ready-queue-empty
+rc=0
+out: action=wait reason=none
+## ready-queue-priority-order
+rc=0
+out: action=dispatch stage=validator issue=3
+call: view-issue 8
+call: view-issue 8 --spec
+call: view-issue 4
+call: view-issue 4 --spec
+call: view-issue 3
+call: view-issue 3 --spec
+## ready-queue-p-order-no-inflight
+rc=0
+out: action=dispatch stage=validator issue=4
+call: view-issue 4
+## ready-no-validator-role
+rc=0
+out: action=wait reason=none
+call: view-issue 3
+## skip-labels
+rc=0
+out: action=dispatch stage=validator issue=4
+call: view-issue 3
+call: view-issue 4
+## label-filter-collapse
+rc=0
+out: action=dispatch stage=validator issue=4
+call: view-issue 3
+call: view-issue 4
+## cap-reached
+rc=0
+out: action=wait reason=cap
+## cap-reached-default-one
+rc=0
+out: action=wait reason=cap
+## cap-room
+rc=0
+out: action=dispatch stage=validator issue=3
+call: view-issue 3
+## cap-bad-number
+rc=1
+out: stop reason=state-unavailable
+## owner-wait-blocked-issue
+rc=0
+out: action=wait reason=owner
+## owner-wait-owner-entry
+rc=0
+out: action=wait reason=owner
+## owner-wait-owner-pr
+rc=0
+out: action=wait reason=owner
+## held-ask-owner
+rc=0
+out: action=ask-owner issue=3 question=which db?
+## held-ask-owner-no-question
+rc=0
+out: action=ask-owner issue=3 question=the pipeline needs an owner decision on this issue
+## named-ask-owner
+rc=0
+out: action=ask-owner issue=3 question=which db?
+## named-held
+rc=0
+out: action=ask-owner issue=3 question=the pipeline needs an owner decision on this issue
+## named-owner-pr-waits
+rc=0
+out: action=wait reason=owner
+## named-owner-pr-answered
+rc=0
+out: action=dispatch stage=developer pr=20 issue=3
+## named-owner-pr-unverified
+rc=0
+out: action=wait reason=owner
+## named-theirs
+rc=0
+out: action=wait reason=theirs
+## named-unassigned
+rc=0
+out: action=wait reason=unassigned
+## named-usage
+rc=1
+out: stop reason=usage
+## named-blocked-label
+rc=0
+out: action=wait reason=blocked
+call: view-issue 3
+## named-no-labels
+rc=0
+out: action=wait reason=none
+call: view-issue 3
+## named-ready-not-queued
+rc=0
+out: action=wait reason=none
+call: view-issue 3
+## named-ready-queued
+rc=0
+out: action=dispatch stage=validator issue=3
+call: view-issue 3
+## named-dev-no-pr
+rc=0
+out: action=dispatch stage=developer issue=3
+call: view-issue 3
+## named-confirmed-no-pm
+rc=0
+out: action=dispatch stage=developer issue=3
+call: view-issue 3
+## named-adopt-queued
+rc=0
+out: action=dispatch stage=reviewer pr=20 issue=3
+## named-adopt-merge
+rc=0
+out: action=merge pr=20 issue=3
+call: view-issue 3
+## named-adopt-ready-draft
+rc=0
+out: action=wait reason=draft pr=20 issue=3
+call: view-issue 3
+## named-adopt-two-prs
+rc=0
+out: action=dispatch stage=docs pr=20 issue=3
+call: view-issue 3
+## named-adopt-unknown-stage
+rc=1
+out: stop reason=unsupported-verb:bogus
+call: view-issue 3
+## named-dev-label-with-pr-skips-adopt
+rc=0
+out: action=dispatch stage=developer issue=3
+call: view-issue 3
+call: check-attempt 3
+## fix-round-ok
+rc=0
+out: action=dispatch stage=developer issue=3
+call: view-issue 3
+call: check-attempt 3
+## fix-round-max-fix
+rc=1
+out: stop reason=max-fix-attempts
+call: view-issue 3
+call: check-attempt 3
+## fix-round-max-total
+rc=1
+out: stop reason=max-total-dispatches
+call: view-issue 3
+call: check-attempt 3
+## fix-round-record-failed
+rc=1
+out: stop reason=record-failed
+call: view-issue 3
+call: check-attempt 3
+## fix-round-rc2
+rc=1
+out: stop reason=state-unavailable
+call: view-issue 3
+call: check-attempt 3
+## fix-round-unsupported
+rc=1
+out: stop reason=unsupported-verb:check-attempt
+call: view-issue 3
+call: check-attempt 3
+## fix-round-budget-exceeded
+rc=1
+out: stop reason=budget-exceeded
+call: view-issue 3
+## fix-round-budget-ok
+rc=0
+out: action=dispatch stage=developer issue=3
+call: view-issue 3
+call: check-attempt 3
+## fix-round-budget-other-rc
+rc=0
+out: action=dispatch stage=developer issue=3
+call: view-issue 3
+call: check-attempt 3
+## fix-round-untargeted-walk
+rc=0
+out: action=dispatch stage=developer issue=3
+call: view-issue 3
+call: check-attempt 3
+## fix-round-untargeted-walk-ceiling
+rc=1
+out: stop reason=max-fix-attempts
+call: view-issue 3
+call: check-attempt 3
+## confirmed-pm
+rc=0
+out: action=dispatch stage=pm issue=3
+call: view-issue 3
+## confirmed-pm-skip-spec
+rc=0
+out: action=dispatch stage=developer issue=3
+call: view-issue 3
+call: has-spec 3
+## confirmed-pm-skip-nospec
+rc=0
+out: action=dispatch stage=pm issue=3
+call: view-issue 3
+call: has-spec 3
+## confirmed-pm-skip-unsupported
+rc=1
+out: stop reason=unsupported-verb:has-spec
+call: view-issue 3
+call: has-spec 3
+## confirmed-pm-skip-rc2
+rc=1
+out: stop reason=state-unavailable
+call: view-issue 3
+call: has-spec 3
+## confirmed-planner-epic-label
+rc=0
+out: action=dispatch stage=planner issue=3
+call: view-issue 3
+## confirmed-planner-checkboxes
+rc=0
+out: action=dispatch stage=planner issue=3
+call: view-issue 3
+## confirmed-planner-long-body
+rc=0
+out: action=dispatch stage=planner issue=3
+call: view-issue 3
+## confirmed-planner-small
+rc=0
+out: action=dispatch stage=pm issue=3
+call: view-issue 3
+## threat-needed
+rc=0
+out: action=dispatch stage=threat issue=3
+call: view-issue 3
+call: view-issue 3 --spec
+## threat-done
+rc=0
+out: action=dispatch stage=developer issue=3
+call: view-issue 3
+call: view-issue 3 --spec
+## threat-no-area
+rc=0
+out: action=dispatch stage=developer issue=3
+call: view-issue 3
+call: view-issue 3 --spec
+## threat-in-spec
+rc=0
+out: action=dispatch stage=threat issue=3
+call: view-issue 3
+call: view-issue 3 --spec
+## threat-with-pr-is-fix-round
+rc=0
+out: action=dispatch stage=developer issue=3
+call: view-issue 3
+call: check-attempt 3
+## threat-unsupported
+rc=1
+out: stop reason=unsupported-verb:view-issue
+call: view-issue 3
+call: view-issue 3 --spec
+## threat-spec-unreadable
+rc=1
+out: stop reason=state-unavailable
+call: view-issue 3
+call: view-issue 3 --spec
+## threat-spec-not-json
+rc=1
+out: stop reason=state-unavailable
+call: view-issue 3
+call: view-issue 3 --spec
+## threat-spec-not-object
+rc=1
+out: stop reason=state-unavailable
+call: view-issue 3
+call: view-issue 3 --spec
+## dep-open
+rc=0
+out: action=wait reason=dependency
+call: view-issue 3
+call: view-issue 8
+## dep-closed
+rc=0
+out: action=dispatch stage=validator issue=3
+call: view-issue 3
+call: view-issue 8
+## dep-unreadable-is-open
+rc=0
+out: action=wait reason=dependency
+call: view-issue 3
+call: view-issue 8
+## dep-unsupported
+rc=1
+out: stop reason=unsupported-verb:view-issue
+call: view-issue 3
+call: view-issue 8
+## dep-not-json-is-open
+rc=0
+out: action=wait reason=dependency
+call: view-issue 3
+call: view-issue 8
+## dep-ignored-without-planner
+rc=0
+out: action=dispatch stage=validator issue=3
+call: view-issue 3
+## dep-then-ready-second
+rc=0
+out: action=dispatch stage=validator issue=4
+call: view-issue 3
+call: view-issue 8
+call: view-issue 4
+## batched-open-lead
+rc=0
+out: action=wait reason=batched
+call: view-issue 6
+call: view-issue 5
+## batched-closed-lead
+rc=0
+out: action=dispatch stage=validator issue=6
+call: view-issue 6
+call: view-issue 5
+## batched-named
+rc=0
+out: action=wait reason=batched
+call: view-issue 6
+call: view-issue 5
+## batched-then-dep-both
+rc=0
+out: action=wait reason=batched
+call: view-issue 6
+call: view-issue 5
+call: view-issue 7
+call: view-issue 5
+## walk-blocked-candidate-ends-ready-walk
+rc=0
+out: action=wait reason=blocked
+call: view-issue 3
+## walk-none-candidate
+rc=0
+out: action=wait reason=none
+call: view-issue 3
+## walk-inflight-then-ready
+rc=0
+out: action=dispatch stage=developer issue=6
+call: view-issue 6
+## walk-inflight-busy-skipped
+rc=0
+out: action=dispatch stage=validator issue=4
+call: view-issue 4
+## walk-inflight-waits-passed
+rc=0
+out: action=dispatch stage=validator issue=4
+call: view-issue 6
+call: view-issue 4
+## walk-inflight-theirs
+rc=0
+out: action=dispatch stage=validator issue=4
+call: view-issue 4
+## walk-inflight-confirmed-pm
+rc=0
+out: action=dispatch stage=pm issue=6
+call: view-issue 6
+## walk-inflight-adopt-pr
+rc=0
+out: action=dispatch stage=qa pr=21 issue=6
+call: view-issue 6
+## walk-cap-with-inflight-first
+rc=0
+out: action=dispatch stage=pm issue=6
+call: view-issue 6
+## walk-owner-blocks-ready-not-inflight
+rc=0
+out: action=dispatch stage=developer issue=6
+call: view-issue 6
+## overlap-demoted
+rc=0
+out: action=dispatch stage=validator issue=3
+call: view-issue 1
+call: view-issue 2
+call: view-issue 3
+## overlap-leased-only
+rc=0
+out: action=dispatch stage=validator issue=3
+call: view-issue 1
+call: view-issue 2
+call: view-issue 3
+## overlap-from-spec-comment
+rc=0
+out: action=dispatch stage=validator issue=3
+call: view-issue 1
+call: view-issue 1 --spec
+call: view-issue 2
+call: view-issue 2 --spec
+call: view-issue 3
+## overlap-area-labels
+rc=0
+out: action=dispatch stage=validator issue=3
+call: view-issue 1
+call: view-issue 1 --spec
+call: view-issue 2
+call: view-issue 2 --spec
+call: view-issue 3
+call: view-issue 3 --spec
+## overlap-unreadable-ignored
+rc=1
+out: stop reason=unsupported-verb:view-issue
+call: view-issue 1
+call: view-issue 2
+call: view-issue 3
+call: view-issue 2
+## overlap-migrations-share-a-slot
+rc=0
+out: action=dispatch stage=validator issue=3
+call: view-issue 1
+call: view-issue 2
+call: view-issue 3
+## view-issue-fails
+rc=1
+out: stop reason=state-unavailable
+call: view-issue 3
+## view-issue-unsupported
+rc=1
+out: stop reason=unsupported-verb:view-issue
+call: view-issue 3
+## view-issue-not-json
+rc=1
+out: stop reason=state-unavailable
+call: view-issue 3
+## view-issue-not-object
+rc=1
+out: stop reason=state-unavailable
+call: view-issue 3
+## view-issue-rate-limited
+rc=1
+out: stop reason=rate-limited reset=1790000000
+call: view-issue 3
+## view-issue-rate-limited-no-reset
+rc=1
+out: stop reason=rate-limited reset=0
+call: view-issue 3
+## named-view-issue-fails
+rc=1
+out: stop reason=state-unavailable
+call: view-issue 3
+## where-empty
+rc=0
+in flight: nothing
+waiting: nothing
+next: nothing queued
+
+## pr-side where-empty
+rc=0
+issue-side
+
+## where-busy
+rc=0
+in flight: PR #20 (#3) at qa, PR #21 (#4) at merge, PR #22 (#5) at ci; issues #6, #7
+waiting: blocked PR #30, issue #31; owner #5, #9
+next: dispatch qa on PR #20 (#3)
+theirs: #40 (@bob)
+unassigned: #41, #42
+
+## pr-side where-busy
+rc=0
+action=dispatch stage=qa pr=20 issue=3
+
+## where-wait-pr
+rc=0
+in flight: PR #20 (#3) at ready
+waiting: nothing
+next: wait (draft) on PR #20 (#3)
+
+## pr-side where-wait-pr
+rc=0
+action=wait reason=draft pr=20 issue=3
+
+## where-queued-only
+rc=0
+in flight: issue #7
+waiting: nothing
+next: start issue #9
+
+## pr-side where-queued-only
+rc=0
+issue-side
+
+## where-owner-only
+rc=0
+in flight: nothing
+waiting: owner #9
+next: waiting on the owner
+
+## pr-side where-owner-only
+rc=0
+issue-side
+
+## where-many
+rc=0
+in flight: PR #1 (#101) at qa, PR #2 (#102) at qa, PR #3 (#103) at qa, PR #4 (#104) at qa, +4 more; issues #50, #51, #52, #53, #54, +3 more
+waiting: nothing
+next: dispatch qa on PR #1 (#101)
+
+## pr-side where-many
+rc=0
+action=dispatch stage=qa pr=1 issue=101
+
+## where-answered-owner-pr
+rc=0
+in flight: PR #20 (#3) at qa
+waiting: owner #20
+next: waiting on the owner
+
+## pr-side where-answered-owner-pr
+rc=0
+action=dispatch stage=developer pr=20 issue=3
+
+## collect-basic
+rc=0
+out: {"prs": [{"n": 10, "issue": 3, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 11, "issue": 4, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "blocked"}, {"n": 13, "issue": 6, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "qa"}, {"n": 16, "issue": 8, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}], "pr_total": 4, "ignored": 1, "blocked": [["issue", 4], ["PR", 11], ["issue", 21]], "queued": [8, 6, 9, 23], "held": [9], "inflight": [20], "owners": null, "capped": [], "priority": {"8": 0, "6": 1, "20": 2}}
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 10
+call: check-approval-sha 10 --stale-list
+call: check-approval-sha 10 --evidence-list
+call: pr-head 11
+call: pr-head 13
+call: check-approval-sha 13 --evidence-list
+call: pr-head 16
+call: check-approval-sha 16 --stale-list
+meta.args: --repo a/b cache-titles
+meta.in: 3 issue 3
+meta.in: 4 issue 4
+meta.in: 5 issue 5
+meta.in: 6 issue 6
+meta.in: 8 issue 8
+meta.in: 9 issue 9
+meta.in: 20 issue 20
+meta.in: 21 issue 21
+meta.in: 22 issue 22
+meta.in: 23 issue 23
+## collect-basic-no-roles
+rc=0
+out: {"prs": [{"n": 10, "issue": 3, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 11, "issue": 4, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "blocked"}, {"n": 13, "issue": 6, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 16, "issue": 8, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}], "pr_total": 4, "ignored": 1, "blocked": [["issue", 4], ["PR", 11], ["issue", 21]], "queued": [8, 6, 9, 23], "held": [9], "inflight": [20], "owners": null, "capped": [], "priority": {"8": 0, "6": 1, "20": 2}}
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 10
+call: check-approval-sha 10 --stale-list
+call: pr-head 11
+call: pr-head 13
+call: pr-head 16
+call: check-approval-sha 16 --stale-list
+## collect-capped
+rc=0
+out: {"prs": [{"n": 10, "issue": 3, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 11, "issue": 4, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "blocked"}, {"n": 13, "issue": 6, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "qa"}, {"n": 16, "issue": 8, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}], "pr_total": 4, "ignored": 1, "blocked": [["issue", 4], ["PR", 11], ["issue", 21]], "queued": [8, 6, 9, 23], "held": [9], "inflight": [20], "owners": null, "capped": ["list-prs", "list-issues"], "priority": {"8": 0, "6": 1, "20": 2}}
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 10
+call: check-approval-sha 10 --stale-list
+call: check-approval-sha 10 --evidence-list
+call: pr-head 11
+call: pr-head 13
+call: check-approval-sha 13 --evidence-list
+call: pr-head 16
+call: check-approval-sha 16 --stale-list
+## collect-draft-gate-checks
+rc=0
+out: {"prs": [{"n": 10, "issue": 3, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 11, "issue": 4, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "blocked"}, {"n": 13, "issue": 6, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 16, "issue": 8, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}], "pr_total": 4, "ignored": 1, "blocked": [["issue", 4], ["PR", 11], ["issue", 21]], "queued": [8, 6, 9, 23], "held": [9], "inflight": [20], "owners": null, "capped": [], "priority": {"8": 0, "6": 1, "20": 2}}
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 10
+call: pr-is-draft 10
+call: check-approval-sha 10 --stale-list
+call: check-approval-sha 10 --evidence-list
+call: pr-head 11
+call: pr-head 13
+call: pr-is-draft 13
+call: check-approval-sha 13 --evidence-list
+call: pr-head 16
+call: pr-is-draft 16
+call: check-approval-sha 16 --stale-list
+call: pr-checks-required 16
+## collect-draft-unverified
+rc=0
+out: {"prs": [{"n": 10, "issue": 3, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "unverified"}, {"n": 11, "issue": 4, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "blocked"}, {"n": 13, "issue": 6, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "unverified"}, {"n": 16, "issue": 8, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "unverified"}], "pr_total": 4, "ignored": 1, "blocked": [["issue", 4], ["PR", 11], ["issue", 21]], "queued": [8, 6, 9, 23], "held": [9], "inflight": [20], "owners": null, "capped": [], "priority": {"8": 0, "6": 1, "20": 2}}
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 10
+call: pr-is-draft 10
+call: pr-head 11
+call: pr-head 13
+call: pr-is-draft 13
+call: pr-head 16
+call: pr-is-draft 16
+## collect-ci-red
+rc=0
+out: {"prs": [{"n": 10, "issue": 3, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 11, "issue": 4, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "blocked"}, {"n": 13, "issue": 6, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "qa"}, {"n": 16, "issue": 8, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}], "pr_total": 4, "ignored": 1, "blocked": [["issue", 4], ["PR", 11], ["issue", 21]], "queued": [8, 6, 9, 23], "held": [9], "inflight": [20], "owners": null, "capped": [], "priority": {"8": 0, "6": 1, "20": 2}}
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 10
+call: check-approval-sha 10 --stale-list
+call: check-approval-sha 10 --evidence-list
+call: pr-head 11
+call: pr-head 13
+call: check-approval-sha 13 --evidence-list
+call: pr-head 16
+call: check-approval-sha 16 --stale-list
+call: pr-checks-required 16
+## collect-ci-pending
+rc=0
+out: {"prs": [{"n": 10, "issue": 3, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 11, "issue": 4, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "blocked"}, {"n": 13, "issue": 6, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "qa"}, {"n": 16, "issue": 8, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "ci"}], "pr_total": 4, "ignored": 1, "blocked": [["issue", 4], ["PR", 11], ["issue", 21]], "queued": [8, 6, 9, 23], "held": [9], "inflight": [20], "owners": null, "capped": [], "priority": {"8": 0, "6": 1, "20": 2}}
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 10
+call: check-approval-sha 10 --stale-list
+call: check-approval-sha 10 --evidence-list
+call: pr-head 11
+call: pr-head 13
+call: check-approval-sha 13 --evidence-list
+call: pr-head 16
+call: check-approval-sha 16 --stale-list
+call: pr-checks-required 16
+## collect-stale-approval
+rc=0
+out: {"prs": [{"n": 10, "issue": 3, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "qa"}, {"n": 11, "issue": 4, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "blocked"}, {"n": 13, "issue": 6, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "qa"}, {"n": 16, "issue": 8, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}], "pr_total": 4, "ignored": 1, "blocked": [["issue", 4], ["PR", 11], ["issue", 21]], "queued": [8, 6, 9, 23], "held": [9], "inflight": [20], "owners": null, "capped": [], "priority": {"8": 0, "6": 1, "20": 2}}
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 10
+call: check-approval-sha 10 --stale-list
+call: check-approval-sha 10 --evidence-list
+call: pr-head 11
+call: pr-head 13
+call: check-approval-sha 13 --evidence-list
+call: pr-head 16
+call: check-approval-sha 16 --stale-list
+## collect-stale-read-fails
+rc=1
+err: pipeline-status-file: check-approval-sha failed for PR #10 (rc=3)
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 10
+call: check-approval-sha 10 --stale-list
+## collect-evidence-read-fails
+rc=1
+err: pipeline-status-file: check-approval-sha --evidence-list failed for PR #10 (rc=3)
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 10
+call: check-approval-sha 10 --stale-list
+call: check-approval-sha 10 --evidence-list
+## collect-required-when
+rc=0
+out: {"prs": [{"n": 10, "issue": 3, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 11, "issue": 4, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "blocked"}, {"n": 13, "issue": 6, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "qa"}, {"n": 16, "issue": 8, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "security"}], "pr_total": 4, "ignored": 1, "blocked": [["issue", 4], ["PR", 11], ["issue", 21]], "queued": [8, 6, 9, 23], "held": [9], "inflight": [20], "owners": null, "capped": [], "priority": {"8": 0, "6": 1, "20": 2}}
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 10
+call: required-roles 10
+call: check-approval-sha 10 --stale-list
+call: check-approval-sha 10 --evidence-list
+call: pr-head 11
+call: pr-head 13
+call: required-roles 13
+call: check-approval-sha 13 --evidence-list
+call: pr-head 16
+call: required-roles 16
+call: check-approval-sha 16 --stale-list
+call: check-approval-sha 16 --evidence-list
+## collect-required-when-other-head
+rc=0
+out: {"prs": [{"n": 10, "issue": 3, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 11, "issue": 4, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "blocked"}, {"n": 13, "issue": 6, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "qa"}, {"n": 16, "issue": 8, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "security"}], "pr_total": 4, "ignored": 1, "blocked": [["issue", 4], ["PR", 11], ["issue", 21]], "queued": [8, 6, 9, 23], "held": [9], "inflight": [20], "owners": null, "capped": [], "priority": {"8": 0, "6": 1, "20": 2}}
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 10
+call: required-roles 10
+call: check-approval-sha 10 --stale-list
+call: check-approval-sha 10 --evidence-list
+call: pr-head 11
+call: pr-head 13
+call: required-roles 13
+call: check-approval-sha 13 --evidence-list
+call: pr-head 16
+call: required-roles 16
+call: check-approval-sha 16 --stale-list
+call: check-approval-sha 16 --evidence-list
+## collect-bad-pr-head
+rc=1
+err: pipeline-status-file: pr-head failed for PR #10
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 10
+## collect-bad-pr-head-sha
+rc=1
+err: pipeline-status-file: pr-head failed for PR #10
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 10
+## collect-list-prs-fails
+rc=1
+err: pipeline-status-file: list-prs failed (rc=1)
+call: list-prs 
+## collect-list-prs-not-array
+rc=1
+err: pipeline-status-file: list-prs did not return a JSON array
+call: list-prs 
+## collect-list-issues-fails
+rc=1
+err: pipeline-status-file: list-issues failed (rc=1)
+call: list-prs 
+call: list-issues 
+## collect-list-issues-not-json
+rc=1
+err: pipeline-status-file: list-issues did not return JSON
+call: list-prs 
+call: list-issues 
+## collect-owners
+rc=0
+out: {"prs": [{"n": 10, "issue": 3, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 11, "issue": 4, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "blocked"}, {"n": 13, "issue": 6, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "qa"}, {"n": 16, "issue": 8, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}], "pr_total": 4, "ignored": 1, "blocked": [["issue", 4], ["PR", 11], ["issue", 21]], "queued": [8, 6, 9, 23], "held": [9], "inflight": [20], "owners": [{"n": 5, "status": "answered", "question": "again"}, {"n": 22, "status": "unanswered", "question": "which?"}], "capped": [], "priority": {"8": 0, "6": 1, "20": 2}}
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 10
+call: check-approval-sha 10 --stale-list
+call: check-approval-sha 10 --evidence-list
+call: pr-head 11
+call: pr-head 13
+call: check-approval-sha 13 --evidence-list
+call: pr-head 16
+call: check-approval-sha 16 --stale-list
+## collect-owners-unverified
+rc=0
+out: {"prs": [{"n": 10, "issue": 3, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 11, "issue": 4, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "blocked"}, {"n": 13, "issue": 6, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "qa"}, {"n": 16, "issue": 8, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}], "pr_total": 4, "ignored": 1, "blocked": [["issue", 4], ["PR", 11], ["issue", 21]], "queued": [8, 6, 9, 23], "held": [9], "inflight": [20], "owners": [{"n": 5, "status": "unverified", "question": "again"}], "capped": [], "priority": {"8": 0, "6": 1, "20": 2}}
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 10
+call: check-approval-sha 10 --stale-list
+call: check-approval-sha 10 --evidence-list
+call: pr-head 11
+call: pr-head 13
+call: check-approval-sha 13 --evidence-list
+call: pr-head 16
+call: check-approval-sha 16 --stale-list
+## collect-owners-bad-item
+rc=1
+err: pipeline-status-file: list-needs-owner --json returned an item that is not {n, question, ...}
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+## collect-owners-fails
+rc=1
+err: pipeline-status-file: list-needs-owner failed (rc=1)
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+## collect-me
+rc=0
+out: {"prs": [{"n": 10, "issue": 3, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 16, "issue": 8, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}], "pr_total": 2, "ignored": 1, "blocked": [["issue", 21]], "queued": [8, 9], "held": [9], "inflight": [20], "owners": [{"n": 22, "status": "unanswered", "question": "q"}], "capped": [], "priority": {"8": 0, "20": 2}, "me": "me", "theirs": [{"kind": "issue", "n": 4, "issue": 4, "owner": "bob"}, {"kind": "issue", "n": 6, "issue": 6, "owner": "alice"}, {"kind": "PR", "n": 11, "issue": 4, "owner": "bob"}, {"kind": "PR", "n": 13, "issue": 6, "owner": "alice"}], "unassigned": [23]}
+call: list-prs 
+call: list-issues 
+call: list-assignees 
+call: list-needs-owner --json
+call: pr-head 10
+call: check-approval-sha 10 --stale-list
+call: check-approval-sha 10 --evidence-list
+call: pr-head 16
+call: check-approval-sha 16 --stale-list
+## collect-me-file-mode
+rc=0
+out: {"prs": [{"n": 10, "issue": 3, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 11, "issue": 4, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "blocked"}, {"n": 13, "issue": 6, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "qa"}, {"n": 16, "issue": 8, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}], "pr_total": 4, "ignored": 1, "blocked": [["issue", 4], ["PR", 11], ["issue", 21]], "queued": [8, 6, 9, 23], "held": [9], "inflight": [20], "owners": null, "capped": [], "priority": {"8": 0, "6": 1, "20": 2}}
+call: list-prs 
+call: list-issues 
+call: list-assignees 
+call: list-needs-owner --json
+call: pr-head 10
+call: check-approval-sha 10 --stale-list
+call: check-approval-sha 10 --evidence-list
+call: pr-head 11
+call: pr-head 13
+call: check-approval-sha 13 --evidence-list
+call: pr-head 16
+call: check-approval-sha 16 --stale-list
+## collect-me-fails
+rc=1
+err: pipeline-status-file: list-assignees failed (rc=1)
+call: list-prs 
+call: list-issues 
+call: list-assignees 
+## collect-me-not-json
+rc=1
+err: pipeline-status-file: list-assignees did not return JSON
+call: list-prs 
+call: list-issues 
+call: list-assignees 
+## collect-me-not-object
+rc=1
+err: pipeline-status-file: list-assignees did not return a JSON object
+call: list-prs 
+call: list-issues 
+call: list-assignees 
+## collect-past-the-cap
+rc=0
+out: {"prs": [{"n": 100, "issue": 100, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 101, "issue": 101, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 102, "issue": 102, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 103, "issue": 103, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 104, "issue": 104, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 105, "issue": 105, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 106, "issue": 106, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 107, "issue": 107, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 108, "issue": 108, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 109, "issue": 109, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 110, "issue": 110, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 111, "issue": 111, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 112, "issue": 112, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 113, "issue": 113, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 114, "issue": 114, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 115, "issue": 115, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 116, "issue": 116, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 117, "issue": 117, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 118, "issue": 118, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 119, "issue": 119, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 120, "issue": 120, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 121, "issue": 121, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 122, "issue": 122, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 123, "issue": 123, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 124, "issue": 124, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 125, "issue": 125, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 126, "issue": 126, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 127, "issue": 127, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 128, "issue": 128, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 129, "issue": 129, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 130, "issue": 130, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 131, "issue": 131, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 132, "issue": 132, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 133, "issue": 133, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 134, "issue": 134, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 135, "issue": 135, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 136, "issue": 136, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "reviewer"}, {"n": 300, "issue": 300, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}], "pr_total": 61, "ignored": 0, "blocked": [], "queued": [], "held": [], "inflight": [], "owners": null, "capped": [], "priority": {}}
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 100
+call: check-approval-sha 100 --stale-list
+call: check-approval-sha 100 --evidence-list
+call: pr-head 101
+call: check-approval-sha 101 --stale-list
+call: check-approval-sha 101 --evidence-list
+call: pr-head 102
+call: check-approval-sha 102 --stale-list
+call: check-approval-sha 102 --evidence-list
+call: pr-head 103
+call: check-approval-sha 103 --stale-list
+call: check-approval-sha 103 --evidence-list
+call: pr-head 104
+call: check-approval-sha 104 --stale-list
+call: check-approval-sha 104 --evidence-list
+call: pr-head 105
+call: check-approval-sha 105 --stale-list
+call: check-approval-sha 105 --evidence-list
+call: pr-head 106
+call: check-approval-sha 106 --stale-list
+call: check-approval-sha 106 --evidence-list
+call: pr-head 107
+call: check-approval-sha 107 --stale-list
+call: check-approval-sha 107 --evidence-list
+call: pr-head 108
+call: check-approval-sha 108 --stale-list
+call: check-approval-sha 108 --evidence-list
+call: pr-head 109
+call: check-approval-sha 109 --stale-list
+call: check-approval-sha 109 --evidence-list
+call: pr-head 110
+call: check-approval-sha 110 --stale-list
+call: check-approval-sha 110 --evidence-list
+call: pr-head 111
+call: check-approval-sha 111 --stale-list
+call: check-approval-sha 111 --evidence-list
+call: pr-head 112
+call: check-approval-sha 112 --stale-list
+call: check-approval-sha 112 --evidence-list
+call: pr-head 113
+call: check-approval-sha 113 --stale-list
+call: check-approval-sha 113 --evidence-list
+call: pr-head 114
+call: check-approval-sha 114 --stale-list
+call: check-approval-sha 114 --evidence-list
+call: pr-head 115
+call: check-approval-sha 115 --stale-list
+call: check-approval-sha 115 --evidence-list
+call: pr-head 116
+call: check-approval-sha 116 --stale-list
+call: check-approval-sha 116 --evidence-list
+call: pr-head 117
+call: check-approval-sha 117 --stale-list
+call: check-approval-sha 117 --evidence-list
+call: pr-head 118
+call: check-approval-sha 118 --stale-list
+call: check-approval-sha 118 --evidence-list
+call: pr-head 119
+call: check-approval-sha 119 --stale-list
+call: check-approval-sha 119 --evidence-list
+call: pr-head 120
+call: check-approval-sha 120 --stale-list
+call: check-approval-sha 120 --evidence-list
+call: pr-head 121
+call: check-approval-sha 121 --stale-list
+call: check-approval-sha 121 --evidence-list
+call: pr-head 122
+call: check-approval-sha 122 --stale-list
+call: check-approval-sha 122 --evidence-list
+call: pr-head 123
+call: check-approval-sha 123 --stale-list
+call: check-approval-sha 123 --evidence-list
+call: pr-head 124
+call: check-approval-sha 124 --stale-list
+call: check-approval-sha 124 --evidence-list
+call: pr-head 125
+call: check-approval-sha 125 --stale-list
+call: check-approval-sha 125 --evidence-list
+call: pr-head 126
+call: check-approval-sha 126 --stale-list
+call: check-approval-sha 126 --evidence-list
+call: pr-head 127
+call: check-approval-sha 127 --stale-list
+call: check-approval-sha 127 --evidence-list
+call: pr-head 128
+call: check-approval-sha 128 --stale-list
+call: check-approval-sha 128 --evidence-list
+call: pr-head 129
+call: check-approval-sha 129 --stale-list
+call: check-approval-sha 129 --evidence-list
+call: pr-head 130
+call: check-approval-sha 130 --stale-list
+call: check-approval-sha 130 --evidence-list
+call: pr-head 131
+call: check-approval-sha 131 --stale-list
+call: check-approval-sha 131 --evidence-list
+call: pr-head 132
+call: check-approval-sha 132 --stale-list
+call: check-approval-sha 132 --evidence-list
+call: pr-head 133
+call: check-approval-sha 133 --stale-list
+call: check-approval-sha 133 --evidence-list
+call: pr-head 134
+call: check-approval-sha 134 --stale-list
+call: check-approval-sha 134 --evidence-list
+call: pr-head 135
+call: check-approval-sha 135 --stale-list
+call: check-approval-sha 135 --evidence-list
+call: pr-head 136
+call: check-approval-sha 136 --stale-list
+call: check-approval-sha 136 --evidence-list
+call: pr-head 300
+call: check-approval-sha 300 --stale-list
+## collect-past-the-cap-capped-ignored
+rc=0
+out: {"prs": [{"n": 100, "issue": 100, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 101, "issue": 101, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 102, "issue": 102, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 103, "issue": 103, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 104, "issue": 104, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 105, "issue": 105, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 106, "issue": 106, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 107, "issue": 107, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 108, "issue": 108, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 109, "issue": 109, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 110, "issue": 110, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 111, "issue": 111, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 112, "issue": 112, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 113, "issue": 113, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 114, "issue": 114, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 115, "issue": 115, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 116, "issue": 116, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 117, "issue": 117, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 118, "issue": 118, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 119, "issue": 119, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 120, "issue": 120, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 121, "issue": 121, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 122, "issue": 122, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 123, "issue": 123, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 124, "issue": 124, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 125, "issue": 125, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 126, "issue": 126, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 127, "issue": 127, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 128, "issue": 128, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 129, "issue": 129, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 130, "issue": 130, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 131, "issue": 131, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 132, "issue": 132, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 133, "issue": 133, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 134, "issue": 134, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 135, "issue": 135, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 136, "issue": 136, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 137, "issue": 137, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 138, "issue": 138, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 139, "issue": 139, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 140, "issue": 140, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 141, "issue": 141, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 142, "issue": 142, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 143, "issue": 143, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 144, "issue": 144, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 145, "issue": 145, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 146, "issue": 146, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 147, "issue": 147, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 148, "issue": 148, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 149, "issue": 149, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 150, "issue": 150, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 151, "issue": 151, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 152, "issue": 152, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 153, "issue": 153, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 154, "issue": 154, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 155, "issue": 155, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 156, "issue": 156, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 157, "issue": 157, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 158, "issue": 158, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 159, "issue": 159, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 300, "issue": 300, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}], "pr_total": 61, "ignored": 1, "blocked": [], "queued": [], "held": [], "inflight": [], "owners": null, "capped": ["list-prs"], "priority": {}}
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 100
+call: check-approval-sha 100 --stale-list
+call: pr-head 101
+call: check-approval-sha 101 --stale-list
+call: pr-head 102
+call: check-approval-sha 102 --stale-list
+call: pr-head 103
+call: check-approval-sha 103 --stale-list
+call: pr-head 104
+call: check-approval-sha 104 --stale-list
+call: pr-head 105
+call: check-approval-sha 105 --stale-list
+call: pr-head 106
+call: check-approval-sha 106 --stale-list
+call: pr-head 107
+call: check-approval-sha 107 --stale-list
+call: pr-head 108
+call: check-approval-sha 108 --stale-list
+call: pr-head 109
+call: check-approval-sha 109 --stale-list
+call: pr-head 110
+call: check-approval-sha 110 --stale-list
+call: pr-head 111
+call: check-approval-sha 111 --stale-list
+call: pr-head 112
+call: check-approval-sha 112 --stale-list
+call: pr-head 113
+call: check-approval-sha 113 --stale-list
+call: pr-head 114
+call: check-approval-sha 114 --stale-list
+call: pr-head 115
+call: check-approval-sha 115 --stale-list
+call: pr-head 116
+call: check-approval-sha 116 --stale-list
+call: pr-head 117
+call: check-approval-sha 117 --stale-list
+call: pr-head 118
+call: check-approval-sha 118 --stale-list
+call: pr-head 119
+call: check-approval-sha 119 --stale-list
+call: pr-head 120
+call: check-approval-sha 120 --stale-list
+call: pr-head 121
+call: check-approval-sha 121 --stale-list
+call: pr-head 122
+call: check-approval-sha 122 --stale-list
+call: pr-head 123
+call: check-approval-sha 123 --stale-list
+call: pr-head 124
+call: check-approval-sha 124 --stale-list
+call: pr-head 125
+call: check-approval-sha 125 --stale-list
+call: pr-head 126
+call: check-approval-sha 126 --stale-list
+call: pr-head 127
+call: check-approval-sha 127 --stale-list
+call: pr-head 128
+call: check-approval-sha 128 --stale-list
+call: pr-head 129
+call: check-approval-sha 129 --stale-list
+call: pr-head 130
+call: check-approval-sha 130 --stale-list
+call: pr-head 131
+call: check-approval-sha 131 --stale-list
+call: pr-head 132
+call: check-approval-sha 132 --stale-list
+call: pr-head 133
+call: check-approval-sha 133 --stale-list
+call: pr-head 134
+call: check-approval-sha 134 --stale-list
+call: pr-head 135
+call: check-approval-sha 135 --stale-list
+call: pr-head 136
+call: check-approval-sha 136 --stale-list
+call: pr-head 137
+call: check-approval-sha 137 --stale-list
+call: pr-head 138
+call: check-approval-sha 138 --stale-list
+call: pr-head 139
+call: check-approval-sha 139 --stale-list
+call: pr-head 140
+call: check-approval-sha 140 --stale-list
+call: pr-head 141
+call: check-approval-sha 141 --stale-list
+call: pr-head 142
+call: check-approval-sha 142 --stale-list
+call: pr-head 143
+call: check-approval-sha 143 --stale-list
+call: pr-head 144
+call: check-approval-sha 144 --stale-list
+call: pr-head 145
+call: check-approval-sha 145 --stale-list
+call: pr-head 146
+call: check-approval-sha 146 --stale-list
+call: pr-head 147
+call: check-approval-sha 147 --stale-list
+call: pr-head 148
+call: check-approval-sha 148 --stale-list
+call: pr-head 149
+call: check-approval-sha 149 --stale-list
+call: pr-head 150
+call: check-approval-sha 150 --stale-list
+call: pr-head 151
+call: check-approval-sha 151 --stale-list
+call: pr-head 152
+call: check-approval-sha 152 --stale-list
+call: pr-head 153
+call: check-approval-sha 153 --stale-list
+call: pr-head 154
+call: check-approval-sha 154 --stale-list
+call: pr-head 155
+call: check-approval-sha 155 --stale-list
+call: pr-head 156
+call: check-approval-sha 156 --stale-list
+call: pr-head 157
+call: check-approval-sha 157 --stale-list
+call: pr-head 158
+call: check-approval-sha 158 --stale-list
+call: pr-head 159
+call: check-approval-sha 159 --stale-list
+call: pr-head 300
+call: check-approval-sha 300 --stale-list
+## collect-many-owners-queued
+rc=0
+out: {"prs": [{"n": 100, "issue": 100, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 101, "issue": 101, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 102, "issue": 102, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 103, "issue": 103, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 104, "issue": 104, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 105, "issue": 105, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 106, "issue": 106, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 107, "issue": 107, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 108, "issue": 108, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 109, "issue": 109, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 110, "issue": 110, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 111, "issue": 111, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 112, "issue": 112, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 113, "issue": 113, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 114, "issue": 114, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 115, "issue": 115, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 116, "issue": 116, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 117, "issue": 117, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 118, "issue": 118, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 119, "issue": 119, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 120, "issue": 120, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 121, "issue": 121, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 122, "issue": 122, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 123, "issue": 123, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 124, "issue": 124, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 125, "issue": 125, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 126, "issue": 126, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 127, "issue": 127, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 128, "issue": 128, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}, {"n": 129, "issue": 129, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "owner": false, "stage": "merge"}], "pr_total": 30, "ignored": 0, "blocked": [], "queued": [100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129], "held": [], "inflight": [], "owners": [{"n": 100, "status": "unanswered", "question": "q"}, {"n": 101, "status": "unanswered", "question": "q"}, {"n": 102, "status": "unanswered", "question": "q"}, {"n": 103, "status": "unanswered", "question": "q"}, {"n": 104, "status": "unanswered", "question": "q"}, {"n": 105, "status": "unanswered", "question": "q"}, {"n": 106, "status": "unanswered", "question": "q"}, {"n": 107, "status": "unanswered", "question": "q"}, {"n": 108, "status": "unanswered", "question": "q"}, {"n": 109, "status": "unanswered", "question": "q"}, {"n": 110, "status": "unanswered", "question": "q"}, {"n": 111, "status": "unanswered", "question": "q"}, {"n": 112, "status": "unanswered", "question": "q"}, {"n": 113, "status": "unanswered", "question": "q"}, {"n": 114, "status": "unanswered", "question": "q"}, {"n": 115, "status": "unanswered", "question": "q"}, {"n": 116, "status": "unanswered", "question": "q"}, {"n": 117, "status": "unanswered", "question": "q"}, {"n": 118, "status": "unanswered", "question": "q"}, {"n": 119, "status": "unanswered", "question": "q"}], "capped": [], "priority": {}}
+call: list-prs 
+call: list-issues 
+call: list-needs-owner --json
+call: pr-head 100
+call: check-approval-sha 100 --stale-list
+call: pr-head 101
+call: check-approval-sha 101 --stale-list
+call: pr-head 102
+call: check-approval-sha 102 --stale-list
+call: pr-head 103
+call: check-approval-sha 103 --stale-list
+call: pr-head 104
+call: check-approval-sha 104 --stale-list
+call: pr-head 105
+call: check-approval-sha 105 --stale-list
+call: pr-head 106
+call: check-approval-sha 106 --stale-list
+call: pr-head 107
+call: check-approval-sha 107 --stale-list
+call: pr-head 108
+call: check-approval-sha 108 --stale-list
+call: pr-head 109
+call: check-approval-sha 109 --stale-list
+call: pr-head 110
+call: check-approval-sha 110 --stale-list
+call: pr-head 111
+call: check-approval-sha 111 --stale-list
+call: pr-head 112
+call: check-approval-sha 112 --stale-list
+call: pr-head 113
+call: check-approval-sha 113 --stale-list
+call: pr-head 114
+call: check-approval-sha 114 --stale-list
+call: pr-head 115
+call: check-approval-sha 115 --stale-list
+call: pr-head 116
+call: check-approval-sha 116 --stale-list
+call: pr-head 117
+call: check-approval-sha 117 --stale-list
+call: pr-head 118
+call: check-approval-sha 118 --stale-list
+call: pr-head 119
+call: check-approval-sha 119 --stale-list
+call: pr-head 120
+call: check-approval-sha 120 --stale-list
+call: pr-head 121
+call: check-approval-sha 121 --stale-list
+call: pr-head 122
+call: check-approval-sha 122 --stale-list
+call: pr-head 123
+call: check-approval-sha 123 --stale-list
+call: pr-head 124
+call: check-approval-sha 124 --stale-list
+call: pr-head 125
+call: check-approval-sha 125 --stale-list
+call: pr-head 126
+call: check-approval-sha 126 --stale-list
+call: pr-head 127
+call: check-approval-sha 127 --stale-list
+call: pr-head 128
+call: check-approval-sha 128 --stale-list
+call: pr-head 129
+call: check-approval-sha 129 --stale-list
