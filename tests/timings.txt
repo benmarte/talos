@@ -245,6 +245,7 @@
 5 test-qa-targeted-budget.sh
 5 test-rate-limit-raw-sites.sh
 3 test-ready-gate.sh
+5 test-record-attempt-stage-check.sh
 60 test-red-check-747.sh
 24 test-red-check-drop-773.sh
 32 test-red-ci-routes-to-gate.sh
