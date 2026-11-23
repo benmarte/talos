@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Depth 2 so a pull_request run has the merge commit's base parent (HEAD^1).
           fetch-depth: 2
@@ -87,7 +87,7 @@ jobs:
     env:
       ACTIONLINT_VERSION: '1.7.12'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # The release's own checksums file, from the pinned tag, must match the tarball.
       - name: Install actionlint (pinned version, checksum verified)
         run: |
@@ -119,7 +119,7 @@ jobs:
       # shard and, under CI, fails when actionlint is not on PATH (it must not skip there).
       ACTIONLINT_VERSION: '1.7.12'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # A PR checks out the merge commit; depth 2 holds its first parent,
           # HEAD^1, the base the PR is diffed against (#972).
