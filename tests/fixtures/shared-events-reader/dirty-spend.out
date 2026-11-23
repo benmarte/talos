@@ -1,0 +1,11 @@
+pipeline-events: skipped 6 malformed line(s)
+Token spend — run summary
+issue  PR      tokens  cache write          cache read            unrecorded  stage models
+#21    #31     62k     20k (+2 unrecorded)  400k (+2 unrecorded)  1           dev sonnet · rev sonnet · qa sonnet
+#21    pre-PR  3k      unrecorded           unrecorded            0           val sonnet · pm sonnet
+#22    pre-PR  700     unrecorded           unrecorded            1           dev sonnet · other sonnet
+#24    pre-PR  4k      unrecorded           unrecorded            0           dev session default
+Top PRs: #31 62k
+Per issue: #21 65k, #22 700, #24 4k
+Total: 70k (+2 unrecorded) (cache reads not included) · cache read 400k (+7 unrecorded), cache write 20k
+Orchestrator session: 2 calls, cache read 2k, cache write 100, output 80
