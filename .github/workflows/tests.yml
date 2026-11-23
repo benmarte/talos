@@ -49,7 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Depth 2 so a pull_request run has the merge commit's base parent (HEAD^1).
           fetch-depth: 2
@@ -86,7 +86,7 @@ jobs:
     timeout-minutes: 30
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # A PR checks out the merge commit; depth 2 holds its first parent,
           # HEAD^1, the base the PR is diffed against (#972).
