@@ -336,6 +336,7 @@
 6 test-vcs-pr-closes-issue-822.sh
 0 test-vcs-provider-parity.sh
 7 test-vcs-shared-approval-sha.sh
+3 test-vcs-shared-attempt-verbs.sh
 20 test-vcs-shared-markers.sh
 2 test-vcs-shared-pr-files.sh
 1 test-vcs-shared-sweep.sh
