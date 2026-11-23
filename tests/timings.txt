@@ -273,6 +273,7 @@
 47 test-routing-e2e-azure.sh
 57 test-routing-e2e-github.sh
 28 test-routing-e2e-gitlab.sh
+12 test-run-closed-issue-stop.sh
 32 test-run-docs-worktree.sh
 9 test-run-end-event.sh
 20 test-run-id-740.sh

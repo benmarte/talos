@@ -94,7 +94,7 @@ json_is "list-issues --no-body: no body key" '[{"number":3,"title":"Fix login bu
 
 Q="$(printf '%s\n' "$ISSUE3" '[{"id":1,"user":{"login":"alice"},"body":"hello","created_at":"2026-10-01T00:00:00Z","html_url":"https://github.com/acme/widget/issues/3#issuecomment-1"}]')"
 parity "view-issue" view-issue 3
-assert_eq "title,body,labels,comments" "$(out_of | python3 -I -c 'import json,sys; print(",".join(json.load(sys.stdin).keys()))')" "view-issue: {title, body, labels, comments}"
+assert_eq "title,body,state,labels,comments" "$(out_of | python3 -I -c 'import json,sys; print(",".join(json.load(sys.stdin).keys()))')" "view-issue: {title, body, state, labels, comments}"
 assert_contains "$(out_of)" '"login": "alice"' "view-issue: comments carry author.login"
 assert_contains "$(out_of)" '"body": "hello"' "view-issue: comments carry body"
 
