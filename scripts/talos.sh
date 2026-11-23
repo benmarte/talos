@@ -4817,6 +4817,8 @@ _talos_docs_delta() {
 # stage's free text: only its `PRE-EXISTING: ` lines count, each one plain
 # bullet of at most 300 bytes (control and format characters dropped, a
 # leading `[ ]` or `[x]` neutralised so it cannot become a task), at most 20.
+# A line that says there is nothing (`none`, `n/a`, `-`, an optional trailing
+# period, any case) is no finding (#1045).
 # Prints the number of bullets; the body is written only when it is not 0.
 _TALOS_FOLLOWUP_PY='
 import re, sys, unicodedata
@@ -4826,7 +4828,7 @@ for line in open(src, "rb").read().decode("utf-8", "replace").split("\n"):
     if not line.startswith(PREFIX) or len(bullets) == 20:
         continue
     text = "".join(c for c in line[len(PREFIX):] if unicodedata.category(c) not in ("Cc", "Cf", "Zl", "Zp")).strip()
-    if text:
+    if text and not re.fullmatch(r"(none|n/a|-)\.?", text, re.I):
         bullets.append(("- " + ("\\" if re.match(r"\[[ xX]\]", text) else "") + text).encode()[:300].decode("utf-8", "ignore").rstrip())
 if bullets:
     with open(out, "w", encoding="utf-8") as f:
@@ -4834,13 +4836,73 @@ if bullets:
 print(len(bullets))
 '
 
+# The open follow-up issue of one (PR, role) (#1045). stdin: a list-issues array;
+# argv: the exact title, the file that gets that issue's body, the account login.
+# Only an issue that login opened counts: anyone can open one with that title.
+# Prints the lowest matching issue number, or nothing when there is none.
+_TALOS_FOLLOWUP_FIND_PY='
+import json, sys
+title, out, user = sys.argv[1:4]
+by = lambda i: i["author"].get("login") if isinstance(i.get("author"), dict) else None
+found = sorted((i["number"], i.get("body") or "") for i in json.load(sys.stdin)
+               if isinstance(i, dict) and isinstance(i.get("number"), int) and i.get("title") == title and by(i) == user)
+if found:
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(found[0][1])
+    print(found[0][0])
+'
+
+# The bullets of a new review that the issue does not hold yet (#1045). argv: the
+# PR, the issue, the new body file, the existing issue's body file, the comment
+# body file to write, the account login. stdin: the issue's read-comments answer.
+# A bullet is known when a line of the body or of a comment that login wrote
+# equals it after whitespace and case are normalised. Prints the number of new
+# bullets; the file is written only when it is not 0.
+_TALOS_FOLLOWUP_NEW_PY='
+import json, sys
+pr, issue, new, old, out, user = sys.argv[1:7]
+norm = lambda t: " ".join(t.split()).lower()
+doc = json.load(sys.stdin)
+comments = doc.get("comments", []) if isinstance(doc, dict) else doc
+known = set()
+mine = [c.get("body") or "" for c in comments
+        if isinstance(c, dict) and isinstance(c.get("author"), dict) and c["author"].get("login") == user]
+for text in [open(old, encoding="utf-8").read()] + mine:
+    known.update(norm(l) for l in text.split("\n") if l.startswith("- "))
+fresh = [l for l in open(new, encoding="utf-8").read().split("\n") if l.startswith("- ") and norm(l) not in known]
+if fresh:
+    with open(out, "w", encoding="utf-8") as f:
+        f.write("Found again while reviewing PR #%s (issue #%s), not listed above yet:\n\n%s\n" % (pr, issue, "\n".join(fresh)))
+print(len(fresh))
+'
+
 # _talos_followup <role> <pr> <issue> <summary-file> (#785): the one issue that
-# collects a review's Pre-existing findings. A failure is a warn, never a stop.
+# collects a review's Pre-existing findings, one per (PR, role) (#1045): an open
+# issue with the title is the one, and it gets a comment with the bullets it does
+# not hold yet. Only the account user's issue and comments count, as anyone can
+# open an issue with the title. A failure is a warn, never a stop; a failed
+# lookup (identity included) files nothing.
 _talos_followup() {
-  local _role="$1" _pr="$2" _n="$3" _sum="$4" _d="$_CFG_CACHE_DIR" _c
+  local _role="$1" _pr="$2" _n="$3" _sum="$4" _d="$_CFG_CACHE_DIR" _c _t _e _u
+  _t="Pre-existing findings from $_role review of PR #$_pr"
   _c="$(python3 -I -c "$_TALOS_FOLLOWUP_PY" "$_pr" "$_n" "$_sum" "$_d/followup.body" 2> /dev/null)" || { _talos_warn followup-failed "issue=$_n"; return 0; }
   [ "$_c" != 0 ] || return 0
-  _talos_cap _vcs create-issue "Pre-existing findings from $_role review of PR #$_pr" "$_d/followup.body"
+  _talos_cap _vcs current-user
+  _u="${_OUT//[[:space:]]/}"
+  { [ "$_RC" -eq 0 ] && [ -n "$_u" ]; } || { _talos_warn followup-lookup-failed "pr=$_pr role=$_role"; return 0; }
+  _talos_cap _vcs list-issues
+  [ "$_RC" -eq 0 ] && _e="$(python3 -I -c "$_TALOS_FOLLOWUP_FIND_PY" "$_t" "$_d/followup.old" "$_u" <<< "$_OUT" 2> /dev/null)" \
+    || { _talos_warn followup-lookup-failed "pr=$_pr role=$_role"; return 0; }
+  if [ -z "$_e" ]; then
+    _talos_cap _vcs create-issue "$_t" "$_d/followup.body"
+    [ "$_RC" -eq 0 ] || _talos_warn followup-failed "issue=$_n"
+    return 0
+  fi
+  _talos_cap _vcs read-comments "$_e"
+  [ "$_RC" -eq 0 ] && _c="$(python3 -I -c "$_TALOS_FOLLOWUP_NEW_PY" "$_pr" "$_n" "$_d/followup.body" "$_d/followup.old" "$_d/followup.comment" "$_u" <<< "$_OUT" 2> /dev/null)" \
+    || { _talos_warn followup-lookup-failed "pr=$_pr role=$_role"; return 0; }
+  [ "$_c" != 0 ] || return 0
+  _talos_cap _vcs comment-issue "$_e" --body-file "$_d/followup.comment"
   [ "$_RC" -eq 0 ] || _talos_warn followup-failed "issue=$_n"
 }
 
