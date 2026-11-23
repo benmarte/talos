@@ -1244,7 +1244,7 @@ dev_pr_word 'PR=4\n' none "PR=4 (case-sensitive)"
 # Inside one `run` the collect is cached (TALOS_COLLECT_CACHE, a file in the run's
 # private dir): the in-flight list read and the first `next` share one read, and
 # later ones reuse it until something writes. Any writing verb empties it.
-CC="$SANDBOX/collect.cache"
+CC="$SANDBOX/collect.cache"; CCI="$CC.issue-9"   # a collect scoped by --issue is kept apart (#1038)
 collects() { journal | grep -c '^status-file collect$'; }
 EMPTY_STATE='{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [], "held": [], "inflight": [], "owners": [], "capped": []}'
 reset_stubs; LEASE_RESET; rm -f "$CC"
@@ -1255,23 +1255,23 @@ OUT="$(TALOS_NOW=14000 bash "$RUN" next 2>/dev/null)"
 assert_contains "$OUT" "action=wait reason=none" "collect cache: a fresh cache answers next (its empty queue, not the stub's queued [9])"
 assert_eq "0" "$(collects)" "collect cache: a hit pays no collect"
 # a miss: read once, kept
-reset_stubs; LEASE_RESET; rm -f "$CC"
+reset_stubs; LEASE_RESET; rm -f "$CC" "$CCI"
 TALOS_NOW=14000 bash "$RUN" next --issue 9 >/dev/null 2>&1
 TALOS_NOW=14000 bash "$RUN" next --issue 9 >/dev/null 2>&1
 assert_eq "1" "$(collects)" "collect cache: a miss reads once, the second next reuses it"
-assert_contains "$(cat "$CC")" '"queued": [9]' "collect cache: the miss stored what collect printed"
+assert_contains "$(cat "$CCI")" '"queued": [9]' "collect cache: the miss stored what collect printed"
 # expired: ignored
-touch -t 202001010000 "$CC"
+touch -t 202001010000 "$CCI"
 TALOS_NOW=14000 bash "$RUN" next --issue 9 >/dev/null 2>&1
 assert_eq "2" "$(collects)" "collect cache: a cache older than two minutes is read again"
 # a failed or non-JSON read is never kept
-reset_stubs; LEASE_RESET; rm -f "$CC"
+reset_stubs; LEASE_RESET; rm -f "$CC" "$CCI"
 printf '1' > "$STUB_DIR/collect.rc"
 TALOS_NOW=14000 bash "$RUN" next --issue 9 >/dev/null 2>&1
-assert_file_absent "$CC" "collect cache: a failed collect is not kept"
+assert_file_absent "$CCI" "collect cache: a failed collect is not kept"
 rm -f "$STUB_DIR/collect.rc"; printf 'not json' > "$STUB_DIR/collect.json"
 TALOS_NOW=14000 bash "$RUN" next --issue 9 >/dev/null 2>&1
-assert_file_absent "$CC" "collect cache: a read that is not a JSON object is not kept"
+assert_file_absent "$CCI" "collect cache: a read that is not a JSON object is not kept"
 # every verb that writes empties it
 for v in done gate docs-gate post-merge sweep claim; do
   printf '%s' "$EMPTY_STATE" > "$CC"
