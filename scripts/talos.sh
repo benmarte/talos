@@ -310,7 +310,11 @@
 #         threat stage posted again with its `## Threat model` section.
 #         Output: `done=ok` first, `spend=<line>`, `spec_check=<slug>` (a refused
 #         PM spec only), `next=` last:
-#            continue | stop | fix-round stage=<role> | batch
+#            continue | stop | fix-round stage=<role> | batch | ci-pending
+#         `--ci-pending` (#1028, qa FAIL only; `run` passes it when QA's verdict line is
+#         `FAIL: ci-pending ...`): a required check was still pending at QA's capped
+#         wait, which is no defect. No draft conversion, no qa:pass drop, no Blocked card,
+#         and `next=ci-pending` (not `fix-round`): the driver waits for CI itself.
 #         `done` never calls `gate fix-round` and never merges.
 # done-reasons: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed scripts-missing python-missing scratch-unavailable config-unreadable board-failed notify-failed model-invalid spend-upsert-failed lease-release-failed spec-check-unread comment-failed followup-failed
 #   stop: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed
@@ -724,7 +728,7 @@ verbs:
                                      (reviewer, security, docs with --pr) puts
                                      the spec and the PR diff in it, up to
                                      TALOS_PROMPT_CHANGE_MAX_BYTES (60000)
-  done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
+  done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft] [--ci-pending]
                                      end-of-stage bookkeeping: board, role relay,
                                      post_stage, spend block, lifecycle event
   map [--refresh|--forget <slug>]    the project map: map=<html> index=<html> (local
@@ -3879,7 +3883,11 @@ _talos_prompt() {
         fi
       fi
       _talos_pv QA_CI_STEP ""
-      if [ "$_skip" = 1 ] && [ "$_v" != pre-ci ]; then
+      # #1010: verify.ci_scope changed = this repo's PR CI runs only the tests a
+      # change selects and the merge queue runs the full suite; default full.
+      if [ "$_skip" = 1 ] && [ "$_v" != pre-ci ] && [ "$(cfg verify.ci_scope)" = changed ]; then
+        _talos_pv QA_TARGETED_LINE "Targeted run skipped: \`merge.required_checks\` is set and \`verify.ci_scope\` is \`changed\`, so CI ran the tests this change selects and the merge queue runs the full suite. Run no \`tests/run-tests.sh\` command of any form (not the step 2 \`run-tests.sh --changed\`, not \`--for\`, no pattern, no full suite, not through \`pipeline-verify.sh\`); write \`targeted run skipped: CI ran the tests this change selects (merge.required_checks)\` in the verdict. \`qa-run\` still checks every criterion red/green, and the required-checks gate is unchanged."
+      elif [ "$_skip" = 1 ] && [ "$_v" != pre-ci ]; then
         _talos_pv QA_TARGETED_LINE "Targeted run skipped: \`merge.required_checks\` is set, so CI is the full run at the head. Run no \`tests/run-tests.sh\` command of any form (not the step 2 \`run-tests.sh --changed\`, not \`--for\`, no pattern, no full suite, not through \`pipeline-verify.sh\`); write \`targeted run skipped: CI is the full run (merge.required_checks)\` in the verdict. \`qa-run\` still checks every criterion red/green, and the required-checks gate is unchanged."
       fi
       if [ "$_v" = pre-ci ]; then
@@ -4555,19 +4563,20 @@ _talos_spec_check() {
 # done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
 #      [--tokens <n>] [--tool-uses <n>] [--duration-s <n>] [--model <m>] [--sha <sha>]
 _talos_done() {
-  local _role="${1:-}" _n="" _pr="" _v="" _sf="" _draft=0 _tok="" _tu="" _dur="" _model="" _sha=""
+  local _cip=0 _role="${1:-}" _n="" _pr="" _v="" _sf="" _draft=0 _tok="" _tu="" _dur="" _model="" _sha=""
   local _ok=1 _x _sum _col="" _msg="" _ev="" _fail=0 _label _next=continue _convert _SPEC_SLUG="" _SPEC_NEXT=""
   [ "$#" -eq 0 ] || shift
   case " $_TALOS_ROLES " in *" $_role "*) [ "$_role" != planner ] && _ok=0 ;; esac
   [ "$_ok" -eq 0 ] || _talos_stop unknown-role 2
   while [ "$#" -gt 0 ]; do
-    [ "$1" = "--draft" ] || [ "$#" -ge 2 ] || _talos_stop usage 2
+    [ "$1" = "--draft" ] || [ "$1" = "--ci-pending" ] || [ "$#" -ge 2 ] || _talos_stop usage 2
     case "$1" in
       --issue) _n="$2"; shift 2 ;;
       --pr) _pr="$2"; shift 2 ;;
       --verdict) _v="$2"; shift 2 ;;
       --summary-file) _sf="$2"; shift 2 ;;
       --draft) _draft=1; shift ;;
+      --ci-pending) _cip=1; shift ;;
       --tokens) _tok="$2"; shift 2 ;;
       --tool-uses) _tu="$2"; shift 2 ;;
       --duration-s) _dur="$2"; shift 2 ;;
@@ -4577,6 +4586,8 @@ _talos_done() {
     esac
   done
   _talos_isnum "$_n" && [ -n "$_sf" ] || _talos_stop usage 2
+  # #1028: the marker belongs to a QA FAIL and to nothing else.
+  [ "$_cip" -eq 0 ] || { [ "$_role" = qa ] && [ "$_v" = FAIL ]; } || _talos_stop usage 2
   for _x in "$_pr" "$_tok" "$_tu" "$_dur"; do
     [ -z "$_x" ] || _talos_isnum "$_x" || _talos_stop usage 2
   done
@@ -4611,7 +4622,9 @@ _talos_done() {
   # What a failing verdict must set right first, before anything is announced:
   # a stale approval is stripped (RESTAMP_FAIL), and under PR_DRAFT a failed QA
   # converts the PR back to a draft and drops qa:pass. Both are idempotent.
-  if [ "$_role" = qa ] && [ "$_v" = FAIL ] && [ "$_draft" -eq 1 ]; then
+  # A ci-pending QA FAIL (#1028) is a wait: the PR stays as it is (CI is running
+  # on it), so it is neither converted back to a draft nor stripped of qa:pass.
+  if [ "$_role" = qa ] && [ "$_v" = FAIL ] && [ "$_draft" -eq 1 ] && [ "$_cip" -eq 0 ]; then
     # The QA pre-CI gate (#535): QA ran on the draft, nothing was ever built, so
     # a draft PR has nothing to convert back. Only a PR that is positively a
     # draft skips the conversion; ready or unreadable keeps today's draft-pr.
@@ -4625,7 +4638,7 @@ _talos_done() {
       [ "$_RC" -eq 0 ] || _talos_stop draft-pr-failed
     fi
   fi
-  if [ "$_v" = RESTAMP_FAIL ] || { [ "$_role" = qa ] && [ "$_v" = FAIL ] && [ "$_draft" -eq 1 ]; }; then
+  if [ "$_v" = RESTAMP_FAIL ] || { [ "$_role" = qa ] && [ "$_v" = FAIL ] && [ "$_draft" -eq 1 ] && [ "$_cip" -eq 0 ]; }; then
     _label="$(_talos_label_of "$_role")" || _talos_stop label-failed
     _talos_run_capture label _vcs label-pr "$_pr" --remove "$_label"
     [ "$_RC" -eq 0 ] || _talos_stop label-failed
@@ -4645,7 +4658,8 @@ _talos_done() {
     developer:PR_OPENED) _col="In review"; _msg="PR #$_pr opened"; _ev=pr-opened ;;
     # A failing review verdict moves the card to Blocked too (#523); the
     # redispatch of its fix round moves it back to In progress.
-    qa:FAIL | qa:RESTAMP_FAIL) _col="Blocked"; _msg="QA failed in PR #$_pr"; _ev=blocked ;;
+    qa:FAIL) [ "$_cip" -eq 1 ] || { _col="Blocked"; _msg="QA failed in PR #$_pr"; _ev=blocked; } ;;
+    qa:RESTAMP_FAIL) _col="Blocked"; _msg="QA failed in PR #$_pr"; _ev=blocked ;;
     reviewer:CHANGES | reviewer:RESTAMP_FAIL) _col="Blocked"; _msg="reviewer: changes required"; _ev=blocked ;;
     security:FINDINGS | security:RESTAMP_FAIL | adversarial:FINDINGS | adversarial:RESTAMP_FAIL)
       _col="Blocked"; _msg="$_role: findings in PR #$_pr"; _ev=blocked ;;
@@ -4701,6 +4715,7 @@ _talos_done() {
     esac
     # #580: a blocked stage (any role) is for a human: no fix round follows.
     [ "$_v" != BLOCKED ] || _next=stop
+    [ "$_cip" -eq 0 ] || _next=ci-pending
   fi
   # The stage's work is complete: free the issue's lease (#470, AC4) so the
   # next `next` run answers immediately, not after the TTL.
@@ -6002,7 +6017,7 @@ _talos_run_warns() {
 # and <prior-file> are the prompt's `--shape` and `--prior-file` (the QA-FAIL
 # fix round passes fix-round and QA's report, #537).
 _talos_run_dispatch() {
-  local _a="$1" _shape="${2:-}" _prior="${3:-}" _f _role _pr _n _v _w _dargs _next _rc _line _dout
+  local _a="$1" _shape="${2:-}" _prior="${3:-}" _f _role _pr _n _v _w _dargs _next _rc _line _dout _cip=0
   _role="$(sed -n 's/.*stage=\([a-z-]*\).*/\1/p' <<<"$_a")"
   _pr="$(sed -n 's/.* pr=\([0-9]*\).*/\1/p' <<<"$_a")"
   _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_a")"
@@ -6167,6 +6182,11 @@ print(min(new) if new else "")' "$_o0" "$_o1")" || _w=""
   _dargs=(done "$_role" --issue "$_n")
   [ -z "$_pr" ] || _dargs+=(--pr "$_pr")
   [ "$_RUN_DRAFT" -eq 1 ] && _dargs+=(--draft)
+  # #1028: a QA FAIL that only says a required check was still pending is a wait.
+  if [ "$_role" = qa ] && [ "$_v" = FAIL ] && _run_qa_ci_pending "$_CFG_CACHE_DIR/agent.out"; then
+    _cip=1
+    _dargs+=(--ci-pending)
+  fi
   case "$_v" in
     none) : ;;
     "PR_OPENED "*)
@@ -6191,6 +6211,7 @@ print(min(new) if new else "")' "$_o0" "$_o1")" || _w=""
   # its answer from _RUN_NEXT.
   _RUN_NEXT="$_next"
   [ "$_role" != qa ] || [ "$_v" != PASS ] || rm -f "$_CFG_CACHE_DIR/qa-fail-head.$_pr"
+  [ "$_role" != qa ] || [ "$_cip" -eq 1 ] || rm -f "$_CFG_CACHE_DIR/qa-ci-pending.$_pr"
   # #580: the reason a stage gave for BLOCKED, relayed (sanitised, one line) beside
   # the stop line; the whole message went to done as the summary.
   if [ "$_v" = BLOCKED ]; then
@@ -6231,6 +6252,8 @@ print(min(new) if new else "")' "$_o0" "$_o1")" || _w=""
       _talos_flush; exit 0 ;;
     "fix-round stage=qa")
       [ "$_role" != qa ] || _talos_run_qa_fail "$_pr" "$_n" ;;
+    ci-pending)
+      [ "$_role" != qa ] || _talos_run_qa_ci_pending "$_pr" "$_n" ;;
     batch | "fix-round stage=$_role")
       case "$_role" in
         reviewer | security | adversarial)
@@ -6793,13 +6816,32 @@ _talos_run_presync() {
 # exit 0, no QA, no pipeline:blocked and no attempt, and the next run resumes.
 # The caller holds the issue's lease, which this releases when it ends the run.
 _talos_run_ci_wait() {
-  local _pr="$1" _n="$2" _w _args=() _par
+  local _pr="$1" _n="$2" _par
   # #993: the QA prompt reads this to build the CI failure excerpt without a
   # second checks read; none means no wait ran here.
   export TALOS_QA_CI_RC=none
   [ "$(cfg verify.qa_mode)" = ci ] || return 0
   _par="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ci-parallel 2>/dev/null)" || _par=false
   [ "$_par" != true ] || return 0
+  # #1007: under the QA pre-CI gate (pr.ready_gate qa-local) QA runs on the draft
+  # by design and CI skips a draft, so a wait here could only end ci-pending.
+  # The PR is asked itself: once it is ready (post-gate) the wait applies.
+  if [ "$_RUN_GATE" -eq 1 ]; then
+    _talos_cap _vcs pr-is-draft "$_pr"
+    case "$_RC:$_OUT" in
+      0:draft) return 0 ;;
+      1:ready) ;;
+      *) _talos_stop draft-unverified ;;
+    esac
+  fi
+  _talos_run_ci_wait_now "$_pr" "$_n"
+}
+
+# _talos_run_ci_wait_now <pr> <issue>: the wait itself, whatever the mode (#1028
+# reuses it after a ci-pending QA FAIL, also under ci.parallel_with_qa). The
+# result is in TALOS_QA_CI_RC (0 green, 1 red); exit 2 ends the run as above.
+_talos_run_ci_wait_now() {
+  local _pr="$1" _n="$2" _w _args=()
   _w="$(cfg verify.ci_wait_s)"
   case "$_w" in '' | *[!0-9]*) ;; *)
     _w=$((10#$_w))
@@ -6816,6 +6858,41 @@ _talos_run_ci_wait() {
       _talos_flush; exit 0 ;;
     *) _talos_stop state-unavailable ;;
   esac
+}
+
+# _talos_run_qa_ci_pending <pr> <issue> (#1028): QA ended `FAIL: ci-pending ...`,
+# a required check still pending at QA's own capped wait (under
+# ci.parallel_with_qa the driver does not wait before QA). That is a wait, not a
+# defect: `done --ci-pending` recorded nothing and answered next=ci-pending, no
+# developer round and no attempt follow. The driver waits for the required checks
+# itself, outside the stage cap (`_talos_run_ci_wait_now`: verify.ci_wait_s, at
+# most 3600; still pending at the budget ends the run `wait reason=ci-pending`,
+# the lease released), then dispatches QA again on the same head, which finds CI
+# finished: green passes, red takes the normal route (QA FAIL with the CI excerpt,
+# then the developer). A second ci-pending QA FAIL for the PR in this run ends the
+# run the same way, so a CI that keeps restarting cannot loop. `done` freed the
+# lease with the QA stage, so it is taken again for the wait.
+_talos_run_qa_ci_pending() {
+  local _pr="$1" _n="$2" _f="$_CFG_CACHE_DIR/qa-ci-pending.$1"
+  if [ -f "$_f" ]; then
+    _talos_lease_release "$_n"
+    _talos_emit stop "action=wait reason=ci-pending pr=$_pr issue=$_n"
+    _talos_flush; exit 0
+  fi
+  : > "$_f" || _talos_stop scratch-unavailable
+  _talos_run_lease "$_n"
+  _talos_run_ci_wait_now "$_pr" "$_n"
+  _talos_run_dispatch "dispatch stage=qa pr=$_pr issue=$_n"
+  _talos_lease_release "$_n"
+}
+
+# _run_qa_ci_pending <file>: 0 when QA's verdict line (the first line that opens
+# with a verdict word) is `FAIL: ci-pending`, the fixed marker for a required
+# check still pending at QA's wait budget (#1028). Prose elsewhere never counts.
+_run_qa_ci_pending() {
+  local _l
+  _l="$(grep -m 1 -E '^[[:space:]]*(PASS|FAIL|RESTAMP_PASS|RESTAMP_FAIL):' "$1" 2>/dev/null)" || return 1
+  [[ "$_l" =~ ^[[:space:]]*FAIL:[[:space:]]+ci-pending([[:space:]]|$) ]]
 }
 
 # _talos_run_qa_draft_guard <pr> <issue> (#1002): before a QA dispatch under

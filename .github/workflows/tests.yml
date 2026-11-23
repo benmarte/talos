@@ -24,10 +24,8 @@ on:
     # talos/queue/** : the merge queue's candidate branches (queue mode talos, see
     # docs/reference.md); the required check must run on them or every candidate times out.
     branches: [main, 'talos/queue/**']
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'tasks/**'
+    # No paths-ignore on push (#1010): it cannot be scoped to main only, and a
+    # Markdown-only queue candidate must still run the required check.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
