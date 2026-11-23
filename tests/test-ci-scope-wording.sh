@@ -60,12 +60,12 @@ assert_contains "$push_block" "talos/queue/**" "AC3 the push trigger names talos
 assert_not_contains "$push_block" "paths-ignore:" "AC3 the push trigger has no paths-ignore"
 assert_not_contains "$push_block" "paths:" "AC3 the push trigger has no paths filter"
 
-# AC4: verify.ci_scope has a defaults row and a golden row; this repo sets it to changed.
+# AC4: verify.ci_scope has a defaults row and a golden row, and the example config's _note documents it (this repo's own talos.pipeline.json is owner-set).
 defaults_row="$(awk -F'\t' '$1=="verify.ci_scope"' "$TALOS_ROOT/scripts/pipeline-defaults.sh")"
 golden_row="$(awk -F'\t' '$1=="verify.ci_scope"' "$TALOS_ROOT/tests/fixtures/config-golden-defaults.tsv")"
 assert_contains "$defaults_row" "full" "AC4 the defaults table has a verify.ci_scope row defaulting to full"
 assert_contains "$golden_row" "full" "AC4 the golden table has a verify.ci_scope row"
-repo_scope="$(cd "$TALOS_ROOT" && bash scripts/pipeline-config.sh verify.ci_scope 2>/dev/null)"
-assert_eq "changed" "$repo_scope" "AC4 this repo's talos.pipeline.json sets verify.ci_scope to changed"
+example_note="$(grep '"_note_verify_ci_scope"' "$TALOS_ROOT/talos.pipeline.json.example")"
+assert_contains "$example_note" "verify.ci_scope" "AC4 the example config documents verify.ci_scope in its _note"
 
 finish
