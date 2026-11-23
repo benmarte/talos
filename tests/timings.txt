@@ -279,6 +279,7 @@
 0 test-setup-draft-ci-check.sh
 0 test-setup-harness.sh
 19 test-shard-weights.sh
+1 test-shared-helpers-dedupe.sh
 17 test-single-verbs.sh
 0 test-skill-size.sh
 5 test-spec-check-752.sh
