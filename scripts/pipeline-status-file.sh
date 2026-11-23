@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 # pipeline-status-file.sh -- `collect`: the normalised run state as JSON.
 #
-# Usage: pipeline-status-file.sh collect
+# Usage: pipeline-status-file.sh collect [--issue <N>]
+#
+# --issue <N> (#1038) scopes the per-PR reads to the PR(s) of issue N and adds
+# "scope": N to the JSON: `talos.sh next --issue N` needs nothing else. The list
+# reads are the same. A collect is one pass: it exports TALOS_PASS_CACHE
+# (pipeline-vcs.sh, "Per-pass read cache") so each pulls/<n>, /user and comments
+# read is made once, and takes each PR's head and draft state from the list-prs
+# item when it carries them (headRefOid, isDraft) instead of one pr-head and one
+# pr-is-draft call per PR. A failed read names itself in the file named by
+# TALOS_STATE_DETAIL_FILE (`<read>:<cause>`), which talos.sh puts on its stop line.
 #
 # The GitHub (or other provider) state as one JSON object on stdout, from read
 # verbs of pipeline-vcs.sh only: no worktree, commit, push, label or comment.
@@ -94,7 +103,14 @@ fi
 
 _sf_err() { echo "pipeline-status-file: $*" >&2; }
 
-if [ "${1:-}" != "collect" ] || [ "$#" -ne 1 ]; then
+# `collect --issue <N>` (#1038) is the scoped read: the list reads, and the per-PR
+# reads of issue N's own PR only. Any other argument is usage.
+_sf_scope=""
+if [ "${1:-}" = "collect" ] && [ "$#" -eq 1 ]; then
+  :
+elif [ "${1:-}" = "collect" ] && [ "${2:-}" = "--issue" ] && [ "$#" -eq 3 ] && [[ "${3:-}" =~ ^[0-9]{1,9}$ ]]; then
+  _sf_scope="$3"
+else
   echo "usage: pipeline-status-file.sh collect" >&2
   exit 1
 fi
@@ -169,6 +185,16 @@ if [ -z "$sf_repo" ]; then
   [ -z "$sf_repo" ] || export PIPELINE_REPO="$sf_repo"
 fi
 
+# The pass cache (#1038, see "Per-pass read cache" in pipeline-vcs.sh): this
+# collect is one pass, so every pulls/<n>, /user and comments read below it
+# (the operator's login included) happens once, however many verbs ask. Removed
+# on every way out; no directory means no cache, as before.
+_sf_pass="$(mktemp -d "${TMPDIR:-/tmp}/talos-pass.XXXXXX" 2>/dev/null)" || _sf_pass=""
+if [ -n "$_sf_pass" ] && [ -d "$_sf_pass" ]; then
+  _talos_on_exit 'rm -rf "${_sf_pass:?}"'   # the registry of pipeline-cfg-cache.sh: a raw trap would replace its cleanup
+  printf '%s' "$$" > "$_sf_pass/owner" && export TALOS_PASS_CACHE="$_sf_pass"
+fi
+
 # The operator (#560): with claiming on, collect keeps to the operator's issues.
 # Empty when issues.claim is false, issues.assignee is none or no identity
 # resolves, and collect then reads no assignee at all.
@@ -177,6 +203,7 @@ talos_claim_resolve
 case "${TALOS_CLAIM_STATE:-}" in on:?*) me="${TALOS_CLAIM_STATE#on:}" ;; esac
 
 python3 -I "$SCRIPT_DIR/pipeline-next.py" collect \
+  ${_sf_scope:+--issue "$_sf_scope"} \
   --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --roles "$roles" --me "$me" \
   --merge-auto "$auto" --required-checks "$checks" --pr-draft "$draft" --ready-gate "$ready_gate" --fix-on-first-findings "$fix_first" --required-when "$required_when" \
   --talos-labels "$talos_labels" --base-branch "$BASE_BRANCH" \

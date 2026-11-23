@@ -1139,23 +1139,55 @@ _talos_relay() {
 # two minutes is not used; and every verb that writes (done, gate, docs-gate,
 # post-merge, sweep, claim) empties it first, so
 # a pass after a stage's labels changed reads the state that stage left.
-_talos_collect_get() {  # prints the cached state; non-zero on a miss
-  local _c="${TALOS_COLLECT_CACHE:-}"
-  [ -n "$_c" ] && [ -f "$_c" ] && [ ! -L "$_c" ] && [ -O "$_c" ] && [ -s "$_c" ] || return 1
-  [ -n "$(find "$_c" -mmin -2 2>/dev/null)" ] || return 1
-  cat "$_c"
+#
+# A collect scoped to one issue (`collect --issue <N>`, #1038) holds only that
+# issue's own PR, so it is kept apart (<cache>.issue-<N>): it answers the same
+# scope again and never an unscoped read, while the unscoped copy (a superset)
+# answers either. The map's snapshot takes a scoped state too, keeping the
+# stored PRs of the other issues (_talos_run_snapshot).
+_talos_collect_get() {  # [<issue>]: prints the cached state; non-zero on a miss
+  local _c="${TALOS_COLLECT_CACHE:-}" _f
+  [ -n "$_c" ] || return 1
+  for _f in "$_c" ${1:+"$_c.issue-$1"}; do
+    [ -f "$_f" ] && [ ! -L "$_f" ] && [ -O "$_f" ] && [ -s "$_f" ] || continue
+    [ -n "$(find "$_f" -mmin -2 2>/dev/null)" ] || continue
+    cat "$_f"
+    return 0
+  done
+  return 1
 }
-_talos_collect_put() {  # $1 = a successful collect's stdout
-  local _c="${TALOS_COLLECT_CACHE:-}"
+_talos_collect_put() {  # $1 = a successful collect's stdout, $2 = the issue it was scoped to
+  local _c="${TALOS_COLLECT_CACHE:-}" _f="${TALOS_COLLECT_CACHE:-}${2:+.issue-$2}"
   case "$1" in '{'*'}') ;; *) return 0 ;; esac
   if [ -n "$_c" ]; then
-    printf '%s' "$1" > "$_c.$$" && mv "$_c.$$" "$_c" 2>/dev/null || rm -f "$_c.$$"
+    printf '%s' "$1" > "$_f.$$" && mv "$_f.$$" "$_f" 2>/dev/null || rm -f "$_f.$$"
   fi
   # The map's snapshot keeps it past the next write (#614); with or without the
   # cache, so a skill-driven `next` feeds the map too (#887).
   printf '%s' "$1" | _talos_run_snapshot active
 }
-_talos_collect_drop() { [ -z "${TALOS_COLLECT_CACHE:-}" ] || rm -f "$TALOS_COLLECT_CACHE"; }
+_talos_collect_drop() {
+  local _c="${TALOS_COLLECT_CACHE:-}"
+  [ -z "$_c" ] || rm -f "$_c" "$_c".issue-*
+}
+
+# _talos_collect_live <tag> [<issue>] (#1038): one live collect, scoped to <issue>
+# when given, through _talos_run_capture (so _OUT, _RC). The read that failed
+# names itself in a file the collect writes (TALOS_STATE_DETAIL_FILE).
+_talos_collect_live() {
+  rm -f "$_CFG_CACHE_DIR/state-detail"
+  TALOS_STATE_DETAIL_FILE="$_CFG_CACHE_DIR/state-detail" \
+    _talos_run_capture "$1" bash "$SCRIPT_DIR/pipeline-status-file.sh" collect ${2:+--issue "$2"}
+}
+
+# _talos_state_stop: end on a failed collect as `stop reason=state-unavailable`,
+# with `detail=<read>:<cause>` (list-prs:deadline, list-issues:failed,
+# check-approval-sha:auth) when the collect said which read it was.
+_talos_state_stop() {
+  local _d=""
+  [ ! -f "$_CFG_CACHE_DIR/state-detail" ] || _d="$(head -c 80 "$_CFG_CACHE_DIR/state-detail" | tr -cd 'a-z0-9:._-')"
+  _talos_stop "state-unavailable${_d:+ detail=$_d}"
+}
 
 # _talos_post <pr> <text>: a PR comment; the text reaches the verb in a file.
 _talos_post() {
@@ -4766,6 +4798,8 @@ _talos_docs_delta() {
 # stage's free text: only its `PRE-EXISTING: ` lines count, each one plain
 # bullet of at most 300 bytes (control and format characters dropped, a
 # leading `[ ]` or `[x]` neutralised so it cannot become a task), at most 20.
+# A line that says there is nothing (`none`, `n/a`, `-`, an optional trailing
+# period, any case) is no finding (#1045).
 # Prints the number of bullets; the body is written only when it is not 0.
 _TALOS_FOLLOWUP_PY='
 import re, sys, unicodedata
@@ -4775,7 +4809,7 @@ for line in open(src, "rb").read().decode("utf-8", "replace").split("\n"):
     if not line.startswith(PREFIX) or len(bullets) == 20:
         continue
     text = "".join(c for c in line[len(PREFIX):] if unicodedata.category(c) not in ("Cc", "Cf", "Zl", "Zp")).strip()
-    if text:
+    if text and not re.fullmatch(r"(none|n/a|-)\.?", text, re.I):
         bullets.append(("- " + ("\\" if re.match(r"\[[ xX]\]", text) else "") + text).encode()[:300].decode("utf-8", "ignore").rstrip())
 if bullets:
     with open(out, "w", encoding="utf-8") as f:
@@ -4783,13 +4817,73 @@ if bullets:
 print(len(bullets))
 '
 
+# The open follow-up issue of one (PR, role) (#1045). stdin: a list-issues array;
+# argv: the exact title, the file that gets that issue's body, the account login.
+# Only an issue that login opened counts: anyone can open one with that title.
+# Prints the lowest matching issue number, or nothing when there is none.
+_TALOS_FOLLOWUP_FIND_PY='
+import json, sys
+title, out, user = sys.argv[1:4]
+by = lambda i: i["author"].get("login") if isinstance(i.get("author"), dict) else None
+found = sorted((i["number"], i.get("body") or "") for i in json.load(sys.stdin)
+               if isinstance(i, dict) and isinstance(i.get("number"), int) and i.get("title") == title and by(i) == user)
+if found:
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(found[0][1])
+    print(found[0][0])
+'
+
+# The bullets of a new review that the issue does not hold yet (#1045). argv: the
+# PR, the issue, the new body file, the existing issue's body file, the comment
+# body file to write, the account login. stdin: the issue's read-comments answer.
+# A bullet is known when a line of the body or of a comment that login wrote
+# equals it after whitespace and case are normalised. Prints the number of new
+# bullets; the file is written only when it is not 0.
+_TALOS_FOLLOWUP_NEW_PY='
+import json, sys
+pr, issue, new, old, out, user = sys.argv[1:7]
+norm = lambda t: " ".join(t.split()).lower()
+doc = json.load(sys.stdin)
+comments = doc.get("comments", []) if isinstance(doc, dict) else doc
+known = set()
+mine = [c.get("body") or "" for c in comments
+        if isinstance(c, dict) and isinstance(c.get("author"), dict) and c["author"].get("login") == user]
+for text in [open(old, encoding="utf-8").read()] + mine:
+    known.update(norm(l) for l in text.split("\n") if l.startswith("- "))
+fresh = [l for l in open(new, encoding="utf-8").read().split("\n") if l.startswith("- ") and norm(l) not in known]
+if fresh:
+    with open(out, "w", encoding="utf-8") as f:
+        f.write("Found again while reviewing PR #%s (issue #%s), not listed above yet:\n\n%s\n" % (pr, issue, "\n".join(fresh)))
+print(len(fresh))
+'
+
 # _talos_followup <role> <pr> <issue> <summary-file> (#785): the one issue that
-# collects a review's Pre-existing findings. A failure is a warn, never a stop.
+# collects a review's Pre-existing findings, one per (PR, role) (#1045): an open
+# issue with the title is the one, and it gets a comment with the bullets it does
+# not hold yet. Only the account user's issue and comments count, as anyone can
+# open an issue with the title. A failure is a warn, never a stop; a failed
+# lookup (identity included) files nothing.
 _talos_followup() {
-  local _role="$1" _pr="$2" _n="$3" _sum="$4" _d="$_CFG_CACHE_DIR" _c
+  local _role="$1" _pr="$2" _n="$3" _sum="$4" _d="$_CFG_CACHE_DIR" _c _t _e _u
+  _t="Pre-existing findings from $_role review of PR #$_pr"
   _c="$(python3 -I -c "$_TALOS_FOLLOWUP_PY" "$_pr" "$_n" "$_sum" "$_d/followup.body" 2> /dev/null)" || { _talos_warn followup-failed "issue=$_n"; return 0; }
   [ "$_c" != 0 ] || return 0
-  _talos_cap _vcs create-issue "Pre-existing findings from $_role review of PR #$_pr" "$_d/followup.body"
+  _talos_cap _vcs current-user
+  _u="${_OUT//[[:space:]]/}"
+  { [ "$_RC" -eq 0 ] && [ -n "$_u" ]; } || { _talos_warn followup-lookup-failed "pr=$_pr role=$_role"; return 0; }
+  _talos_cap _vcs list-issues
+  [ "$_RC" -eq 0 ] && _e="$(python3 -I -c "$_TALOS_FOLLOWUP_FIND_PY" "$_t" "$_d/followup.old" "$_u" <<< "$_OUT" 2> /dev/null)" \
+    || { _talos_warn followup-lookup-failed "pr=$_pr role=$_role"; return 0; }
+  if [ -z "$_e" ]; then
+    _talos_cap _vcs create-issue "$_t" "$_d/followup.body"
+    [ "$_RC" -eq 0 ] || _talos_warn followup-failed "issue=$_n"
+    return 0
+  fi
+  _talos_cap _vcs read-comments "$_e"
+  [ "$_RC" -eq 0 ] && _c="$(python3 -I -c "$_TALOS_FOLLOWUP_NEW_PY" "$_pr" "$_n" "$_d/followup.body" "$_d/followup.old" "$_d/followup.comment" "$_u" <<< "$_OUT" 2> /dev/null)" \
+    || { _talos_warn followup-lookup-failed "pr=$_pr role=$_role"; return 0; }
+  [ "$_c" != 0 ] || return 0
+  _talos_cap _vcs comment-issue "$_e" --body-file "$_d/followup.comment"
   [ "$_RC" -eq 0 ] || _talos_warn followup-failed "issue=$_n"
 }
 
@@ -4909,8 +5003,8 @@ _talos_state() {
                      pipeline-contract.sh pipeline-next.py pipeline-draft-check.sh pipeline-vcs.sh
   local _json
   _TALOS_RL_MODE=wait
-  _talos_run_capture state bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
-  [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
+  _talos_collect_live state
+  [ "$_RC" -eq 0 ] || _talos_state_stop
   _json="$_OUT"
   case "$_json" in
     '{'*'}') : ;;
@@ -5115,12 +5209,14 @@ _talos_next() {
                      pipeline-vcs.sh pipeline-budget.sh pipeline-lock.sh
   _TALOS_RL_MODE=next
 
-  if _OUT="$(_talos_collect_get)"; then
+  # --issue <N> reads only issue N and its own PR (#1038): the issue-side answer
+  # below depends on nothing else. Without it the walk needs every PR's stage.
+  if _OUT="$(_talos_collect_get "$_issue")"; then
     : # inside a run: the state it already collected (#554)
   else
-    _talos_run_capture next bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
-    [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
-    _talos_collect_put "$_OUT"
+    _talos_collect_live next "$_issue"
+    [ "$_RC" -eq 0 ] || _talos_state_stop
+    _talos_collect_put "$_OUT" "$_issue"
   fi
   printf '%s' "$_OUT" > "$_CFG_CACHE_DIR/state.json"
 
@@ -5302,8 +5398,8 @@ _talos_map_render() {  # extra arguments go to talos-map.py (--missing-titles)
 _talos_map_refresh() {
   local _since _miss _f="$_CFG_CACHE_DIR/merged.json"
   _TALOS_MAP_FORCE=1
-  _talos_run_capture map bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
-  [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
+  _talos_collect_live map
+  [ "$_RC" -eq 0 ] || _talos_state_stop
   _talos_collect_put "$_OUT"
   _since="$(python3 -I -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)).strftime("%Y-%m-%d"))')"
   _talos_run_capture map bash "$SCRIPT_DIR/pipeline-vcs.sh" list-merged-prs --since "$_since"
@@ -5407,6 +5503,14 @@ try:
 except ValueError:
     col = None
 if isinstance(col, dict) and col:
+    scope = col.pop("scope", None)
+    if isinstance(scope, int) and not isinstance(scope, bool):
+        # A collect scoped to one issue (#1038) looked up only the PR of that issue:
+        # the stored PRs of the other issues stay, the ones of the scoped issue are replaced.
+        old = snap.get("collect") if isinstance(snap.get("collect"), dict) else {}
+        keep = [p for p in old.get("prs") or [] if isinstance(p, dict) and p.get("issue") != scope]
+        col["prs"] = sorted(keep + [p for p in col.get("prs") or [] if isinstance(p, dict)],
+                            key=lambda p: p.get("n") if isinstance(p.get("n"), int) else 0)
     snap["collect"], snap["collect_ts"] = col, now
     # The collect is the word on the issues it lists; the rest keep their tier.
     prio = snap.get("priority") if isinstance(snap.get("priority"), dict) else {}
@@ -6726,8 +6830,8 @@ _talos_run_blocked_fix() {
 # review finding, goes to the fix round. Returns 1 when there is none.
 _talos_run_blocked_pr() {
   local _st _pr
-  if ! _st="$(_talos_collect_get)"; then
-    _talos_run_capture collect bash "$SCRIPT_DIR"/pipeline-status-file.sh collect
+  if ! _st="$(_talos_collect_get "$1")"; then
+    _talos_collect_live collect "$1"
     [ "$_RC" -eq 0 ] || return 1
     _st="$_OUT"
   fi
@@ -6897,10 +7001,10 @@ _talos_run_qa_draft_guard() {
     *) _talos_stop draft-unverified ;;
   esac
   _talos_collect_drop
-  _talos_run_capture collect bash "$SCRIPT_DIR"/pipeline-status-file.sh collect
-  [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
+  _talos_collect_live collect "$_n"
+  [ "$_RC" -eq 0 ] || _talos_state_stop
   _st="$_OUT"
-  _talos_collect_put "$_st"
+  _talos_collect_put "$_st" "$_n"
   _stage="$(python3 -I -c 'import json, sys
 for p in json.loads(sys.stdin.read()).get("prs") or []:
     if isinstance(p, dict) and p.get("n") == int(sys.argv[1]) and isinstance(p.get("stage"), str):
