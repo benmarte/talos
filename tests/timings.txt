@@ -214,6 +214,7 @@
 3 test-pr-change-selection.sh
 55 test-pr-draft.sh
 3 test-pr-mergeable.sh
+8 test-preexisting-findings-dedupe.sh
 5 test-preqa-union-sync.sh
 7 test-project-map-dashboard.sh
 34 test-project-map-live.sh
