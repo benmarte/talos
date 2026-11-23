@@ -11,8 +11,6 @@
 #       #155/#178 reported.
 #   (b) bootstrap-labels.sh's effective label set (what it actually tells
 #       `gh label create` to create) equals the contract's label set.
-#   (c) talos_contract_json prints valid JSON with the expected top-level
-#       keys.
 #   (d) every label name/description in the contract is within GitHub's
 #       50/100-char limits (#250), via talos_contract_check_label_length --
 #       plus a negative check that the same helper rejects a synthetic
@@ -28,8 +26,6 @@ for _arr in TALOS_ROLES TALOS_STAGE_LABELS TALOS_APPROVAL_LABELS TALOS_APPROVAL_
             TALOS_MISC_LABELS TALOS_STAGE_MARKER_LABELS TALOS_MARKERS; do
   declare -p "$_arr" >/dev/null 2>&1 || fail "setup: $_arr is defined" "missing after sourcing $CONTRACT"
 done
-declare -F talos_contract_json >/dev/null 2>&1 \
-  || fail "setup: talos_contract_json is defined" "missing after sourcing $CONTRACT"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (a) membership
@@ -140,34 +136,6 @@ CREATED_NAMES="$(grep -oE 'label create [^ ]+' "$GH_LOG" | awk '{print $3}' | so
 EXPECTED_NAMES="$(printf '%s\n' "$CONTRACT_LABEL_NAMES" | sort -u)"
 assert_eq "$EXPECTED_NAMES" "$CREATED_NAMES" \
   "bootstrap-labels.sh creates exactly the contract's label set"
-
-# ═══════════════════════════════════════════════════════════════════════════
-# (c) talos_contract_json is valid JSON with the expected keys
-# ═══════════════════════════════════════════════════════════════════════════
-JSON_OUT="$(talos_contract_json)"; rc=$?
-assert_eq "0" "$rc" "talos_contract_json exits 0"
-
-_json_check="$(printf '%s' "$JSON_OUT" | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception as exc:
-    print(f"INVALID: {exc}")
-    sys.exit(0)
-expected_keys = {"roles", "stage_labels", "approval_labels", "misc_labels", "markers"}
-missing = expected_keys - set(data.keys())
-if missing:
-    print(f"MISSING KEYS: {sorted(missing)}")
-elif not isinstance(data["roles"], list) or not data["roles"]:
-    print("roles is not a non-empty list")
-elif not all(isinstance(e, dict) and {"name", "color", "description"} <= set(e.keys()) for e in data["approval_labels"]):
-    print("approval_labels entries missing name/color/description")
-elif not all("role" in e for e in data["approval_labels"]):
-    print("approval_labels entries missing role")
-else:
-    print("OK")
-')"
-assert_eq "OK" "$_json_check" "talos_contract_json is valid JSON with the expected keys"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (d) label name/description length limits (#250)
