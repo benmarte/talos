@@ -1,0 +1,9 @@
+$ first
+imported=1 skipped=0 (no-repo=0 no-issue=0 seen=0 not-subagent=0) tokens=65
+rc=0
+6
+$ second
+imported=0 skipped=1 (no-repo=0 no-issue=0 seen=1 not-subagent=0) tokens=0
+rc=0
+6
+{"agent_id": "a1", "cache_read_tokens": 14, "cache_write_tokens": 0, "duration_s": 60, "event": "usage", "input_tokens": 30, "issue": 12, "model": null, "output_tokens": 35, "pr": null, "repo": "owner/repo", "role": "developer", "runner": "claude", "source": "transcript", "tokens": 65, "tool_uses": 1, "ts": "2026-06-15T10:01:00Z"}

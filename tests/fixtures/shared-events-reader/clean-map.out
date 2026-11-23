@@ -1,0 +1,78 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="30"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>Talos map: acme/widget</title><style>
+:root{--bg:#f7f6f2;--panel:#fff;--ink:#1d1d1b;--muted:#6b6a65;--line:#e4e2db;
+--done:#2f7d4f;--done-bg:#e3f1e8;--run:#1f5fbf;--run-bg:#e2ecfb;--fail:#b3261e;--fail-bg:#fbe4e2;
+--redo:#9a6200;--redo-bg:#fbf0d9;--todo:#c9c6bd;--todo-bg:#f0eee8;--bar:#cfd8e6}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#151513;--panel:#1e1e1b;--ink:#ecebe6;--muted:#9c9a92;--line:#2f2e2a;
+--done:#6cc28f;--done-bg:#1d3326;--run:#7aa7ef;--run-bg:#1b2840;--fail:#f08a80;--fail-bg:#3a1d1a;
+--redo:#e2b252;--redo-bg:#3a2e14;--todo:#4a4842;--todo-bg:#262521;--bar:#33415a}}
+:root[data-theme="dark"]{--bg:#151513;--panel:#1e1e1b;--ink:#ecebe6;--muted:#9c9a92;--line:#2f2e2a;
+--done:#6cc28f;--done-bg:#1d3326;--run:#7aa7ef;--run-bg:#1b2840;--fail:#f08a80;--fail-bg:#3a1d1a;
+--redo:#e2b252;--redo-bg:#3a2e14;--todo:#4a4842;--todo-bg:#262521;--bar:#33415a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+a{color:var(--run)}code{font-size:.9em;overflow-wrap:anywhere}
+.wrap{max-width:1360px;margin:0 auto;padding:20px 16px 48px}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin-bottom:16px}
+h1{font-size:20px;margin:0;overflow-wrap:anywhere}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12.5px;font-weight:600;max-width:100%;overflow-wrap:anywhere}
+.pill.live{background:var(--run-bg);color:var(--run)}.pill.idle{background:var(--todo-bg);color:var(--muted)}
+.dot{flex:none;width:8px;height:8px;border-radius:50%;background:currentColor}
+.meta{color:var(--muted);font-size:12.5px;margin-left:auto}.note{color:var(--muted)}
+.kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:16px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px;text-decoration:none;color:inherit}
+.kpi b{display:block;font-size:24px;line-height:1.2}.kpi span{color:var(--muted);font-size:12px}
+.kpi.alert{border-color:var(--fail);background:var(--fail-bg)}.kpi.alert b,.kpi.alert span{color:var(--fail)}
+.next{background:var(--run-bg);border:1px solid var(--line);border-left:4px solid var(--run);border-radius:10px;padding:10px 14px;margin-bottom:16px;overflow-wrap:anywhere}
+.next b{color:var(--run)}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
+main,aside{min-width:0}
+section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:16px}
+section.needs{border-color:var(--fail);border-left:4px solid var(--fail)}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 10px;display:flex;align-items:center;gap:8px}
+section.needs h2{color:var(--fail)}
+h2 .n{background:var(--todo-bg);color:var(--ink);border-radius:999px;padding:0 8px;font-size:12px;letter-spacing:0}
+section.needs h2 .n{background:var(--fail-bg);color:var(--fail)}
+.key{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11.5px;color:var(--muted);margin:-4px 0 10px}
+.key i{display:inline-block;width:14px;height:6px;border-radius:3px;margin-right:4px;vertical-align:middle}
+.row{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:6px 18px;padding:10px 0;border-top:1px solid var(--line)}
+h2+.row,.key+.row{border-top:0}
+.t,.sub,.why,.ask,.do{overflow-wrap:anywhere}
+.t{font-weight:600}.t a{font-weight:700;text-decoration:none}
+.sub{color:var(--muted);font-size:12.5px;margin-top:2px}
+.why{font-size:12.5px;margin-top:4px;opacity:.85}
+.ask{margin-top:6px;padding:8px 10px;background:var(--fail-bg);border-radius:6px;font-size:13px;white-space:pre-wrap}
+.ask b{color:var(--fail)}
+.do{margin-top:6px;font-size:12.5px}.do a{font-weight:600}
+.tag{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:4px;margin-right:6px;vertical-align:1px}
+.tag.run{background:var(--run-bg);color:var(--run)}.tag.stalled,.tag.stuck{background:var(--fail-bg);color:var(--fail)}
+.steps{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px;align-self:center;list-style:none;margin:0;padding:0}
+.s{margin:0;font-size:9.5px;text-align:center;color:var(--muted);overflow-wrap:anywhere}
+.s::before{content:"";display:block;height:7px;border-radius:4px;margin-bottom:3px;background:var(--todo)}
+.s.d::before{background:var(--done)}.s.r::before{background:var(--run)}.s.f::before{background:var(--fail)}.s.x::before{background:var(--redo)}
+.s.r{color:var(--run);font-weight:700}.s.f{color:var(--fail);font-weight:700}
+table{width:100%;border-collapse:collapse}
+td,th{text-align:left;padding:6px 8px;border-top:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
+th{font-size:11.5px;color:var(--muted);font-weight:600;border-top:0}
+td.num,th.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.tok{display:flex;align-items:center;gap:8px;justify-content:flex-end}
+.tok i{display:block;height:6px;border-radius:3px;background:var(--bar)}
+.muted{color:var(--muted)}.nw{white-space:nowrap}
+.lanes{list-style:none;margin:0;padding:0}
+.lanes li{display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-top:1px solid var(--line);font-size:12.5px}
+.lanes li:first-child{border-top:0}
+.pri{display:inline-block;font-size:11px;font-weight:700;padding:0 6px;border-radius:4px;background:var(--todo-bg)}
+.pri.p0{background:var(--fail-bg);color:var(--fail)}.pri.p1{background:var(--redo-bg);color:var(--redo)}
+tr.total td{font-weight:600}
+details summary{cursor:pointer;color:var(--muted);font-size:12.5px;margin-top:8px}
+.feed{list-style:none;margin:0;padding:0}
+.feed li{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:8px;padding:5px 0;border-top:1px solid var(--line);font-size:12.5px;overflow-wrap:anywhere}
+.feed li:first-child{border-top:0}.feed time{color:var(--muted)}
+.v-ok{color:var(--done);font-weight:600}.v-bad{color:var(--fail);font-weight:600}
+.tier{display:flex;justify-content:space-between;gap:8px;font-size:12.5px;padding:4px 0}
+.tier .here{font-size:11px;color:var(--run);font-weight:700;margin-left:6px}
+.meter{height:6px;border-radius:3px;background:var(--todo-bg);overflow:hidden;margin-bottom:6px}
+.meter i{display:block;height:100%;background:var(--done)}
+.index{padding-left:1.2em}.index li{margin:.15em 0;overflow-wrap:anywhere}
+@media (max-width:980px){.grid{grid-template-columns:1fr}.row{grid-template-columns:1fr}}
+@media (max-width:640px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.meta{margin-left:0;width:100%}.hide-sm{display:none}.wrap{padding:12px 10px 32px}.s{font-size:8.5px}}
+</style></head><body><div class="wrap"><header><h1>acme/widget</h1><span class="pill idle"><span class="dot"></span>Idle · no run recorded</span><span class="meta">updated 2026-06-15 12:00 UTC (just now) · reloads every 30 s</span></header><p class="note">No run state yet: the queue, the next step and the owner questions appear after a <code>talos.sh run</code>. This page shows what the events log knows.</p><div class="kpis"><a class="kpi alert" href="#needs"><b>1</b><span>needs you</span></a><a class="kpi" href="#flight"><b>1</b><span>in flight</span></a><a class="kpi" href="#queue"><b>0</b><span>queued</span></a><div class="kpi"><b>1</b><span>merged · 7 days</span></div><div class="kpi"><b>66k</b><span>tokens · 7 days</span></div></div><div class="grid"><main><section class="needs" id="needs"><h2>Needs you <span class="n">1</span></h2><div class="row"><div><div class="t"><a href="https://github.com/acme/widget/issues/22">#22</a> (title not cached)</div><div class="sub"><span class="tag stuck">blocked · 30 min ago</span>695 tokens</div><div class="why">BLOCKED</div><div class="do">To continue: read the issue's latest comment, resolve what it names, then run again.</div></div><ol class="steps"><li class="s">validator</li><li class="s">pm</li><li class="s f">dev</li><li class="s">review</li><li class="s">qa</li><li class="s">docs</li><li class="s">merge</li></ol></div></section><section id="flight"><h2>In flight <span class="n">1</span></h2><div class="key"><span><i style="background:var(--done)"></i>done</span><span><i style="background:var(--run)"></i>running now</span><span><i style="background:var(--fail)"></i>failed</span><span><i style="background:var(--redo)"></i>redone after a failure</span><span><i style="background:var(--todo)"></i>not reached</span></div><div class="row"><div><div class="t"><a href="https://github.com/acme/widget/issues/23">#23</a> (title not cached)</div><div class="sub">tokens —</div></div><ol class="steps"><li class="s">validator</li><li class="s">pm</li><li class="s">dev</li><li class="s">review</li><li class="s">qa</li><li class="s">docs</li><li class="s">merge</li></ol></div></section><section><h2>Merged · last 7 days <span class="n">1</span></h2><table><tr><th>issue</th><th>title</th><th class="hide-sm">PR</th><th class="hide-sm">merged</th><th class="num">tokens</th></tr><tr><td class="nw"><a href="https://github.com/acme/widget/issues/21">#21</a></td><td>(title not cached)</td><td class="nw hide-sm"><a href="https://github.com/acme/widget/pull/31">#31</a></td><td class="nw hide-sm muted">1 h ago</td><td class="nw num"><span class="tok"><i style="width:60px"></i>65k</span></td></tr></table></section></main><aside><section><h2>Activity · latest</h2><ul class="feed"><li><time>11:00</time><span><a href="https://github.com/acme/widget/issues/22">#22</a> developer <span class="v-bad">BLOCKED</span></span></li><li><time>10:20</time><span><a href="https://github.com/acme/widget/issues/21">#21</a> merged PR #31</span></li><li><time>10:10</time><span><a href="https://github.com/acme/widget/issues/21">#21</a> qa <span class="v-ok">PASS</span></span></li><li><time>09:50</time><span><a href="https://github.com/acme/widget/issues/21">#21</a> reviewer <span class="v-ok">APPROVED</span></span></li><li><time>09:30</time><span><a href="https://github.com/acme/widget/issues/21">#21</a> developer OPENED</span></li><li><time>09:05</time><span><a href="https://github.com/acme/widget/issues/21">#21</a> pm SPEC</span></li><li><time>09:00</time><span><a href="https://github.com/acme/widget/issues/21">#21</a> validator <span class="v-ok">CONFIRMED</span></span></li></ul></section><section><h2>Priority track</h2><div class="tier"><span><b>unlabelled</b><span class="here">you are here</span></span><span class="muted">1 of 3 merged</span></div><div class="meter"><i style="width:33%"></i></div></section><section><h2>Top spend · 7 days</h2><table><tr><td><a href="https://github.com/acme/widget/issues/21">#21</a></td><td class="num"><span class="tok"><i style="width:120px"></i>65k</span></td></tr><tr><td><a href="https://github.com/acme/widget/issues/22">#22</a></td><td class="num"><span class="tok"><i style="width:1px"></i>695</span></td></tr><tr class="total"><td class="muted">total</td><td class="num"><b>66k</b></td></tr></table></section></aside></div></div></body></html>
