@@ -167,6 +167,7 @@
 160 test-llm-profiles.sh
 20 test-lock-claim-atomic.sh
 20 test-lock-contention.sh
+4 test-lock-empty-pid-reclaim.sh
 4 test-lock-reclaim.sh
 4 test-lock.sh
 4 test-map-dashboard-midnight.sh
@@ -191,6 +192,7 @@
 4 test-mergesync.sh
 63 test-multi-user.sh
 41 test-needs-owner.sh
+12 test-next-router-golden.sh
 20 test-no-pyyaml-install-step.sh
 16 test-notify-buzz.sh
 12 test-notify-cmd.sh
@@ -335,6 +337,7 @@
 6 test-vcs-pr-closes-issue-822.sh
 0 test-vcs-provider-parity.sh
 7 test-vcs-shared-approval-sha.sh
+3 test-vcs-shared-attempt-verbs.sh
 20 test-vcs-shared-markers.sh
 2 test-vcs-shared-pr-files.sh
 1 test-vcs-shared-sweep.sh
