@@ -73,12 +73,12 @@ else
   echo "talos: pipeline-bounded.sh missing; reinstall Talos" >&2
   exit 1
 fi
-# with_lock (#180) serializes the threads.json read-modify-write; unlocked fallback.
+# with_lock (#180) serializes the threads.json read-modify-write.
 if [ -f "$SCRIPT_DIR/pipeline-lock.sh" ]; then
   . "$SCRIPT_DIR/pipeline-lock.sh"
 else
-  with_lock() { shift 2; [ "${1:-}" = "--" ] && shift; "$@"; }
-  echo "pipeline: lock helper missing, thread-state writes are unsynchronized" >&2
+  echo "talos: pipeline-lock.sh missing; reinstall Talos" >&2
+  exit 1
 fi
 
 EVENT="${1:-info}"

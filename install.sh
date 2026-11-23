@@ -845,7 +845,8 @@ sys.stdout.buffer.write(open(sys.argv[1], "rb").read().replace(b"__TALOS_HOME__"
   _HINT_LAYERS=""
   if [ -n "$_HINT_DIR" ]; then
     _HINT_LAYERS="$(cd "$_HINT_DIR" && env -u PIPELINE_CONFIG TALOS_HOME="$TALOS_HOME_DIR" \
-      bash "$TALOS_HOME_DIR/scripts/pipeline-config.sh" --dump-layers 2>/dev/null)"
+      bash "$TALOS_HOME_DIR/scripts/pipeline-config.sh" --show --origin-only agents. 2>/dev/null \
+      | grep -E "$(printf '\t')(global|repo)\$" || true)"
     rm -rf "$_HINT_DIR"
   fi
   if ! grep -Eq '^agents\.(roles\.[^.]+\.)?model' <<<"$_HINT_LAYERS"; then

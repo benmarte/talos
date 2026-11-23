@@ -69,6 +69,9 @@ import sys
 
 state, log_path, script_dir, repo = sys.argv[1:5]
 args = sys.argv[5:]
+sys.dont_write_bytecode = True  # no __pycache__ in the install
+sys.path.insert(0, script_dir)
+import talos_events
 ROLES = ("reviewer", "security", "qa")
 CASES = os.path.join(state, "eval", "cases")
 RUNS = os.path.join(state, "eval", "runs")
@@ -430,24 +433,15 @@ def cmd_candidates(argv):
     if argv:
         usage("candidates takes no argument")
     merged = {}  # pr (as text) -> earliest day of its merged events
-    try:
-        with open(log_path, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                try:
-                    rec = json.loads(line)
-                except ValueError:
-                    continue
-                if (isinstance(rec, dict) and rec.get("event") == "merged"
-                        and rec.get("role") == "orchestrator" and rec.get("pr") is not None):
-                    day = str(rec.get("ts"))[:10]
-                    try:
-                        datetime.date.fromisoformat(day)
-                    except ValueError:
-                        continue
-                    pr = str(rec["pr"])
-                    merged[pr] = min(day, merged.get(pr, day))
-    except OSError:
-        pass
+    for rec in talos_events.read_events(log_path, kinds=("merged",)):
+        if rec.get("role") == "orchestrator" and rec.get("pr") is not None:
+            day = str(rec.get("ts"))[:10]
+            try:
+                datetime.date.fromisoformat(day)
+            except ValueError:
+                continue
+            pr = str(rec["pr"])
+            merged[pr] = min(day, merged.get(pr, day))
     for c in load_cases():
         merged.pop(str(c.get("pr")), None)
     if not merged:

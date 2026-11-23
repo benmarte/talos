@@ -291,7 +291,7 @@ assert_eq "3" "$(printf '%s\n' "$out" | python3 -c 'import json,sys; print(sum(1
 reset_log
 raw "$good"
 cp -R "$TALOS_ROOT/scripts" "$SANDBOX/scripts-nomod"
-rm -f "$SANDBOX/scripts-nomod"/*.py
+rm -f "$SANDBOX/scripts-nomod/pipeline-spend-format.py"
 out="$(bash "$SANDBOX/scripts-nomod/pipeline-events.sh" cost --issue 5 --line 2>"$SANDBOX/err.log")"; rc=$?
 assert_eq "0" "$rc" "module missing: cost --line exits 0"
 assert_eq "" "$out" "module missing: cost --line prints nothing on stdout"

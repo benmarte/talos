@@ -680,9 +680,12 @@ run_end() {
     case "${2:-}" in ''|*[!0-9]*) _hooks_usage; exit 2 ;; esac
     issue="$2"
   fi
-  _events_append "$(TALOS_RE_LINE="$line" TALOS_RE_ISSUE="$issue" TALOS_RE_REPO="$(_talos_repo)" python3 -I -c '
-import datetime, json, os
+  _events_append "$(TALOS_RE_LINE="$line" TALOS_RE_ISSUE="$issue" TALOS_RE_REPO="$(_talos_repo)" TALOS_RE_SCRIPTS="$SCRIPT_DIR" python3 -I -c '
+import datetime, json, os, sys
 e = os.environ
+sys.dont_write_bytecode = True  # no __pycache__ in the install
+sys.path.insert(0, e["TALOS_RE_SCRIPTS"])
+from talos_events import digits
 words = {}
 for w in e["TALOS_RE_LINE"].split():
     k, eq, v = w.partition("=")
@@ -690,12 +693,10 @@ for w in e["TALOS_RE_LINE"].split():
         words[k] = v
 def text(k):
     return words.get(k) or None
-def num(v):
-    return int(v) if v and v.isascii() and v.isdigit() else None
-issue = num(words.get("issue")) or num(e["TALOS_RE_ISSUE"])
+issue = digits(words.get("issue")) or digits(e["TALOS_RE_ISSUE"])
 print(json.dumps({
     "event": "run_end", "role": "orchestrator", "stage": text("role"),
-    "issue": issue, "pr": num(words.get("pr")), "repo": e["TALOS_RE_REPO"] or None,
+    "issue": issue, "pr": digits(words.get("pr")), "repo": e["TALOS_RE_REPO"] or None,
     "verdict": text("verdict"), "reason": text("reason"), "detail": text("detail"),
     "line": e["TALOS_RE_LINE"][:1024],
     "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -769,19 +770,15 @@ hand_event() {
   done
   # --once: one event of this name per PR, whoever wrote the first.
   if [ "$once" -eq 1 ] && [ -n "$pr" ]; then
-    TALOS_HE_LOG="$(_events_log_path 2>/dev/null)" TALOS_HE_EVENT="$event" TALOS_HE_PR="$pr" python3 -I -c '
-import json, os, sys
-try:
-    with open(os.environ["TALOS_HE_LOG"], encoding="utf-8", errors="replace") as f:
-        for line in f:
-            try:
-                r = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(r, dict) and r.get("event") == os.environ["TALOS_HE_EVENT"] and str(r.get("pr")) == os.environ["TALOS_HE_PR"]:
-                sys.exit(0)
-except OSError:
-    pass
+    TALOS_HE_LOG="$(_events_log_path 2>/dev/null)" TALOS_HE_EVENT="$event" TALOS_HE_PR="$pr" TALOS_HE_SCRIPTS="$SCRIPT_DIR" python3 -I -c '
+import os, sys
+e = os.environ
+sys.dont_write_bytecode = True  # no __pycache__ in the install
+sys.path.insert(0, e["TALOS_HE_SCRIPTS"])
+import talos_events
+for r in talos_events.read_events(e["TALOS_HE_LOG"], kinds=(e["TALOS_HE_EVENT"],)):
+    if str(r.get("pr")) == e["TALOS_HE_PR"]:
+        sys.exit(0)
 sys.exit(1)' && return 0
   fi
   _events_append "$(TALOS_HE_EVENT="$event" TALOS_HE_ROLE="$role" TALOS_HE_ISSUE="$issue" TALOS_HE_PR="$pr" \

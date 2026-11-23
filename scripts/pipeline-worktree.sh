@@ -240,13 +240,13 @@ fi
 # pipeline-lock.sh (#180): `git worktree add/remove` races on the same
 # repo's shared .git metadata when two stages run concurrently
 # (issues.max_parallel > 1) -- serialize remove/sweep bodies below. Guarded
-# like pipeline-cfg-cache.sh above: fall back to running unlocked with a
-# warning rather than failing a partial install outright.
+# like pipeline-cfg-cache.sh above: a missing helper is fatal, never an
+# unlocked run.
 if [ -f "$SCRIPT_DIR/pipeline-lock.sh" ]; then
   . "$SCRIPT_DIR/pipeline-lock.sh"
 else
-  with_lock() { shift 2; [ "${1:-}" = "--" ] && shift; "$@"; }
-  echo "pipeline: lock helper missing, worktree operations are unsynchronized" >&2
+  echo "talos: pipeline-lock.sh missing; reinstall Talos" >&2
+  exit 1
 fi
 
 # Lock is keyed on the repo's shared git dir (via --git-common-dir, which
