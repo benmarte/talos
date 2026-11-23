@@ -73,8 +73,7 @@
 #            verdict=wait       reason=blocked-label | approvals-missing missing=<labels>
 #                                 [never_approved=<roles>]
 #                                 | ci-pending | ci-rerun attempt=<k> | rerun-unsupported
-#                                 | ci-failed | base-synced | conflict-check-unverified
-#                                 | base-check-unverified
+#                                 | ci-failed | base-synced | conflict-check-unverified | base-check-unverified
 #                                 | awaiting-human-merge | closing-keyword-unverified
 #                                 | queued | queue-state-unverified
 #                                 | provider-queued | enqueue-failed
