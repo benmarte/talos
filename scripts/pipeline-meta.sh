@@ -28,6 +28,9 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# _talos_remote_slug, the one remote-URL splitter (#1014). Without it (a partial
+# install) no slug resolves and the old `gh repo view` answers.
+[ -f "$SCRIPT_DIR/pipeline-paths.sh" ] && . "$SCRIPT_DIR/pipeline-paths.sh"
 REPO_ARG=""
 if [ "${1:-}" = "--repo" ]; then REPO_ARG="${2:-}"; shift 2 2>/dev/null || shift "$#"; fi
 WHAT="${1:-}"
@@ -47,13 +50,7 @@ _slug_ok() {
 _slug() {
   local _u _o
   if _slug_ok "$REPO_ARG"; then printf '%s' "$REPO_ARG"; return 0; fi
-  _u="$(git remote get-url origin 2>/dev/null)" || return 1
-  _u="${_u%.git}"; _u="${_u%/}"
-  case "$_u" in
-    *://*) _u="${_u#*://}"; _u="${_u#*@}"; _u="${_u#*/}" ;;
-    *@*:*) _u="${_u#*:}" ;;
-    *) return 1 ;;
-  esac
+  _u="$(_talos_remote_slug "$(git remote get-url origin 2>/dev/null)")" || return 1
   case "$_u" in
     */*) _o="${_u%/*}"; _u="${_o##*/}/${_u##*/}" ;;
     *) return 1 ;;

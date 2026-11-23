@@ -167,7 +167,8 @@ assert_contains "$FEED" 'merged PR #' "AC1 a merge is listed"
 assert_eq "ok" "$(python3 -I -c '
 import re, sys
 s = sys.stdin.read()
-ts = re.findall(r"<time>(\d\d:\d\d)</time>", s)
+# An event from before today (UTC) is listed as "YYYY-MM-DD HH:MM", so a run just after midnight sees both forms.
+ts = re.findall(r"<time>(?:\d{4}-\d\d-\d\d )?(\d\d:\d\d)</time>", s)
 print("ok" if len(ts) > 8 else "few %d" % len(ts))' <<< "$FEED")" "AC1 Activity lists each entry by its HH:MM"
 TRACK="$(piece section '<h2>Priority track')"
 assert_contains "$TRACK" '<b>p0</b>' "AC1 the Priority track names a tier"
