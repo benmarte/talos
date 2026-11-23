@@ -40,10 +40,9 @@ else
 fi
 
 # The whole point of this script is the logic in pipeline-board-shared.sh
-# (owner/project-id resolution, curl-GraphQL + error parsing) -- unlike
-# pipeline-status.sh, which pre-dates the extraction and keeps an inline
-# fallback, there is nothing useful left to do without it. Abort, same
-# guarded-source pattern as bootstrap-labels.sh + pipeline-contract.sh.
+# (owner/project-id resolution, curl-GraphQL + error parsing) -- there is
+# nothing useful left to do without it. Abort, same guarded-source pattern
+# as pipeline-status.sh, bootstrap-labels.sh and pipeline-contract.sh.
 if [ -f "$SCRIPT_DIR/pipeline-board-shared.sh" ]; then
   . "$SCRIPT_DIR/pipeline-board-shared.sh"
 else

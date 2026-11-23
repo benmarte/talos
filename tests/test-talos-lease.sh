@@ -14,7 +14,7 @@
 #          holder is gone and the line is old enough. Every malformed field
 #          (no/empty/non-numeric pid, missing/non-numeric held, now < held) is
 #          fail-closed: never reclaimed; the TTL still frees the line.
-#   scan     (#522, AC7) `_talos_lease_read` and `_talos_lease_held_line`
+#   scan     (#522, AC7) `_talos_lease_read` and `_talos_lease_scan`
 #          consider every `issue=<N>` line and answer the latest-expiring
 #          non-reclaimable one -- never the first line, so a reader can never
 #          shorten a held lease and `lease prune` only ever removes lines no
@@ -214,9 +214,6 @@ printf 'issue=42 held=999985 expires=1001800 pid=%s\n' "$LPID2" >> "$LEASE"
 lease_call _talos_lease check 42
 assert_exit_code "1" "$RC" "AC7: two live lines answer held (rc 1)"
 assert_eq "issue=42 held=999985 expires=1001800 pid=$LPID2" "$OUT" "AC7: the latest-expiring line wins, never the first"
-lease_call _talos_lease_held_line "$LEASE" 42 1000000
-assert_exit_code "0" "$RC" "AC7: held_line returns rc 0 for a live lease"
-assert_eq "issue=42 held=999985 expires=1001800 pid=$LPID2" "$OUT" "AC7: held_line's answer is the latest-expiring line"
 # The reproduction: a dead line above a live one must not grant a free answer.
 DPID="$(dead_pid)"
 printf 'issue=43 held=999985 expires=1000900 pid=%s\n' "$DPID" > "$LEASE"
