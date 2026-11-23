@@ -844,13 +844,12 @@ fi
 # `git worktree add`/`remove` race the same shared git-common-dir metadata
 # pipeline-worktree.sh's create/remove/sweep and pipeline-mergebase.sh's own
 # worktree already serialize against. Guarded the same way as
-# pipeline-cfg-cache.sh above: fall back to running unlocked with a warning
-# rather than failing a partial install outright.
+# pipeline-cfg-cache.sh above: a missing helper is fatal, never an unlocked run.
 if [ -f "$SCRIPT_DIR/pipeline-lock.sh" ]; then
   . "$SCRIPT_DIR/pipeline-lock.sh"
 else
-  with_lock() { shift 2; [ "${1:-}" = "--" ] && shift; "$@"; }
-  echo "pipeline: lock helper missing, worktree operations are unsynchronized" >&2
+  echo "talos: pipeline-lock.sh missing; reinstall Talos" >&2
+  exit 1
 fi
 
 # ── Contract (#178): roles / labels / markers single source of truth ────────
