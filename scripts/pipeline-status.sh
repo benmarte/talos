@@ -69,6 +69,13 @@ else
   echo "talos: pipeline-cfg-cache.sh missing; reinstall Talos" >&2
   exit 1
 fi
+# _talos_remote_slug, the one remote-URL splitter (#1014).
+if [ -f "$SCRIPT_DIR/pipeline-paths.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-paths.sh"
+else
+  echo "talos: pipeline-paths.sh missing; reinstall Talos" >&2
+  exit 1
+fi
 
 # Owner/project-id resolution and the curl-GraphQL + error-parsing helpers
 # are shared with bootstrap-board.sh (#266). Missing file is fatal, as there.
@@ -611,8 +618,7 @@ fi
 if [ "$_USE_TOKEN_PATH" = "true" ]; then
   REPO="${PIPELINE_REPO:-$(cfg vcs.repo)}"
   if [ -z "$REPO" ]; then
-    REPO="$(git remote get-url origin 2>/dev/null \
-      | sed 's|.*github\.com[:/]||; s|\.git$||' || echo "$OWNER/REPO")"
+    REPO="$(_talos_remote_slug "$(git remote get-url origin 2>/dev/null)")" || REPO=""
   fi
 else
   # gh path (#554): the repo is only needed to find or add an issue's item, and
