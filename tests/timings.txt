@@ -69,6 +69,7 @@
 69 test-closing-keyword-siblings-cap.sh
 5 test-closing-keyword-unverified-wait.sh
 52 test-closing-keyword.sh
+8 test-cleanup-dead-code.sh
 6 test-cloud-followups.sh
 14 test-cloud-footer.sh
 72 test-cloud-session.sh

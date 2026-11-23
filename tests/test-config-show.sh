@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for `pipeline-config.sh --show` (#442, part of epic #437): one line per
 # key, `key<TAB>value<TAB>layer`, layer being default|global|repo|env; secrets
-# never print; `--dump-layers` is an alias; the restored "agents must be a
+# never print; the restored "agents must be a
 # mapping" warning.
 #
 # Sandboxed: TALOS_HOME always points inside $SANDBOX, so the real ~/.talos is
@@ -168,17 +168,6 @@ export PIPELINE_BUZZ_CHANNEL=BZ
 out="$(show)"
 assert_contains "$out" "limits.warn_at${TAB}0.8${TAB}default" "no config file: the table defaults list"
 assert_contains "$out" "notifications.buzz_channel${TAB}BZ${TAB}env" "no config file: the env layer still applies"
-unset PIPELINE_BUZZ_CHANNEL
-
-# ── --dump-layers keeps its old output (install.sh's model hint reads it) ────
-reset_cfg
-glob_json '{"agents":{"model":"sonnet"},"limits":{"warn_at":0.5}}'
-proj_json '{"agents":{"roles":{"qa":{"model":"haiku"}}}}'
-assert_eq "$(printf 'agents.model\tglobal\nagents.roles.qa.model\tproject')" "$(bash "$CFG_SH" --dump-layers 2>/dev/null)" "--dump-layers: agents.* file layers only, project|global names"
-reset_cfg
-assert_eq "" "$(bash "$CFG_SH" --dump-layers 2>/dev/null)" "--dump-layers: no config file, no rows (a default row would hide install.sh's model hint)"
-export PIPELINE_BUZZ_CHANNEL=BZ
-assert_eq "" "$(bash "$CFG_SH" --dump-layers 2>/dev/null)" "--dump-layers: env and default rows are not listed"
 unset PIPELINE_BUZZ_CHANNEL
 
 # ── --has: a config FILE layer only, documented ──────────────────────────────

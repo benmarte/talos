@@ -68,9 +68,6 @@
 #                   what the layers hold: the range validators of the single-key
 #                   path are not applied, and a derived default is not computed
 #                   (it shows empty, layer default). One python3 spawn.
-#   --dump-layers   deprecated: `--show --origin-only agents.` limited to the file
-#                   layers and printed with the old names (project|global), the
-#                   format install.sh still reads. Removed after one release.
 #
 # --has asks whether a config FILE sets a key; it ignores the env layer on
 # purpose (callers use it to decide whether a block exists to edit, and an
@@ -1539,11 +1536,6 @@ PYREAD
 # set: one stderr line per layer problem, exit 3, before any value resolves.
 _cfg_gate || exit 3
 
-# --dump-layers is the old verb for the agents.* origins, kept one release as an
-# alias: the same rows, file layers only, with the old layer names (install.sh's
-# model hint reads it, and a default row would always satisfy that hint).
-_SHOW_LEGACY=""
-if [ "${1:-}" = "--dump-layers" ]; then _SHOW_LEGACY=1; set -- --show --origin-only agents.; fi
 if [ "${1:-}" = "--show" ]; then
   shift
   _SHOW_ORIGIN="" _SHOW_PREFIX=""
@@ -1574,13 +1566,6 @@ if [ "${1:-}" = "--show" ]; then
   python3 -I -c "$_CFG_SHOW_PY" "$(_locate_project_cfg)" "$(_locate_user_cfg)" \
       "${_TALOS_DEFAULTS_TSV:-}" "$(_cfg_loader_src)" "$_SHOW_PREFIX" "$_SHOW_ORIGIN" \
     | while IFS= read -r _SL || [ -n "$_SL" ]; do
-        if [ -n "$_SHOW_LEGACY" ]; then
-          case "${_SL##*$'\t'}" in
-            global) ;;
-            repo) _SL="${_SL%$'\t'*}"$'\t'project ;;
-            *) continue ;;
-          esac
-        fi
         _SR="${_SL#*$'\t'}"
         case "$_SR" in
           env:*$'\t'*)
