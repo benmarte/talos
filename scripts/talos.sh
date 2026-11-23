@@ -6800,6 +6800,17 @@ _talos_run_ci_wait() {
   [ "$(cfg verify.qa_mode)" = ci ] || return 0
   _par="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ci-parallel 2>/dev/null)" || _par=false
   [ "$_par" != true ] || return 0
+  # #1007: under the QA pre-CI gate (pr.ready_gate qa-local) QA runs on the draft
+  # by design and CI skips a draft, so a wait here could only end ci-pending.
+  # The PR is asked itself: once it is ready (post-gate) the wait applies.
+  if [ "$_RUN_GATE" -eq 1 ]; then
+    _talos_cap _vcs pr-is-draft "$_pr"
+    case "$_RC:$_OUT" in
+      0:draft) return 0 ;;
+      1:ready) ;;
+      *) _talos_stop draft-unverified ;;
+    esac
+  fi
   _w="$(cfg verify.ci_wait_s)"
   case "$_w" in '' | *[!0-9]*) ;; *)
     _w=$((10#$_w))
