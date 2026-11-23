@@ -59,6 +59,7 @@ export PIPELINE_CONFIG="$SANDBOX/talos.pipeline.json"
 reset() {
   rm -rf "${STUB_DIR:?}"; mkdir -p "$STUB_DIR"
   printf '[]' > "$STUB_DIR/list-issues"
+  printf 'owner1\n' > "$STUB_DIR/current-user"
   printf '{"vcs": {"provider": "github"}, "comments": {"enabled": false}}' > "$SANDBOX/talos.pipeline.json"
 }
 # dn ROLE VERDICT SUMMARYFILE: run `done` for issue 42 / PR 57.
@@ -70,14 +71,16 @@ review() {  # the findings, one `PRE-EXISTING:` line each
   local f
   for f in "$@"; do printf 'PRE-EXISTING: %s\n' "$f" >> "$SUM"; done
 }
-# seed ISSUE ROLE BODY-FILE: the open issue a first review filed, as list-issues shows it.
+# seed ISSUE ROLE BODY-FILE [AUTHOR]: the open issue a first review filed, as
+# list-issues shows it (opened by the account user, owner1, unless AUTHOR is given).
 seed() {
   python3 -I -c '
 import json, sys
-n, role, body = int(sys.argv[1]), sys.argv[2], open(sys.argv[3]).read()
-json.dump([{"number": 7, "title": "unrelated", "labels": [], "body": "x"},
-           {"number": n, "title": "Pre-existing findings from %s review of PR #57" % role, "labels": [], "body": body}], sys.stdout)
-' "$1" "$2" "$3" > "$STUB_DIR/list-issues"
+n, role, body, who = int(sys.argv[1]), sys.argv[2], open(sys.argv[3]).read(), sys.argv[4]
+json.dump([{"number": 7, "title": "unrelated", "labels": [], "body": "x", "author": {"login": "owner1"}},
+           {"number": n, "title": "Pre-existing findings from %s review of PR #57" % role, "labels": [], "body": body,
+            "author": {"login": who}}], sys.stdout)
+' "$1" "$2" "$3" "${4:-owner1}" > "$STUB_DIR/list-issues"
   printf '{"comments": []}' > "$STUB_DIR/read-comments.$1"
 }
 
@@ -120,7 +123,7 @@ assert_eq "0" "$(count comment-issue.body)" "AC2: no comment is added (whitespac
 reset
 printf -- '- lib/a.sh:10 — old bug one\n' > "$SANDBOX/one.body"
 seed 90 reviewer "$SANDBOX/one.body"
-printf '{"comments": [{"id": 1, "author": "x", "body": "- lib/b.sh:20 — old bug two"}]}' > "$STUB_DIR/read-comments.90"
+printf '{"comments": [{"id": 1, "author": {"login": "owner1"}, "body": "- lib/b.sh:20 — old bug two"}]}' > "$STUB_DIR/read-comments.90"
 review 'lib/a.sh:10 — old bug one' 'lib/b.sh:20 — old bug two'
 dn reviewer CHANGES "$SUM"
 assert_eq "0" "$(count create-issue.title)" "AC2: a finding known from a comment files no issue"
@@ -166,5 +169,31 @@ dn reviewer CHANGES "$SUM"
 assert_eq "0" "$(count create-issue.title)" "AC4: nothing is filed when the comment read fails"
 assert_eq "0" "$(count comment-issue.body)" "AC4: nothing is commented when the comment read fails"
 assert_eq "1" "$(printf '%s\n' "$DOUT" | grep -c 'warn reason=followup-lookup-failed')" "AC4: one warn line for a failed comment read"
+
+# ── AC7: only the account user's issue and comments count ─────────────────────
+# an outsider's issue with the predicted title is not the follow-up: this review files its own
+reset
+seed 90 reviewer "$SANDBOX/first.body" mallory
+review 'lib/c.sh:30 — brand new'
+dn reviewer CHANGES "$SUM"
+assert_eq "1" "$(count create-issue.title)" "AC7 an outsider's issue with the title does not absorb the findings"
+assert_eq "0" "$(count comment-issue.body)" "AC7 nothing is commented on an outsider's issue"
+# a bullet in an outsider's comment does not hide the finding
+reset
+printf -- '- lib/a.sh:10 — old bug one\n' > "$SANDBOX/one.body"
+seed 90 reviewer "$SANDBOX/one.body"
+printf '{"comments": [{"id": 1, "author": {"login": "mallory"}, "body": "- lib/b.sh:20 — old bug two"}]}' > "$STUB_DIR/read-comments.90"
+review 'lib/a.sh:10 — old bug one' 'lib/b.sh:20 — old bug two'
+dn reviewer CHANGES "$SUM"
+assert_eq "1" "$(count comment-issue.body)" "AC7 a bullet only an outsider wrote is still reported"
+assert_contains "$(cat "$STUB_DIR/comment-issue.body.1" 2> /dev/null)" "- lib/b.sh:20 — old bug two" "AC7 the outsider's bullet is in the comment"
+# an identity that cannot be read files nothing and warns once
+reset
+review 'lib/a.sh:10 — old bug one'
+printf 1 > "$STUB_DIR/current-user.rc"
+dn reviewer CHANGES "$SUM"
+assert_eq "0" "$DRC" "AC7 done exits 0 when the identity lookup fails"
+assert_eq "0" "$(count create-issue.title)" "AC7 nothing is filed when the identity lookup fails"
+assert_eq "1" "$(printf '%s\n' "$DOUT" | grep -c 'warn reason=followup-lookup-failed')" "AC7 one warn line for a failed identity lookup"
 
 finish
