@@ -393,6 +393,7 @@ done
 DN="$DONE_GS/talos.sh"
 done_reset() {
   rm -rf "${STUB_DIR:?}"; mkdir -p "$STUB_DIR"
+  printf '[]' > "$STUB_DIR/list-issues"   # no open follow-up issue yet (#1045)
   printf '{"vcs": {"provider": "github"}, "comments": {"enabled": false}}' > "$SANDBOX/talos.pipeline.json"
 }
 # dn ROLE VERDICT SUMMARYFILE: run `done` for issue 42 / PR 57.

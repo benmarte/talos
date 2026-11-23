@@ -58,6 +58,7 @@ export PIPELINE_CONFIG="$SANDBOX/talos.pipeline.json"
 
 reset() {
   rm -rf "${STUB_DIR:?}"; mkdir -p "$STUB_DIR"
+  printf '[]' > "$STUB_DIR/list-issues"
   printf '{"vcs": {"provider": "github"}, "comments": {"enabled": false}}' > "$SANDBOX/talos.pipeline.json"
 }
 # dn ROLE VERDICT SUMMARYFILE: run `done` for issue 42 / PR 57.
