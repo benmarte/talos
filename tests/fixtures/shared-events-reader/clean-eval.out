@@ -1,0 +1,2 @@
+pipeline-eval: candidates: list-default-commits failed; nothing listed
+rc=1
