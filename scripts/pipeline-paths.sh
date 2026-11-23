@@ -30,6 +30,40 @@ _resolve_talos_dir() {
   return 1
 }
 
+# _talos_remote_slug <remote-url> -> prints the repository path of a git remote
+# URL ("owner/name"; a GitLab subgroup keeps its whole path), returns 1 with
+# nothing printed for a value that is not a URL. Forms: https://host/o/n(.git),
+# http://, ssh://git@host[:port]/o/n(.git), scp-style git@host:o/n(.git), and
+# any enterprise host; credentials and a port before the path are dropped. The
+# one place a remote URL is split (#1014): the callers that want exactly two
+# segments cut them from this.
+_talos_remote_slug() {
+  local _u="${1%.git}"
+  _u="${_u%/}"
+  case "$_u" in
+    *://*) _u="${_u#*://}"; case "$_u" in */*) _u="${_u#*/}" ;; *) return 1 ;; esac ;;
+    *@*:*) _u="${_u#*:}" ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "$_u"
+}
+
+# printable <text> -- <text> with every control character replaced by `?`, for
+# a path or argument echoed to the terminal: a path from the environment, an
+# argument, a marketplace JSON entry or `claude` output must not be able to
+# inject an escape sequence into a log. That is C0 + DEL and the UTF-8 C1
+# controls (U+0080-U+009F, bytes c2 80..c2 9f; U+009B is a one-character CSI),
+# the same set pipeline-agent.sh strips in _plain. Controls are replaced, never
+# deleted: deleting can join the bytes either side into a new control
+# (c2 c2 9b 9b -> c2 9b, c2 1b 9b -> c2 9b), a `?` cannot. tr takes the
+# single-byte ones, sed the two-byte ones (no python3 needed). Other UTF-8 text
+# passes through.
+_P_C2=$'\xc2'; _P_LO=$'\x80'; _P_HI=$'\x9f'
+printable() {
+  printf '%s' "$1" | LC_ALL=C tr '\000-\037\177' '?' \
+    | LC_ALL=C sed "s/${_P_C2}[${_P_LO}-${_P_HI}]/?/g"
+}
+
 # _talos_state_dir -> prints the absolute path of the Talos run-state
 # directory, <git-common-dir>/talos, creating it mode 0700 if absent, or
 # nothing (rc 1) outside a git repository (#517).

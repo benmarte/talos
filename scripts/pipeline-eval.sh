@@ -50,25 +50,12 @@ else
   exit 1
 fi
 
-# _eval_repo -> "owner/name", from config or the origin remote (as pipeline-hooks.sh).
-_eval_repo() {
-  local repo
-  repo="$(cfg repo)"
-  [ -n "$repo" ] || repo="$(cfg vcs.repo)"
-  if [ -z "$repo" ]; then
-    repo="$(git remote get-url origin 2>/dev/null \
-      | sed -E 's#^git@([^:/]+)[:/]#https://\1/#; s#\.git$##' \
-      | sed -E 's#^https://[^/]+/##')"
-  fi
-  printf '%s' "$repo"
-}
-
 state="$(_talos_state_dir)" || {
   echo "pipeline-eval: could not resolve the Talos state directory (not a git repo?)" >&2
   exit 1
 }
 log_path="$(_events_log_path)" || log_path=""
-repo="$(_eval_repo)"
+repo="$(_talos_repo)"
 
 python3 -I - "$state" "$log_path" "$SCRIPT_DIR" "$repo" "$@" <<'PYEOF'
 import datetime
