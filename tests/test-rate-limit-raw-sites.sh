@@ -102,4 +102,17 @@ assert_not_contains "$OUT" "base-synced" "AC3 base-synced is not emitted"
 assert_eq "1" "$(rl_count '^mergebase 12$')" "AC3 the sync ran before the second read"
 assert_not_contains "$(journal)" "agent qa" "AC3 QA is not dispatched"
 
+# AC3 (same): the merge.auto_sync fallback, update-branch exiting 7, is a wait too,
+# never a merge-conflict redispatch.
+merge_rl_fixture
+printf 'scripts/a.sh\n' > "$STUB_DIR/conflict-files.out"
+printf 1 > "$STUB_DIR/mergebase.rc"
+printf 7 > "$STUB_DIR/update-branch.rc"
+printf '%s\n' "$RL_LINE" > "$STUB_DIR/update-branch.err"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --issue 9 --max-iterations 3
+assert_eq "0" "$RC" "AC3 a rate-limited update-branch ends the run with exit 0"
+assert_eq "stop verdict=wait reason=rate-limited retry_after_s=300" "$(printf '%s\n' "$OUT" | grep '^stop ')" "AC3 update-branch: the gate ends on verdict=wait reason=rate-limited"
+assert_eq "1" "$(rl_count 'vcs update-branch 12')" "AC3 update-branch was tried"
+assert_not_contains "$OUT" "merge-conflict" "AC3 update-branch: no merge-conflict redispatch"
+
 finish

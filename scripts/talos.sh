@@ -2536,8 +2536,9 @@ _talos_gate_merge() {
       elif [ -n "$_OUT" ]; then
         if bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_pr" > /dev/null; then
           _synced=1
-        elif [ "$(cfg merge.auto_sync)" = "true" ] && _vcs update-branch "$_pr" > /dev/null; then
-          _synced=1
+        elif [ "$(cfg merge.auto_sync)" = "true" ]; then
+          _talos_cap _vcs update-branch "$_pr"
+          [ "$_RC" -ne 0 ] || _synced=1
         fi
         if [ "$_synced" -eq 1 ]; then
           _talos_cap _vcs pr-mergeable "$_pr"
