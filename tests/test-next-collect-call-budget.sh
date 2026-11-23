@@ -138,11 +138,13 @@ dup_max() { grep -E "$1" "$GH_CALLS" | sort | uniq -c | sort -rn | awk 'NR==1 { 
 # ── AC1 ─────────────────────────────────────────────────────────────────────
 reset_calls
 OUT="$(bash "$TALOS" next 2>"$SANDBOX/err")"
+printf '  info  one next over 10 open PRs made %s REST calls\n' "$(wc -l < "$GH_CALLS" | tr -d ' ')"
 assert_eq "action=dispatch stage=qa pr=101 issue=1" "$OUT" "AC1 the unscoped next answers" "$(cat "$SANDBOX/err")"
 assert_eq "1" "$(dup_max '^GET repos/acme/widget/pulls/[0-9]+$')" "AC1 each pulls/<n> is read at most once in one next over 10 PRs"
 assert_eq "1" "$(dup_max '^GET user$')" "AC1 /user is read at most once in one next"
 reset_calls
 OUT="$(bash "$TALOS" next --issue 3 2>"$SANDBOX/err")"
+printf '  info  one next --issue over 10 open PRs made %s REST calls\n' "$(wc -l < "$GH_CALLS" | tr -d ' ')"
 assert_eq "1" "$(dup_max '^GET repos/acme/widget/pulls/[0-9]+$')" "AC1 each pulls/<n> is read at most once in one next --issue"
 assert_eq "1" "$(dup_max '^GET user$')" "AC1 /user is read at most once in one next --issue"
 
