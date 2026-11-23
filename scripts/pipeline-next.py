@@ -358,13 +358,8 @@ def cache_titles(raw_issues):
         pass
 
 
-def collect():
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, _stop_on_signal)
-    _start_read_phase()
-    talos_labels = frozenset(x for x in opts.get('talos-labels', '').split(',') if x)
-    if not talos_labels:
-        die('no Talos label list (pipeline-contract.sh missing or empty)')
+def read_lists(talos_labels):
+    """(raw PRs, raw issues, the verbs whose result was capped): the two list reads."""
     rc, out, err = vcs('list-prs')
     if rc != 0:
         die('list-prs failed (rc=%d)' % rc)
@@ -376,70 +371,93 @@ def collect():
     raw_issues = parse_array(out, 'list-issues')
     if CAP_RE.search(err):
         capped.append('list-issues')
-    issues = dict((_num(i), _label_set(i)) for i in raw_issues if _num(i))
+    return raw_prs, raw_issues, capped
 
-    # Multi-user claiming (#560, #949): with --me (the operator's login), act only
-    # on what is assigned to the operator. The assignees come from one bulk read;
-    # exit 2 is a provider with no assignees (file mode), which keeps today's
-    # unfiltered state, and any other failure fails the run: a guess here would
-    # route another operator's work. An issue is another operator's ("theirs")
-    # when it has assignees and the operator is not one of them; an issue with no
-    # assignee is nobody's: never routed and never claimed here (`talos.sh claim`
-    # is the explicit way), only listed in `unassigned` so it stays visible.
-    me = opts.get('me', '')
-    amap, theirs, theirs_issues, unassigned_issues, unassigned_shown = {}, [], {}, set(), set()
-    if me:
+
+class Claims:
+    """Multi-user claiming (#560, #949): with `me` (the operator's login), act only
+    on what is assigned to the operator. An issue is another operator's ("theirs")
+    when it has assignees and the operator is not one of them; an issue with no
+    assignee is nobody's: never routed and never claimed here (`talos.sh claim`
+    is the explicit way), only listed in `shown` so it stays visible."""
+
+    def __init__(self, me):
+        self.me = me
+        self.theirs = []         # the items of other operators: issues, then their PRs
+        self.theirs_issues = {}  # issue -> the owner's login
+        self.unassigned = set()
+        self.shown = set()       # the unassigned issues Talos would otherwise act on
+
+    def read_assignees(self):
+        """The {issue: [logins]} map of one bulk read. Exit 2 is a provider with no
+        assignees (file mode): there `me` is dropped, which keeps today's unfiltered
+        state; any other failure fails the run, as a guess here would route another
+        operator's work."""
         rc, out, err = vcs('list-assignees')
         if rc == 2:
-            me = ''
-        elif rc != 0:
+            self.me = ''
+            return None
+        if rc != 0:
             die('list-assignees failed (rc=%d)' % rc)
-        else:
-            try:
-                raw_amap = json.loads(out)
-            except ValueError:
-                die('list-assignees did not return JSON')
-            if not isinstance(raw_amap, dict):
-                die('list-assignees did not return a JSON object')
-            for k, v in raw_amap.items():
-                if re.fullmatch(r'[0-9]{1,9}', k) and isinstance(v, list):
-                    amap[int(k)] = [w for w in v if isinstance(w, str) and w]
-    if me:
+        try:
+            raw_amap = json.loads(out)
+        except ValueError:
+            die('list-assignees did not return JSON')
+        if not isinstance(raw_amap, dict):
+            die('list-assignees did not return a JSON object')
+        amap = {}
+        for k, v in raw_amap.items():
+            if re.fullmatch(r'[0-9]{1,9}', k) and isinstance(v, list):
+                amap[int(k)] = [w for w in v if isinstance(w, str) and w]
+        return amap
+
+    def split(self, issues, amap, talos_labels):
+        """`issues` without the theirs and the unassigned ones."""
         for n in sorted(issues):
             who = amap.get(n) or []
             if not who:
-                unassigned_issues.add(n)
-            elif me.lower() not in [w.lower() for w in who]:
-                theirs_issues[n] = min(who, key=lambda w: w.lower())
-                theirs.append({'kind': 'issue', 'n': n, 'issue': n, 'owner': theirs_issues[n]})
+                self.unassigned.add(n)
+            elif self.me.lower() not in [w.lower() for w in who]:
+                self.theirs_issues[n] = min(who, key=lambda w: w.lower())
+                self.theirs.append({'kind': 'issue', 'n': n, 'issue': n, 'owner': self.theirs_issues[n]})
         # Shown: the unassigned issues Talos would otherwise act on (a Talos label
         # or an open pipeline PR), not every open issue of the repo.
-        unassigned_shown = set(n for n in unassigned_issues if issues[n] & talos_labels)
-        issues = dict((n, l) for n, l in issues.items() if n not in theirs_issues and n not in unassigned_issues)
+        self.shown = set(n for n in self.unassigned if issues[n] & talos_labels)
+        return dict((n, l) for n, l in issues.items() if n not in self.theirs_issues and n not in self.unassigned)
 
-    # list-needs-owner: exit 2 is an unsupported provider (no Owner lines); any
-    # other failure is a failed read and fails the run like list-prs does.
-    owners = None
+    def keep_owners(self, owners):
+        """The owner questions of the issues and PRs that are the operator's."""
+        gone = set(self.theirs_issues) | self.unassigned | set(t['n'] for t in self.theirs if t['kind'] == 'PR')
+        return owners if owners is None else [o for o in owners if o['n'] not in gone]
+
+
+def read_owners():
+    """The needs-owner entries, or None for an unsupported provider (exit 2: no Owner
+    lines). Any other failure is a failed read and fails the run like list-prs does."""
     rc, out, err = vcs('list-needs-owner', '--json')
-    if rc != 2:
-        if rc != 0:
-            die('list-needs-owner failed (rc=%d)' % rc)
-        owners = []
-        # The trust set was not resolved: every `answered` value is unverified.
-        unverified = 'talos:marker-authors-unverified' in err
-        for r in parse_array(out, 'list-needs-owner --json'):
-            if not _num(r, 'n') or not isinstance(r.get('question', ''), str):
-                die('list-needs-owner --json returned an item that is not {n, question, ...}')
-            # The status goes in a fixed field before the untrusted question.
-            status = 'unverified' if unverified else ('answered' if r.get('answered') == 'yes' else 'unanswered')
-            owners.append({'n': r['n'], 'status': status, 'question': r.get('question', '')})
-        owners.sort(key=lambda o: o['n'])
+    if rc == 2:
+        return None
+    if rc != 0:
+        die('list-needs-owner failed (rc=%d)' % rc)
+    owners = []
+    # The trust set was not resolved: every `answered` value is unverified.
+    unverified = 'talos:marker-authors-unverified' in err
+    for r in parse_array(out, 'list-needs-owner --json'):
+        if not _num(r, 'n') or not isinstance(r.get('question', ''), str):
+            die('list-needs-owner --json returned an item that is not {n, question, ...}')
+        # The status goes in a fixed field before the untrusted question.
+        status = 'unverified' if unverified else ('answered' if r.get('answered') == 'yes' else 'unanswered')
+        owners.append({'n': r['n'], 'status': status, 'question': r.get('question', '')})
+    owners.sort(key=lambda o: o['n'])
+    return owners
 
-    # Which PRs are the pipeline's: a pipeline-style head branch alone is not
-    # enough, anyone can open a PR named fix/issue-3-x from a fork. Same base, and
-    # either a Talos label (a maintainer applied it) or the listing says the PR
-    # is NOT from a fork. isCrossRepository absent means a label is required.
-    base = opts['base-branch']
+
+def classify_prs(raw_prs, talos_labels, claims, base):
+    """(eligible (n, labels, issue) in PR order, the count of ignored PRs, the blocked
+    PRs). Which PRs are the pipeline's: a pipeline-style head branch alone is not
+    enough, anyone can open a PR named fix/issue-3-x from a fork. Same base, and
+    either a Talos label (a maintainer applied it) or the listing says the PR
+    is NOT from a fork. isCrossRepository absent means a label is required."""
     eligible, ignored, blocked = [], 0, []
     for it in sorted((i for i in raw_prs if _num(i)), key=lambda i: i['number']):
         n, labels = it['number'], _label_set(it)
@@ -449,14 +467,14 @@ def collect():
             and bool(labels & talos_labels or it.get('isCrossRepository') is False)
         # A pipeline PR whose issue is another operator's is theirs: not routed,
         # not blocked-listed, not looked up (#560).
-        if pipeline_pr and int(m.group(1)) in theirs_issues:
-            theirs.append({'kind': 'PR', 'n': n, 'issue': int(m.group(1)),
-                           'owner': theirs_issues[int(m.group(1))]})
+        if pipeline_pr and int(m.group(1)) in claims.theirs_issues:
+            claims.theirs.append({'kind': 'PR', 'n': n, 'issue': int(m.group(1)),
+                                  'owner': claims.theirs_issues[int(m.group(1))]})
             continue
         # ... and one whose issue nobody holds is not routed either (#949): not
         # blocked-listed, not looked up; its issue shows under `unassigned`.
-        if pipeline_pr and int(m.group(1)) in unassigned_issues:
-            unassigned_shown.add(int(m.group(1)))
+        if pipeline_pr and int(m.group(1)) in claims.unassigned:
+            claims.shown.add(int(m.group(1)))
             continue
         if BLOCKED_LABEL in labels:
             blocked.append(('PR', n))
@@ -466,12 +484,11 @@ def collect():
             ignored += 1
             continue
         eligible.append((n, labels, int(m.group(1))))
-    if me:
-        gone = set(theirs_issues) | unassigned_issues | set(t['n'] for t in theirs if t['kind'] == 'PR')
-        if owners is not None:
-            owners = [o for o in owners if o['n'] not in gone]
-    blocked += [('issue', n) for n in issues if BLOCKED_LABEL in issues[n]]
-    blocked.sort(key=lambda b: (b[1], b[0]))
+    return eligible, ignored, blocked
+
+
+def issue_lists(issues, eligible):
+    """(queued, held, in flight) issue numbers."""
     queued = sorted((n for n in issues if READY_LABEL in issues[n]),
                     key=lambda n: (min([PRIORITY[l] for l in issues[n] if l in PRIORITY] or [3]), n))
     # Ready AND waiting on the owner: listed as queued, never offered as `start`.
@@ -491,28 +508,36 @@ def collect():
                       if n not in queued and n not in pr_issues
                       and not (issues[n] & {BLOCKED_LABEL, NEEDS_OWNER_LABEL})
                       and (issues[n] & INFLIGHT_LABELS))
+    return queued, held, inflight
 
-    # Look up only the PRs the block will show (lowest numbers): the line cap
-    # decides this BEFORE the per-PR reads, so 300 PRs cost the same as 40.
-    # The rest are counted by the `- +<K> more` line. Next sees rendered PRs only.
+
+def pr_lookups(eligible, issues, shown, enabled, by_diff):
+    """The (n, labels, issue) PRs to look up: those the block shows, plus the
+    merge-ready ones past the cap. `Next` must still see a merge-ready PR past
+    the cap: any PR beyond it that carries the approval label of every enabled
+    role (and no blocked or needs-owner label) is looked up as well, at most as
+    many as the cap shows (with no role enabled every PR qualifies); only its
+    line can be cut. With roles.required_when (#835) a review role may be
+    skipped, so its label is no part of that test."""
+    need = set(label for role, label in APPROVALS if role in enabled and not (by_diff and role in REVIEW_ROLES))
+    pending = [e for e in eligible[shown:]
+               if need <= e[1] and not ((e[1] | issues.get(e[2], set())) & {BLOCKED_LABEL, NEEDS_OWNER_LABEL})][:shown]
+    return eligible[:shown] + pending
+
+
+def read_prs(eligible, issues, ignored, capped, blocked, owners, queued):
+    """The state of each PR the block will show (lowest numbers): the line cap
+    decides this BEFORE the per-PR reads, so 300 PRs cost the same as 40.
+    The rest are counted by the `- +<K> more` line. Next sees rendered PRs only."""
     budget = max(MAX_PR_LINES - (1 if ignored else 0) - (1 if capped else 0), MIN_BLOCK_LINES)
     others = len(blocked) + len(owners or []) + (1 if queued else 0)
     shown = len(eligible) if 2 + len(eligible) + others <= budget else budget - 3
     enabled = set(x for x in opts.get('roles', '').split(',') if x)
     # The per-PR reads are a second read phase with its own deadline.
     _start_read_phase()
-    # `Next` must still see a merge-ready PR past the cap: any PR beyond it that
-    # carries the approval label of every enabled role (and no blocked or
-    # needs-owner label) is looked up as well, at most as many as the cap shows (with
-    # no role enabled every PR qualifies); only its line can be cut.
-    # With roles.required_when (#835) a review role may be skipped, so its label
-    # is no part of that test: a merge-ready PR past the cap is still looked up.
     by_diff = opts.get('required-when') == 'yes'
-    need = set(label for role, label in APPROVALS if role in enabled and not (by_diff and role in REVIEW_ROLES))
-    pending = [e for e in eligible[shown:]
-               if need <= e[1] and not ((e[1] | issues.get(e[2], set())) & {BLOCKED_LABEL, NEEDS_OWNER_LABEL})][:shown]
     prs = []
-    for n, labels, issue in eligible[:shown] + pending:
+    for n, labels, issue in pr_lookups(eligible, issues, shown, enabled, by_diff):
         rc, out, _ = vcs('pr-head', str(n))
         head = out.strip()
         if rc != 0 or not SHA_RE.match(head):
@@ -524,6 +549,31 @@ def collect():
         prs.append({'n': n, 'issue': issue, 'head': head,
                     'owner': NEEDS_OWNER_LABEL in labels or NEEDS_OWNER_LABEL in issue_labels,
                     'stage': next_stage(n, labels, issue_labels, pr_enabled)})
+    return prs
+
+
+def collect():
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _stop_on_signal)
+    _start_read_phase()
+    talos_labels = frozenset(x for x in opts.get('talos-labels', '').split(',') if x)
+    if not talos_labels:
+        die('no Talos label list (pipeline-contract.sh missing or empty)')
+    raw_prs, raw_issues, capped = read_lists(talos_labels)
+    issues = dict((_num(i), _label_set(i)) for i in raw_issues if _num(i))
+    claims = Claims(opts.get('me', ''))
+    if claims.me:
+        amap = claims.read_assignees()
+        if claims.me:
+            issues = claims.split(issues, amap, talos_labels)
+    owners = read_owners()
+    eligible, ignored, blocked = classify_prs(raw_prs, talos_labels, claims, opts['base-branch'])
+    if claims.me:
+        owners = claims.keep_owners(owners)
+    blocked += [('issue', n) for n in issues if BLOCKED_LABEL in issues[n]]
+    blocked.sort(key=lambda b: (b[1], b[0]))
+    queued, held, inflight = issue_lists(issues, eligible)
+    prs = read_prs(eligible, issues, ignored, capped, blocked, owners, queued)
     # The priority of each queued or in-flight issue that carries a p-label
     # (#601): what `next` and `where` need to put both lists in one order.
     priority = dict((str(n), min(PRIORITY[l] for l in issues[n] if l in PRIORITY))
@@ -532,13 +582,13 @@ def collect():
              'blocked': blocked, 'queued': queued, 'held': held,
              'inflight': inflight, 'owners': owners, 'capped': capped,
              'priority': priority}
-    if me:
+    if claims.me:
         # Added only while claiming is on, so the unfiltered state is
         # byte-for-byte today's. `unassigned` (#949): open issues Talos would act
         # on that nobody is assigned to; they are not routed and not claimed.
-        state['me'] = me
-        state['theirs'] = sorted(theirs, key=lambda t: (t['n'], t['kind']))
-        state['unassigned'] = sorted(unassigned_shown)
+        state['me'] = claims.me
+        state['theirs'] = sorted(claims.theirs, key=lambda t: (t['n'], t['kind']))
+        state['unassigned'] = sorted(claims.shown)
     cache_titles(raw_issues)
     sys.stdout.write(json.dumps(state))
 
@@ -649,50 +699,70 @@ def issues_overlap(a, b):
 # capacity check counts them, and an in-flight candidate among them is passed
 # over (#601).
 
-def issue_side(data, o):
-    """Options o (--name value): vcs budget issue roles label-filter skip-labels
-    max-parallel pm-skip risk-areas leased. Read verbs only, unbounded (no deadline)."""
-    prs = data.get('prs') or []
-    queued = data.get('queued') or []
-    qset = set(queued)
-    held = set(data.get('held') or [])
-    owners = data.get('owners') or []
-    blocked = set(n for _, n in (data.get('blocked') or []))
-    theirs = set(t['issue'] for t in (data.get('theirs') or []) if isinstance(t, dict) and isinstance(t.get('issue'), int))
-    unassigned = set(n for n in (data.get('unassigned') or []) if isinstance(n, int) and not isinstance(n, bool))
-    by_owner = dict((x['n'], x) for x in owners if isinstance(x, dict))
-    answered = answered_owner_prs(data)
-    roles = set(x for x in o.get('roles', '').split(',') if x)
-    skip_labels = set(x for x in o.get('skip-labels', '').split(',') if x)
-    label_filter = o.get('label-filter', READY_LABEL)
-    target = o.get('issue', '')
-    leased = [x for x in o.get('leased', '').split(',') if x]
-    pm_skip = o.get('pm-skip') == 'true'
-    # pipeline.risk_areas (#837), one per line; an empty list switches the threat stage off.
-    risk_areas = [a.strip().lower() for a in o.get('risk-areas', '').split('\n') if a.strip()]
-    planner_on = 'planner' in roles
-    validator_on = 'validator' in roles
-    pm_on = 'pm' in roles
+class Passed(Exception):
+    """While the untargeted walk tries a candidate, a wait is not the answer yet:
+    it raises Passed with the line, and the walk goes on (#601)."""
 
-    # While the untargeted walk tries a candidate, a wait is not the answer yet:
-    # it raises Passed with the line, and the walk goes on (#601).
-    class Passed(Exception):
-        pass
 
-    walk = {'on': False}
+class Router:
+    """The issue-side routing over one collect state. One method per decision
+    stage: the owner gates (`owner_gate`, `ask_owner`), the fix-round gate, the
+    per-issue stage (`route`), the named issue (`route_named`), and the walk of
+    the in-flight and ready issues with its cap, overlap and dependency gates
+    (`walk`). `say` and `say_line` print the one answer and exit; during the
+    untargeted walk a wait raises Passed instead."""
 
-    def say_line(line):
-        if walk['on'] and line.startswith('action=wait'):
+    def __init__(self, data, o):
+        self.data = data
+        self.o = o
+        self.prs = data.get('prs') or []
+        self.queued = data.get('queued') or []
+        self.qset = set(self.queued)
+        self.held = set(data.get('held') or [])
+        owners = data.get('owners') or []
+        self.blocked = set(n for _, n in (data.get('blocked') or []))
+        self.theirs = set(t['issue'] for t in (data.get('theirs') or []) if isinstance(t, dict) and isinstance(t.get('issue'), int))
+        self.unassigned = set(n for n in (data.get('unassigned') or []) if isinstance(n, int) and not isinstance(n, bool))
+        self.by_owner = dict((x['n'], x) for x in owners if isinstance(x, dict))
+        self.answered = answered_owner_prs(data)
+        roles = set(x for x in o.get('roles', '').split(',') if x)
+        self.skip_labels = set(x for x in o.get('skip-labels', '').split(',') if x)
+        self.label_filter = o.get('label-filter', READY_LABEL)
+        self.leased = [x for x in o.get('leased', '').split(',') if x]
+        self.pm_skip = o.get('pm-skip') == 'true'
+        # pipeline.risk_areas (#837), one per line; an empty list switches the threat stage off.
+        self.risk_areas = [a.strip().lower() for a in o.get('risk-areas', '').split('\n') if a.strip()]
+        self.planner_on = 'planner' in roles
+        self.validator_on = 'validator' in roles
+        self.pm_on = 'pm' in roles
+        self.walking = False
+        self.docs = {}  # n -> the view-issue document, read once per walk
+        # The walk's state: the pick, the cap and the waits a candidate answered.
+        self.inflight = []
+        self.flight = set()
+        self.busy = set()
+        self.ready = []
+        self.overlapping = set()
+        self.owner_wait = bool(self.blocked or owners or any(p.get('owner') for p in self.prs))
+        self.cap = None
+        self.dep_blocked = False
+        self.batched_wait = False
+        self.ready_wait = ''  # the wait a ready candidate's own routing answered: it ends the ready walk
+
+    # ── answers and reads ────────────────────────────────────────────────────
+
+    def say_line(self, line):
+        if self.walking and line.startswith('action=wait'):
             raise Passed(line)
         print(line)
         sys.exit(0)
 
-    def say(name, **kw):
-        say_line(action(name, **kw))
+    def say(self, name, **kw):
+        self.say_line(action(name, **kw))
 
-    def run_vcs(*a):
+    def run_vcs(self, *a):
         try:
-            p = subprocess.run(['bash', o['vcs']] + list(a), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            p = subprocess.run(['bash', self.o['vcs']] + list(a), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except OSError:
             raise Stop('state-unavailable')
         if p.returncode == RATE_LIMITED:
@@ -701,11 +771,9 @@ def issue_side(data, o):
             raise Stop('rate-limited reset=%d' % rate_limit_reset(p.stderr.decode('utf-8', 'replace')))
         return p.returncode, p.stdout.decode('utf-8', 'replace'), p.stderr.decode('utf-8', 'replace')
 
-    docs = {}  # n -> the view-issue document, read once per walk
-
-    def view_issue(n):
-        if n not in docs:
-            rc, out, err = run_vcs('view-issue', str(n))
+    def view_issue(self, n):
+        if n not in self.docs:
+            rc, out, err = self.run_vcs('view-issue', str(n))
             if rc != 0:
                 if UNSUPPORTED_RE.search(err):
                     raise Stop('unsupported-verb:view-issue')
@@ -716,19 +784,19 @@ def issue_side(data, o):
                 raise Stop('state-unavailable')
             if not isinstance(d, dict):
                 raise Stop('state-unavailable')
-            docs[n] = d
-        body = docs[n].get('body')
-        return _label_set(docs[n]), body if isinstance(body, str) else ''
+            self.docs[n] = d
+        body = self.docs[n].get('body')
+        return _label_set(self.docs[n]), body if isinstance(body, str) else ''
 
-    def expected_files(n):
+    def expected_files(self, n):
         """(files list, area labels) of issue n (#830): the list of the body,
         else of the PM spec; None when the issue cannot be read (an ordering
         preference never fails the walk)."""
         try:
-            labels, body = view_issue(n)
+            labels, body = self.view_issue(n)
             files = files_list(body)
             if not files:
-                rc, out, _ = run_vcs('view-issue', str(n), '--spec')
+                rc, out, _ = self.run_vcs('view-issue', str(n), '--spec')
                 if rc == 0:
                     for c in (json.loads(out).get('comments') or [])[-1:]:
                         files = files_list(c.get('body') or '')
@@ -736,24 +804,49 @@ def issue_side(data, o):
             return None
         return files, set(l for l in labels if l.startswith('area:'))
 
-    def ask_owner(n):
-        e = by_owner.get(n)
-        q = e['question'] if e and isinstance(e.get('question'), str) else ''
-        say('ask-owner', issue=n, question=q or 'the pipeline needs an owner decision on this issue')
+    # ── the owner ────────────────────────────────────────────────────────────
 
-    # The gate fix-round composition (#471, AC6), read-only: the budget guard
-    # (pipeline-budget.sh check; exit 1 = exceeded) then check-attempt (its
-    # ceilings), in the verb order.
-    def fix_round_gate(n):
-        if o.get('budget'):
+    def ask_owner(self, n):
+        e = self.by_owner.get(n)
+        q = e['question'] if e and isinstance(e.get('question'), str) else ''
+        self.say('ask-owner', issue=n, question=q or 'the pipeline needs an owner decision on this issue')
+
+    def owner_gate(self, n):
+        """What an issue's owner state answers before any label does: another
+        operator's issue (#560), one nobody holds (#949), a held or
+        owner-questioned one, and its owner-flagged PR (#582, #639)."""
+        if n in self.theirs:
+            self.say('wait', reason='theirs')
+        # An issue nobody is assigned to (#949) is never routed, nor claimed here.
+        if n in self.unassigned:
+            self.say('wait', reason='unassigned')
+        if n in self.held or n in self.by_owner:
+            self.ask_owner(n)
+        # The issue's open pipeline PR is the PR side's, as in the unpinned
+        # next: an owner-flagged one waits, the others are resumed at their
+        # stage (#582). Only the PR of THIS issue is ever consulted.
+        waiting = [p for p in self.prs if p.get('issue') == n and p.get('owner')]
+        replied = [p for p in waiting if p['n'] in self.answered]
+        if replied:
+            self.say_line(answered_action(min(replied, key=lambda p: p['n'])))
+        if waiting:
+            self.say('wait', reason='owner')
+
+    # ── the fix round and the threat stage ───────────────────────────────────
+
+    def fix_round_gate(self, n):
+        """The gate fix-round composition (#471, AC6), read-only: the budget guard
+        (pipeline-budget.sh check; exit 1 = exceeded) then check-attempt (its
+        ceilings), in the verb order."""
+        if self.o.get('budget'):
             try:
-                p = subprocess.run(['bash', o['budget'], 'check', '--issue', str(n)],
+                p = subprocess.run(['bash', self.o['budget'], 'check', '--issue', str(n)],
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             except OSError:
                 p = None
             if p is not None and p.returncode == 1:
                 raise Stop('budget-exceeded')
-        rc, _, err = run_vcs('check-attempt', str(n))
+        rc, _, err = self.run_vcs('check-attempt', str(n))
         if rc == 0:
             return
         if UNSUPPORTED_RE.search(err):
@@ -766,14 +859,14 @@ def issue_side(data, o):
             raise Stop('max-fix-attempts')
         raise Stop('record-failed')
 
-    def needs_threat(n):
+    def needs_threat(self, n):
         """Does issue n still need its design-mode security pass (#837)? Its
         title, body or latest PM spec names a risk area and that spec has no
         `## Threat model` line yet. One `view-issue --spec` read, only with
         areas configured; an unreadable issue is never guessed."""
-        if not risk_areas:
+        if not self.risk_areas:
             return False
-        rc, out, err = run_vcs('view-issue', str(n), '--spec')
+        rc, out, err = self.run_vcs('view-issue', str(n), '--spec')
         if rc != 0:
             if UNSUPPORTED_RE.search(err):
                 raise Stop('unsupported-verb:view-issue')
@@ -791,51 +884,58 @@ def issue_side(data, o):
         if THREAT_MODEL_RE.search(spec):
             return False
         text = '\n'.join(x for x in (d.get('title'), d.get('body'), spec) if isinstance(x, str)).lower()
-        return any(a in text for a in risk_areas)
+        return any(a in text for a in self.risk_areas)
 
-    def developer_route(n):
+    def developer_route(self, n):
         # A developer dispatch for an issue that already has an open PR is a fix
         # round: compose the gate outcome first, never dispatch past a ceiling.
         # Without a PR, a spec that touches a risk area goes through the threat
         # stage first (#837).
-        if any(p.get('issue') == n for p in prs):
-            fix_round_gate(n)
-        elif needs_threat(n):
-            say('dispatch', stage='threat', issue=n)
-        say('dispatch', stage='developer', issue=n)
+        if any(p.get('issue') == n for p in self.prs):
+            self.fix_round_gate(n)
+        elif self.needs_threat(n):
+            self.say('dispatch', stage='threat', issue=n)
+        self.say('dispatch', stage='developer', issue=n)
 
-    def route(n, labels, body):
+    # ── the stage of one issue ───────────────────────────────────────────────
+
+    def route(self, n, labels, body):
         # One stage per action, first match wins (#471, AC3).
         if BLOCKED_LABEL in labels:
-            say('wait', reason='blocked')
+            self.say('wait', reason='blocked')
         if DEV_LABEL in labels:
-            developer_route(n)
+            self.developer_route(n)
         if CONFIRMED_LABEL in labels:
-            # Epic detection feeds routing (#471, AC4); the sub-issue creation
-            # itself stays in the planner act/done path, never here.
-            if planner_on and ('epic' in labels or len(re.findall(r'- \[ \]', body)) >= 4
-                               or len(body) >= 2000):
-                say('dispatch', stage='planner', issue=n)
-            if pm_on:
-                if pm_skip:
-                    rc, _, err = run_vcs('has-spec', str(n))
-                    if rc == 0:
-                        developer_route(n)
-                    if UNSUPPORTED_RE.search(err):
-                        raise Stop('unsupported-verb:has-spec')
-                    if rc != 1:
-                        raise Stop('state-unavailable')
-                say('dispatch', stage='pm', issue=n)
-            developer_route(n)
-        if READY_LABEL in labels and validator_on:
-            say('dispatch', stage='validator', issue=n)
-        say('wait', reason='none')
+            self.route_confirmed(n, labels, body)
+        if READY_LABEL in labels and self.validator_on:
+            self.say('dispatch', stage='validator', issue=n)
+        self.say('wait', reason='none')
 
-    # A `Depends on: #<N>` line whose issue is still open gates the candidate
-    # (#471, AC2); only with roles.planner = true. An unreadable dependency is
-    # treated as open (fail closed: the issue is not chosen on a failed read).
-    def is_open(num):
-        rc, out, err = run_vcs('view-issue', num)
+    def route_confirmed(self, n, labels, body):
+        # Epic detection feeds routing (#471, AC4); the sub-issue creation
+        # itself stays in the planner act/done path, never here.
+        if self.planner_on and ('epic' in labels or len(re.findall(r'- \[ \]', body)) >= 4
+                                or len(body) >= 2000):
+            self.say('dispatch', stage='planner', issue=n)
+        if self.pm_on:
+            if self.pm_skip:
+                rc, _, err = self.run_vcs('has-spec', str(n))
+                if rc == 0:
+                    self.developer_route(n)
+                if UNSUPPORTED_RE.search(err):
+                    raise Stop('unsupported-verb:has-spec')
+                if rc != 1:
+                    raise Stop('state-unavailable')
+            self.say('dispatch', stage='pm', issue=n)
+        self.developer_route(n)
+
+    # ── the gates of a candidate ─────────────────────────────────────────────
+
+    def is_open(self, num):
+        """A `Depends on: #<N>` line whose issue is still open gates the candidate
+        (#471, AC2); only with roles.planner = true. An unreadable dependency is
+        treated as open (fail closed: the issue is not chosen on a failed read)."""
+        rc, out, err = self.run_vcs('view-issue', num)
         if rc != 0:
             if UNSUPPORTED_RE.search(err):
                 raise Stop('unsupported-verb:view-issue')
@@ -845,140 +945,156 @@ def issue_side(data, o):
         except ValueError:
             return True
 
-    def dep_gated(body):
-        return any(is_open(d) for d in re.findall(r'Depends on:\s*#([0-9]+)', body))
+    def dep_gated(self, body):
+        return any(self.is_open(d) for d in re.findall(r'Depends on:\s*#([0-9]+)', body))
 
-    # A member of a batch (#834) rides its lead's branch and PR: while the lead
-    # is open (an unreadable lead counts as open) no stage is dispatched onto it.
-    def batched(body):
+    def batched(self, body):
+        """A member of a batch (#834) rides its lead's branch and PR: while the lead
+        is open (an unreadable lead counts as open) no stage is dispatched onto it."""
         m = BATCHED_RE.search(body)
-        return bool(m) and is_open(m.group(1))
+        return bool(m) and self.is_open(m.group(1))
 
-    # Adoption (#471, AC9): a queued issue with an open pipeline PR is resumed
-    # at the PR blocking stage (the stage the collect already computed for it).
-    def adopt(n):
-        mine = sorted((p for p in prs if p.get('issue') == n and not p.get('owner')), key=lambda p: p['n'])
+    def adopt(self, n):
+        """Adoption (#471, AC9): a queued issue with an open pipeline PR is resumed
+        at the PR blocking stage (the stage the collect already computed for it)."""
+        mine = sorted((p for p in self.prs if p.get('issue') == n and not p.get('owner')), key=lambda p: p['n'])
         if mine:
-            say_line(stage_action(mine[0]['stage'], mine[0]['n'], n))
+            self.say_line(stage_action(mine[0]['stage'], mine[0]['n'], n))
 
-    def route_named(n):
-        # `next --issue <N>`, and each in-flight candidate of the untargeted walk.
-        # An issue of another operator (#560): never routed, whatever its labels say.
-        if n in theirs:
-            say('wait', reason='theirs')
-        # An issue nobody is assigned to (#949) is never routed, nor claimed here.
-        if n in unassigned:
-            say('wait', reason='unassigned')
-        if n in held or n in by_owner:
-            ask_owner(n)
-        # The issue's open pipeline PR is the PR side's, as in the unpinned
-        # next: an owner-flagged one waits, the others are resumed at their
-        # stage (#582). Only the PR of THIS issue is ever consulted.
-        waiting = [p for p in prs if p.get('issue') == n and p.get('owner')]
-        replied = [p for p in waiting if p['n'] in answered]
-        if replied:
-            say_line(answered_action(min(replied, key=lambda p: p['n'])))
-        if waiting:
-            say('wait', reason='owner')
-        if n in queued:
-            adopt(n)
-        labels, body = view_issue(n)
-        if batched(body):
-            say('wait', reason='batched')
+    # ── the named issue ──────────────────────────────────────────────────────
+
+    def route_named(self, n):
+        """`next --issue <N>`, and each in-flight candidate of the untargeted walk."""
+        self.owner_gate(n)
+        if n in self.qset:
+            self.adopt(n)
+        labels, body = self.view_issue(n)
+        if self.batched(body):
+            self.say('wait', reason='batched')
         # The developer leaves its issue with no pipeline label once the PR is
         # open (agents/developer.md step 8): the PR owns the work. Only an
         # explicit developer label keeps the fix-round routing of route().
         if DEV_LABEL not in labels:
-            adopt(n)
+            self.adopt(n)
         # A not-queued issue is the collect word: still ready means the filter or
         # the cap skipped it (a wait); past ready (confirmed/dev) the labels
         # themselves are the routing (the #471 label-parity fixtures) - and a
         # queued issue routes by its own labels as today.
-        if n not in qset and READY_LABEL in labels:
-            say('wait', reason='none')
-        route(n, labels, body)
+        if n not in self.qset and READY_LABEL in labels:
+            self.say('wait', reason='none')
+        self.route(n, labels, body)
 
-    if target:
-        try:
-            n = int(target)
-        except ValueError:
-            raise Stop('usage')
-        route_named(n)
+    # ── the walk ─────────────────────────────────────────────────────────────
 
-    # The pick (#471, AC1; #601): the in-flight and the ready issues in one order
-    # (pick_order). An in-flight candidate is routed as `next --issue` routes it
-    # and none of the ready-queue filters apply to it; one that answers a wait,
-    # or that another run holds the lease of (the wait its dispatch would get),
-    # is passed over. A ready candidate keeps every filter: the owner wait, the
-    # max_parallel cap, label_filter collapse, skip_labels, the dependency gate.
-    # With no candidate left the wait is the one the ready queue alone gives.
-    if held:
-        ask_owner(min(held))
-    inflight = [n for n in data.get('inflight') or [] if isinstance(n, int) and not isinstance(n, bool)]
-    flight = set(inflight)
-    busy = set(int(x) for x in leased if x.isdigit())
-    ready = [n for n in queued if n not in held and n not in blocked and n not in flight]
-    owner_wait = bool(blocked or owners or any(p.get('owner') for p in prs))
-    cap = None
-    dep_blocked = False
-    batched_wait = False
-    ready_wait = ''  # the wait a ready candidate's own routing answered: it ends the ready walk
-    # The ready issues whose expected files overlap an issue in flight (held or
-    # leased) go behind the others of their priority (#830). Nothing is read
-    # unless something is in flight and there is a choice to order.
-    overlapping = set()
-    busy_now = flight | busy
-    if busy_now and len(ready) > 1:
-        theirs_files = [e for e in (expected_files(m) for m in sorted(busy_now)) if e]
-        for n in ready:
-            mine = expected_files(n)
-            if mine and any(issues_overlap(mine, t) for t in theirs_files):
-                overlapping.add(n)
-    walk['on'] = True
-    for n in pick_order(data, inflight, ready, overlapping):
+    def pick(self):
+        """The candidates: the in-flight issues, and the ready ones that are
+        neither held, blocked nor in flight. Held issues answer first."""
+        if self.held:
+            self.ask_owner(min(self.held))
+        self.inflight = [n for n in self.data.get('inflight') or [] if isinstance(n, int) and not isinstance(n, bool)]
+        self.flight = set(self.inflight)
+        self.busy = set(int(x) for x in self.leased if x.isdigit())
+        self.ready = [n for n in self.queued if n not in self.held and n not in self.blocked and n not in self.flight]
+
+    def demote_overlapping(self):
+        """The ready issues whose expected files overlap an issue in flight (held or
+        leased) go behind the others of their priority (#830). Nothing is read
+        unless something is in flight and there is a choice to order."""
+        busy_now = self.flight | self.busy
+        if busy_now and len(self.ready) > 1:
+            theirs_files = [e for e in (self.expected_files(m) for m in sorted(busy_now)) if e]
+            for n in self.ready:
+                mine = self.expected_files(n)
+                if mine and any(issues_overlap(mine, t) for t in theirs_files):
+                    self.overlapping.add(n)
+
+    def capacity(self):
+        """The cap: max-parallel less the leases other runs hold; read once."""
+        if self.cap is None:
+            try:
+                self.cap = int(self.o.get('max-parallel') or '1') - len(self.leased)
+            except ValueError:
+                raise Stop('state-unavailable')
+        return self.cap
+
+    def route_ready(self, n):
+        """A ready candidate keeps every filter: the skip labels, the label
+        filter collapse, the batch and the dependency gate."""
+        labels, body = self.view_issue(n)
+        if labels & self.skip_labels:
+            return
+        if self.label_filter != READY_LABEL and self.label_filter not in labels:
+            return
+        if self.batched(body):
+            self.batched_wait = True
+            return
+        if self.planner_on and self.dep_gated(body):
+            self.dep_blocked = True
+            return
+        self.route(n, labels, body)
+
+    def visit(self, n):
+        """An in-flight candidate is routed as `next --issue` routes it and none of
+        the ready-queue filters apply to it; one that answers a wait, or that
+        another run holds the lease of (the wait its dispatch would get), is
+        passed over. A ready candidate is skipped once an owner wait or a ready
+        wait stands, or the cap is spent."""
         try:
-            if n in flight:
-                if n in busy:
-                    continue
-                route_named(n)  # answers and exits, or raises Passed
-            if owner_wait or ready_wait:
-                continue
-            if cap is None:
-                try:
-                    cap = int(o.get('max-parallel') or '1') - len(leased)
-                except ValueError:
-                    raise Stop('state-unavailable')
-            if cap <= 0:
-                continue
-            labels, body = view_issue(n)
-            if labels & skip_labels:
-                continue
-            if label_filter != READY_LABEL and label_filter not in labels:
-                continue
-            if batched(body):
-                batched_wait = True
-                continue
-            if planner_on and dep_gated(body):
-                dep_blocked = True
-                continue
-            route(n, labels, body)
+            if n in self.flight:
+                if n in self.busy:
+                    return
+                self.route_named(n)  # answers and exits, or raises Passed
+            if self.owner_wait or self.ready_wait:
+                return
+            if self.capacity() <= 0:
+                return
+            self.route_ready(n)
         except Passed as e:
-            if n not in flight:
-                ready_wait = e.args[0]
-    walk['on'] = False
-    if owner_wait:
-        say('wait', reason='owner')
-    if not ready:
-        say('wait', reason='none')
-    if cap is not None and cap <= 0:
-        say('wait', reason='cap')
-    if ready_wait:
-        say_line(ready_wait)
-    if batched_wait:
-        say('wait', reason='batched')
-    if dep_blocked:
-        say('wait', reason='dependency')
-    say('wait', reason='none')
+            if n not in self.flight:
+                self.ready_wait = e.args[0]
+
+    def walk(self):
+        """The pick (#471, AC1; #601): the in-flight and the ready issues in one order
+        (pick_order). With no candidate left the wait is the one the ready queue
+        alone gives (`finish`)."""
+        self.demote_overlapping()
+        self.walking = True
+        for n in pick_order(self.data, self.inflight, self.ready, self.overlapping):
+            self.visit(n)
+        self.walking = False
+
+    def finish(self):
+        if self.owner_wait:
+            self.say('wait', reason='owner')
+        if not self.ready:
+            self.say('wait', reason='none')
+        if self.cap is not None and self.cap <= 0:
+            self.say('wait', reason='cap')
+        if self.ready_wait:
+            self.say_line(self.ready_wait)
+        if self.batched_wait:
+            self.say('wait', reason='batched')
+        if self.dep_blocked:
+            self.say('wait', reason='dependency')
+        self.say('wait', reason='none')
+
+    def run(self):
+        target = self.o.get('issue', '')
+        if target:
+            try:
+                n = int(target)
+            except ValueError:
+                raise Stop('usage')
+            self.route_named(n)
+        self.pick()
+        self.walk()
+        self.finish()
+
+
+def issue_side(data, o):
+    """Options o (--name value): vcs budget issue roles label-filter skip-labels
+    max-parallel pm-skip risk-areas leased. Read verbs only, unbounded (no deadline)."""
+    Router(data, o).run()
 
 
 # ── where: `state --summary` ─────────────────────────────────────────────────
