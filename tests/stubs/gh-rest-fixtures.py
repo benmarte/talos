@@ -164,6 +164,8 @@ def pr_checks():
                "started_at": "2026-10-01T00:00:00Z", "completed_at": "2026-10-01T00:01:02Z" if conclusion else None}
         if len(cols) > 3:
             run["html_url"] = cols[3]
+        if len(cols) > 4 and cols[4].isdigit():   # (#1054) the check suite, which names the workflow run
+            run["check_suite"] = {"id": int(cols[4])}
         runs.append(run)
     return runs
 
