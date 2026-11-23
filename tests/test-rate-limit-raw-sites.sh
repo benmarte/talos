@@ -90,6 +90,8 @@ presync_fixture() {
   printf 'CONFLICTING' > "$STUB_DIR/pr-mergeable.out"
   printf 1 > "$STUB_DIR/pr-mergeable.rc"
   printf 0 > "$STUB_DIR/mergebase.rc"
+  # A real conflict: a clean local trial merge (#1056) would skip the sync.
+  printf 'scripts/a.sh\n' > "$STUB_DIR/conflict-files.out"
   # The mechanical sync pushes; the read after it meets the rate limit.
   printf 'printf 7 > "$d/pr-mergeable.rc"; printf "%%s\\n" "%s" > "$d/pr-mergeable.err"\n' "$RL_LINE" > "$STUB_DIR/hook.mergebase"
   printf 'PASS: criteria met\n' > "$STUB_DIR/message"
