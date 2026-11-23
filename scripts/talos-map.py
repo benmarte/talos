@@ -363,6 +363,620 @@ def fmt_tok(t):
     return "%.2fM" % (t / 1e6) if t >= 1_000_000 else ("%dk" % round(t / 1000) if t >= 1000 else str(t))
 
 
+def parse_stage_timeouts(text):
+    """agents.roles.<role>.stage_timeout_s and agents.stage_timeout_s, as
+    `<role>=<s>,...,default=<s>` (talos.sh): a stage open longer than its
+    timeout has been ended by the agent's own wrapper, so it is not running."""
+    timeouts = {}
+    for part in text.split(","):
+        k, _, v = part.partition("=")
+        if k and re.fullmatch(r"[0-9]+", v) and int(v) >= 1:
+            timeouts[k] = int(v)
+    return timeouts
+
+
+def sub_line(tag, *bits):
+    return '<div class="sub">%s%s</div>' % (tag, " · ".join(b for b in bits if b))
+
+
+class MapPage:
+    """One repository's map page. `__init__` reads the records (the events log, the
+    state snapshot and its collect, the live lanes); `judge` decides the state of
+    each issue once; then one method per section renders it, and `render` puts the
+    sections in their order."""
+
+    def __init__(self, a, slug, title_key, links, provider, now):
+        self.a, self.slug, self.title_key, self.links, self.provider, self.now = a, slug, title_key, links, provider, now
+        every = read_events(a.events)
+        self.events = [e for e in every if num(e.get("issue"))]
+        self.run_end = max((t for t in (parse_ts(e.get("ts")) for e in every if e.get("event") == "run_end") if t), default=None)
+        self.snap = read_state(a.state) or {}
+        # The queue view: the collect of the run's last state read. An empty one (no
+        # snapshot, or a run that ended before it read the state) is no queue view,
+        # never an empty queue.
+        snap = self.snap
+        self.col = snap.get("collect") if isinstance(snap.get("collect"), dict) else {}
+        self.run = snap.get("run") if isinstance(snap.get("run"), dict) else {}
+        self.col_ts = parse_ts(snap.get("collect_ts")) if self.col else None
+        self.timeouts = parse_stage_timeouts(a.stage_timeouts)
+        self.lanes, self.lanes_seen, self.lane_issues = read_lanes(os.path.join(os.path.dirname(a.state), "lanes"), now)
+        self.live_issues = {ln["issue"] for ln in self.lanes}
+        # Priority tiers, from the snapshot's own map. The collect's covers the
+        # queued and in-flight issues only: a merged issue is no longer in it.
+        self.prio = snap.get("priority") if isinstance(snap.get("priority"), dict) else {}
+
+    def missing_titles(self):
+        """`talos.sh map --refresh` asks which issues the collect lists have no cached
+        title, to decide whether one title list is worth a call. No page is written."""
+        col, a = self.col, self.a
+        listed = {n for key in ("queued", "inflight", "held") for n in col.get(key) or [] if num(n)}
+        listed |= {p["issue"] for p in col.get("prs") or [] if isinstance(p, dict) and num(p.get("issue"))}
+        listed |= {i[1] for i in col.get("blocked") or [] if isinstance(i, list) and len(i) == 2 and i[0] == "issue" and num(i[1])}
+        listed |= {o["n"] for o in col.get("owners") or [] if isinstance(o, dict) and num(o.get("n"))}
+        return sorted(n for n in listed if not title_of(a.titles, self.title_key, n))
+
+    # ── what happened: merges, the queue, the stage of each issue ────────────
+
+    def read_merges(self):
+        """by_issue, merged, elsewhere, orphans and pr_of. Merges the provider reported
+        (`talos.sh map --refresh`, #889), for work that ran elsewhere: a merge with a
+        local `merged` event keeps its local row; any other merge of the last
+        RECENT_DAYS is a "merged elsewhere" row, keyed by its issue or, with none
+        known, by its PR."""
+        by_issue = self.by_issue = {}
+        for e in self.events:
+            by_issue.setdefault(e["issue"], []).append(e)
+        merged = self.merged = {n for n, evs in by_issue.items() if any(e.get("event") == "merged" for e in evs)}
+        local_prs = {e["pr"] for evs in by_issue.values() for e in evs if e.get("event") == "merged" and num(e.get("pr"))}
+        elsewhere, orphans = self.elsewhere, self.orphans = {}, {}
+        snap = self.snap
+        for p in snap.get("merged_remote") if isinstance(snap.get("merged_remote"), list) else []:
+            at = parse_ts(p.get("mergedAt")) if isinstance(p, dict) else None
+            if not at or not num(p.get("number")) or (self.now - at).days >= RECENT_DAYS or p["number"] in local_prs:
+                continue
+            row = {"pr": p["number"], "title": str(p.get("title") or ""), "at": at}
+            if num(p.get("issue")):
+                if p["issue"] not in merged and (p["issue"] not in elsewhere or at > elsewhere[p["issue"]]["at"]):
+                    elsewhere[p["issue"]] = row
+            else:
+                orphans[p["number"]] = row
+        merged |= set(elsewhere)
+        pr_of = self.pr_of = {}
+        for n, evs in by_issue.items():
+            for e in evs:
+                if num(e.get("pr")):
+                    pr_of[n] = e["pr"]
+        for p in self.col.get("prs") or []:
+            if isinstance(p, dict) and num(p.get("issue")) and num(p.get("n")):
+                pr_of[p["issue"]] = p["n"]
+        for n, row in elsewhere.items():
+            pr_of.setdefault(n, row["pr"])
+
+    def read_queue(self):
+        """The collect's queued, in-flight and blocked issues, and those with an open PR."""
+        col = self.col
+        self.queued = [n for n in col.get("queued") or [] if num(n)]
+        self.inflight = [n for n in col.get("inflight") or [] if num(n)]
+        self.pr_issues = [p.get("issue") for p in col.get("prs") or [] if isinstance(p, dict) and num(p.get("issue"))]
+        self.blocked = set()
+        for item in col.get("blocked") or []:
+            if isinstance(item, list) and len(item) == 2 and num(item[1]):
+                self.blocked.add(item[1] if item[0] != "PR" else next(
+                    (p.get("issue") for p in col.get("prs") or [] if isinstance(p, dict) and p.get("n") == item[1]), item[1]))
+        self.held = {n for n in col.get("held") or [] if num(n)}
+        self.pr_stage = {p["issue"]: p.get("stage") for p in col.get("prs") or []
+                         if isinstance(p, dict) and num(p.get("issue")) and isinstance(p.get("stage"), str)}
+
+    def open_stage(self, evs, past_blocked=False):
+        """(stage, start ts) of the issue's latest `stage_start` while it is open
+        (no `stage_complete` and no role event of its own for that stage after
+        it, no `blocked` after it unless `past_blocked`), else None."""
+        start = next((i for i in range(len(evs) - 1, -1, -1) if evs[i].get("event") == "stage_start"), -1)
+        if start < 0:
+            return None
+        stage = evs[start].get("stage")
+        if open_starts(evs).get(stage, (-1,))[0] != start:
+            return None
+        if any((e.get("event") == "blocked" and not past_blocked)
+               or (e.get("event") == "stage_complete" and e.get("role") == stage)
+               for e in evs[start + 1:]):
+            return None
+        return stage, parse_ts(evs[start].get("ts"))
+
+    def stalled_since(self, n, evs):
+        """(stage, start) of an open stage that no lane record vouches for and
+        that is older than its stage timeout (the role's, else the global one,
+        else 6 h), or None. A lane record is its own word: the agent's wrapper
+        ends it. A `blocked` after the start does not close it here: a fix round
+        records one and the start is still unfinished (display only; whether the
+        issue is running is `stage_running`)."""
+        op = self.open_stage(evs, past_blocked=True)
+        if not op or n in self.lane_issues or not op[1]:
+            return None
+        limit = self.timeouts.get(op[0]) or self.timeouts.get("default") or STAGE_TIMEOUT_S
+        return op if (self.now - op[1]).total_seconds() > limit else None
+
+    def running_now(self, n, evs):
+        """The one rule every row and stage bar reads for what is running now:
+        the open starts, none of them once the latest start is stalled."""
+        return {} if self.stalled_since(n, evs) else open_starts(evs)
+
+    def stage_running(self, n, evs):
+        """A stage is going only while its latest `stage_start` is open and
+        something vouches for it: its lane record when it has one (live by the
+        `run_going` rule), else a start younger than its stage timeout, newer
+        than the collect and than the last run's end (no collect: the start
+        counts)."""
+        op = self.open_stage(evs)
+        if not op:
+            return False
+        if n in self.lane_issues:
+            return n in self.live_issues
+        began = op[1]
+        return not began or not (self.stalled_since(n, evs) or (self.col_ts and began < self.col_ts)
+                                 or (self.run_end and began < self.run_end))
+
+    def judge_events(self):
+        """The collect is a read at col_ts and the log goes on after it (`done` writes
+        a stage's events after the pass read the state): an issue is judged by its
+        events since then, all of them when there is no collect. Stuck means
+        waiting on a person: a stage that ended BLOCKED:, or what the collect says
+        (a gate's block, the attempt ceiling), or an unanswered owner question.
+        A failing review or QA verdict only sends the work back to the developer:
+        that is a fix round, In progress, and so is a stage that started after the
+        last failing verdict."""
+        col, col_ts, blocked, merged = self.col, self.col_ts, self.blocked, self.merged
+        moved, running, rounds = self.moved, self.running, self.rounds = set(), set(), {}
+        for n, evs in self.by_issue.items():
+            rounds[n] = sum(1 for e in evs if e.get("event") == e.get("role") and e.get("verdict") in FAILING
+                            and e.get("verdict") != "BLOCKED")
+            if n in merged:
+                continue
+            if self.stage_running(n, evs):
+                running.add(n)
+                blocked.discard(n)
+            late = [e for e in evs if not col or (col_ts and (parse_ts(e.get("ts")) or col_ts) >= col_ts)]
+            if not late:
+                continue
+            moved.add(n)
+            said = [e for e in late if e.get("event") not in ("stage_start", "stage_complete", "run_end", "hand_note", "finding_outcome", "usage")]
+            if n in running:
+                continue
+            if said and is_blocked(said[-1]):
+                blocked.add(n)
+            elif said:
+                blocked.discard(n)
+        self.asks = {o["n"]: str(o.get("question") or "(question not readable)") for o in col.get("owners") or []
+                     if isinstance(o, dict) and num(o.get("n")) and o.get("status") == "unanswered"}
+        blocked |= set(self.asks) - merged
+        # With a collect, the log alone no longer keeps an issue in flight (#878): an
+        # issue a run closed or abandoned has events after an old collect and no
+        # live label. It stays only while the collect lists it (the lists that name
+        # an issue: `capped` names verbs), a live lane works it, or a stage runs.
+        if col:
+            listed = set(self.queued) | set(self.inflight) | set(self.pr_issues) | blocked | set(self.asks) | self.held
+            moved &= listed | running | self.live_issues
+
+    def judge(self):
+        """Read the records into the state of each issue, and the issues the page shows."""
+        self.read_merges()
+        self.read_queue()
+        self.judge_events()
+        self.recent = set()
+        for n in self.merged:
+            ts = self.merged_at(n)
+            if ts and (self.now - ts).days < RECENT_DAYS:
+                self.recent.add(n)
+        self.shown = sorted(set(self.queued) | set(self.inflight) | set(self.pr_issues) | self.blocked
+                            | self.recent | self.moved | self.running)
+        # The run state: the pill and the page header.
+        self.counts = {"Done": 0, "In progress": 0, "Stuck": 0, "Not started": 0}
+        for n in self.shown:
+            self.counts[self.state(n)] += 1
+        self.counts["Done"] += len(self.orphans)
+        self.by_state = {s: [n for n in self.shown if self.state(n) == s] for s in self.counts}
+        self.waiting = []
+        for n in self.queued:
+            if self.state(n) == "Not started" and n not in self.waiting:
+                self.waiting.append(n)
+
+    def state(self, n):
+        if n in self.merged:
+            return "Done"
+        if n in self.blocked:
+            return "Stuck"
+        if n in self.inflight or n in self.pr_issues or n in self.moved or n in self.running:
+            return "In progress"
+        return "Not started"
+
+    def merged_at(self, n):
+        """When the issue merged: its local `merged` event, else the provider's time."""
+        local = parse_ts(next((e.get("ts") for e in reversed(self.by_issue.get(n, [])) if e.get("event") == "merged"), ""))
+        return local or (self.elsewhere[n]["at"] if n in self.elsewhere else None)
+
+    def tokens(self, n):
+        """The issue's recorded tokens, or None when no event carried a number.
+
+        Two rules. An issue merged elsewhere (no local `merged` event) counts only
+        its `usage` events: they are the recorded cost of work done on this machine
+        (#911), while its stage events are partial, stale ones from a run finished
+        elsewhere. Any other issue counts every non-orchestrator event."""
+        evs = [e for e in self.by_issue.get(n, []) if e.get("role") != "orchestrator"]
+        if n in self.elsewhere:
+            evs = [e for e in evs if e.get("event") == "usage"]
+        vals = [num(e.get("tokens")) for e in evs]
+        vals = [v for v in vals if v is not None]
+        return sum(vals) if vals else None
+
+    def stuck_reason(self, n):
+        if n in self.asks:
+            return self.asks[n].strip().splitlines()[0][:200] if self.asks[n].strip() else ""
+        for e in reversed(self.by_issue.get(n, [])):
+            if e.get("event") == "blocked" or e.get("verdict") in FAILING or is_blocked(e):
+                return str(e.get("summary") or e.get("verdict") or "").splitlines()[0][:200] if (e.get("summary") or e.get("verdict")) else ""
+        return ""
+
+    # ── the header and the tiles ─────────────────────────────────────────────
+
+    def header_html(self):
+        now, run, lanes = self.now, self.run, self.lanes
+        # A lane record is the word of a `talos.sh run` (#878); with none at all (a
+        # session driven by `talos.sh next` writes none) the snapshot's run entry decides.
+        self.going = bool(lanes) if self.lanes_seen else run_going(run, parse_ts(self.snap.get("ts")), now)
+        if self.going:
+            began = parse_ts(run.get("started"))
+            pill = '<span class="pill live"><span class="dot"></span>Run going%s%s</span>' % (
+                " · %d lanes" % len(lanes) if len(lanes) >= 2 else "",
+                " · started %s ago" % dur((now - began).total_seconds()) if began else "")
+        else:
+            if run.get("end"):
+                why = "last run ended: <code>%s</code>" % esc(str(run.get("end"))[:300])
+            elif run.get("active"):
+                why = "last run ended (no end line: it stopped without one)"
+            else:
+                why = "no run recorded"
+            pill = '<span class="pill idle"><span class="dot"></span>Idle · %s</span>' % why
+        return '<header><h1>%s</h1>%s<span class="meta">updated %s · reloads every %d s</span></header>' % (
+            esc(self.slug), pill, esc(when(now, now)), RELOAD_S)
+
+    def note_html(self):
+        return "" if self.col else ('<p class="note">No run state yet: the queue, the next step and the owner questions '
+                                    'appear after a <code>talos.sh run</code>. This page shows what the events log knows.</p>')
+
+    def track_html(self):
+        prio = self.prio
+        tiers = []
+        for label, val in (("p0", 0), ("p1", 1), ("p2", 2), ("unlabelled", None)):
+            ns = [n for n in self.shown if (prio.get(str(n)) == val if val is not None else str(n) not in prio)]
+            tiers.append((label, sum(1 for n in ns if self.state(n) == "Done"), len(ns)))
+        current = next((label for label, done, total in tiers if done < total), None)
+
+        def tier_html(label, done, total):
+            here = label == current
+            return ('<div class="tier">%s<span class="muted">%d of %d merged</span></div><div class="meter"><i style="width:%d%%"></i></div>'
+                    % ('<span><b>%s</b><span class="here">you are here</span></span>' % esc(label) if here else "<b>%s</b>" % esc(label),
+                       done, total, done * 100 // total))
+        return "".join(tier_html(*t) for t in tiers if t[2])
+
+    def tiles_html(self):
+        stuck, flight = self.by_state["Stuck"], self.by_state["In progress"]
+        return '<div class="kpis">%s</div>' % "".join((
+            '<a class="kpi%s" href="#needs"><b>%d</b><span>needs you</span></a>' % (" alert" if stuck else "", len(stuck)),
+            '<a class="kpi" href="#flight"><b>%d</b><span>in flight</span></a>' % len(flight),
+            '<a class="kpi" href="#queue"><b>%d</b><span>queued</span></a>' % len(self.waiting),
+            '<div class="kpi"><b>%d</b><span>merged · %d days</span></div>' % (self.counts["Done"], RECENT_DAYS),
+            '<div class="kpi"><b>%s</b><span>tokens · %d days%s</span></div>' % (
+                esc(fmt_tok(self.total) if self.recorded else "—"), RECENT_DAYS, "" if self.recorded else " · not recorded")))
+
+    # ── the rows ─────────────────────────────────────────────────────────────
+
+    def title_text(self, n):
+        return title_of(self.a.titles, self.title_key, n) or self.elsewhere.get(n, {}).get("title") or "(title not cached)"
+
+    def title_html(self, n):
+        return esc(self.title_text(n))
+
+    def head(self, n):
+        return '<div class="t">%s %s</div>' % (link(self.links.issue(n), "#%d" % n), self.title_html(n))
+
+    def tok_text(self, n):
+        t = self.tokens(n)
+        return "tokens —" if t is None else "%s tokens" % fmt_tok(t)
+
+    def pr_text(self, n):
+        pr = self.pr_of.get(n)
+        if not pr:
+            return ""
+        return "PR " + link(self.links.pr(pr), "#%d" % pr) + (" · stage " + esc(self.pr_stage[n]) if self.pr_stage.get(n) else "")
+
+    def last_line(self, n):
+        for e in reversed(self.by_issue.get(n, [])):
+            s = str(e.get("summary") or "").strip()
+            if s:
+                s = s.splitlines()[0]
+                return s if len(s) <= 120 else s[:119] + "…"
+        return ""
+
+    def stop_kind(self, n):
+        """Why a stuck issue waits, from what the map already reads. First match wins."""
+        evs = self.by_issue.get(n, [])
+        if n in self.asks:
+            return "owner"
+        stop = next((e for e in reversed(evs) if e.get("event") == "blocked" or is_blocked(e)), None)
+        if stop and stop.get("role") in ("pm", "planner"):
+            return "epic"
+        sts = dict(steps(evs, open_starts(evs)))
+        if all(sts[s] in ("done", "redone") for s in STEPS[:-1]) and sts["merge"] == "notreached":
+            return "merge"
+        return "blocked"
+
+    def stuck_at(self, n):
+        """When the issue stopped: its latest event, else the state read."""
+        evs = self.by_issue.get(n, [])
+        return (parse_ts(evs[-1].get("ts")) if evs else None) or self.col_ts
+
+    def needs_entry(self, n):
+        """A Needs you row for the registry: the text the page shows, not HTML."""
+        kind = self.stop_kind(n)
+        at = self.stuck_at(n)
+        why = " ".join(self.asks[n].split()) if kind == "owner" else self.stuck_reason(n) or STOP_WHY.get(kind) or "waiting on a person"
+        step = STOP_DO[kind] + ("." if kind in ("owner", "epic") else "")
+        return {"issue": n, "title": self.title_text(n)[:REG_TEXT_MAX], "kind": STOP_TAG[kind],
+                "since": at.strftime("%Y-%m-%dT%H:%M:%SZ") if at else "", "why": why[:REG_TEXT_MAX],
+                "next": step[:REG_TEXT_MAX], "url": self.links.issue(n)}
+
+    def needs_row(self, n):
+        evs = self.by_issue.get(n, [])
+        kind = self.stop_kind(n)
+        at = self.stuck_at(n)
+        tag = '<span class="tag stuck">%s</span>' % esc(STOP_TAG[kind] + (" · " + ago(at, self.now) if at else ""))
+        body = self.head(n) + sub_line(tag, self.pr_text(n), esc(self.tok_text(n)))
+        if kind == "owner":
+            body += '<div class="ask"><b>Question:</b> %s</div>' % esc(self.asks[n])
+        else:
+            body += '<div class="why">%s</div>' % esc(self.stuck_reason(n) or STOP_WHY.get(kind) or "waiting on a person")
+        step = link(self.links.issue(n), STOP_DO[kind]) + "." if kind in ("owner", "epic") else STOP_DO[kind]
+        return '<div class="row"><div>%s<div class="do">To continue: %s</div></div>%s</div>' % (
+            body, step, steps_html(evs, self.running_now(n, evs), kind == "merge"))
+
+    def flight_row(self, n):
+        evs = self.by_issue.get(n, [])
+        op = self.running_now(n, evs)
+        tag = ""
+        stalled = self.stalled_since(n, evs)
+        if stalled:
+            stage, since_at = stalled
+            tag = '<span class="tag stalled">%s</span>' % esc("%s · stalled since %s" % (
+                "QA" if stage == "qa" else stage, since_at.strftime("%Y-%m-%d")))
+        if op:
+            stage, (_, ts) = max(op.items(), key=lambda kv: kv[1][0])
+            began = parse_ts(ts)
+            tag = '<span class="tag run">%s</span>' % esc(("QA" if stage == "qa" else stage)
+                                                          + (" · running " + dur((self.now - began).total_seconds()) if began else ""))
+        last = self.last_line(n)
+        return '<div class="row"><div>%s%s%s</div>%s</div>' % (
+            self.head(n), sub_line(tag, "fix round %d" % self.rounds[n] if self.rounds.get(n) else "", self.pr_text(n), esc(self.tok_text(n))),
+            '<div class="why">Last: %s</div>' % esc(last) if last else "", steps_html(evs, op))
+
+    def queue_row(self, i, n):
+        p = self.prio.get(str(n))
+        chip = '<span class="pri p%d">p%d</span>' % (p, p) if num(p) is not None and p >= 0 else '<span class="pri">—</span>'
+        return ('<tr><td class="nw muted">%d</td><td class="nw">%s</td><td>%s</td><td class="nw">%s</td><td class="hide-sm muted">%s</td></tr>'
+                % (i, link(self.links.issue(n), "#%d" % n), self.title_html(n), chip,
+                   "waiting on you · pipeline:needs-owner" if n in self.held else "next free lane"))
+
+    def merged_row(self, kind, n, widest):
+        now = self.now
+        elsewhere_cell = '<span class="muted">merged elsewhere</span>'
+        if kind == "pr":
+            o = self.orphans[n]
+            return ('<tr><td class="nw">—</td><td>%s</td><td class="nw hide-sm">%s</td><td class="nw hide-sm muted">%s</td><td class="nw num">%s</td></tr>'
+                    % (esc(o["title"]) or "(no title)", link(self.links.pr(n), "#%d" % n), esc(ago(o["at"], now)), elsewhere_cell))
+        pr, t, m = self.pr_of.get(n), self.tokens(n), self.merged_at(n)
+        return ('<tr><td class="nw">%s</td><td>%s</td><td class="nw hide-sm">%s</td><td class="nw hide-sm muted">%s</td><td class="nw num">%s</td></tr>'
+                % (link(self.links.issue(n), "#%d" % n), self.title_html(n), link(self.links.pr(pr), "#%d" % pr) if pr else "—",
+                   esc(ago(m, now)) if m else "—", elsewhere_cell if n in self.elsewhere else bar(t, widest, 60)))
+
+    # ── the main column ──────────────────────────────────────────────────────
+
+    def needs_section(self):
+        stuck = self.by_state["Stuck"]
+        if not stuck:
+            return ""
+        return ('<section class="needs" id="needs"><h2>Needs you <span class="n">%d</span></h2>%s</section>'
+                % (len(stuck), "".join(self.needs_row(n) for n in stuck)))
+
+    def flight_section(self):
+        flight = self.by_state["In progress"]
+        key = "".join('<span><i style="background:var(--%s)"></i>%s</span>' % (c, w) for c, w in KEY)
+        return ('<section id="flight"><h2>In flight <span class="n">%d</span></h2><div class="key">%s</div>%s</section>'
+                % (len(flight), key, "".join(self.flight_row(n) for n in flight) or '<p class="muted">nothing in flight</p>'))
+
+    def queue_section(self):
+        if not self.waiting:
+            return ""
+        return ('<section id="queue"><h2>Queued <span class="n">%d</span></h2><table><tr><th>#</th><th>issue</th><th>title</th>'
+                '<th>priority</th><th class="hide-sm">why it waits</th></tr>%s</table></section>'
+                % (len(self.waiting), "".join(self.queue_row(i, n) for i, n in enumerate(self.waiting, 1))))
+
+    def merged_section(self):
+        if not (self.by_state["Done"] or self.orphans):
+            return ""
+        orphans = self.orphans
+        # One list of rows, newest merge first: an issue's, or a PR's that closes no known issue.
+        done = sorted([("issue", n) for n in self.by_state["Done"]] + [("pr", n) for n in orphans],
+                      key=lambda r: (orphans[r[1]]["at"] if r[0] == "pr" else self.merged_at(r[1])) or self.now, reverse=True)
+        widest = max([self.tokens(n) or 0 for kind, n in done if kind == "issue"] + [1])
+        rows = [self.merged_row(kind, n, widest) for kind, n in done]
+        more = ('<details><summary>Show %d more</summary><table>%s</table></details>' % (len(rows) - MERGED_SHOWN, "".join(rows[MERGED_SHOWN:]))
+                if len(rows) > MERGED_SHOWN else "")
+        return ('<section><h2>Merged · last %d days <span class="n">%d</span></h2><table><tr><th>issue</th><th>title</th>'
+                '<th class="hide-sm">PR</th><th class="hide-sm">merged</th><th class="num">tokens</th></tr>%s</table>%s</section>'
+                % (RECENT_DAYS, len(rows), "".join(rows[:MERGED_SHOWN]), more))
+
+    def next_bar(self):
+        """The next step, as `pipeline-next.py where` answers it for the collect."""
+        col, a = self.col, self.a
+        if not col:
+            return ""
+        nxt = ""
+        tmp = "%s.collect.%d.json" % (a.state, os.getpid())
+        try:
+            with open(tmp, "w") as f:
+                json.dump(col, f)
+            p = subprocess.run([sys.executable, "-I", os.path.join(a.scripts, "pipeline-next.py"), "where", tmp],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20)
+            for ln in p.stdout.decode("utf-8", "replace").splitlines():
+                if ln.startswith("next: "):
+                    nxt = ln[6:]
+        except Exception:
+            pass
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        return '<div class="next"><b>Next step</b> · %s%s</div>' % (
+            esc(nxt or "unknown"), ' <span class="muted">(queue as of %s)</span>' % esc(when(self.col_ts, self.now)) if self.col_ts else "")
+
+    # ── the aside ────────────────────────────────────────────────────────────
+
+    def lanes_html(self):
+        if not self.lanes:
+            return ""
+
+        def lane_row(ln):
+            began = parse_ts(ln.get("stage_start"))
+            what = " · ".join(b for b in (esc(ln.get("role") or ""), dur((self.now - began).total_seconds()) if began else "") if b)
+            return '<li><span>lane %d · %s</span><span class="muted">%s</span></li>' % (
+                ln["n"], link(self.links.issue(ln["issue"]), "#%d" % ln["issue"]), what)
+        return ('<section id="lanes"><h2>Lanes <span class="n">%d</span></h2><ul class="lanes">%s</ul></section>'
+                % (len(self.lanes), "".join(lane_row(ln) for ln in self.lanes)))
+
+    def feed_items(self, since):
+        """The activity entries since the last run started, oldest first."""
+        now, feed = self.now, []
+        for e in self.events:
+            ts = parse_ts(e.get("ts"))
+            if since and (not ts or ts < since):
+                continue
+            ev, v = e.get("event"), e.get("verdict")
+            if ev == "merged":
+                what = esc("merged" + (" PR #%d" % e["pr"] if num(e.get("pr")) else ""))
+            elif ev == "blocked":
+                what = '<span class="v-bad">blocked</span>: ' + esc(str(e.get("summary") or "")[:160])
+            elif ev == e.get("role") and v:
+                what = "%s %s" % (esc(e.get("role")), '<span class="%s">%s</span>' % (
+                    "v-bad" if v in FAILING else "v-ok", esc(v)) if v in FAILING or v in PASSING else esc(v))
+            else:
+                continue
+            old = bool(ts and ts.date() < now.date())
+            feed.append('<li><time>%s</time><span>%s %s</span></li>' % (
+                ts.strftime("%Y-%m-%d %H:%M" if old else "%H:%M") if ts else "—",
+                link(self.links.issue(e["issue"]), "#%d" % e["issue"]), what))
+        return feed
+
+    def activity_html(self):
+        """What changed since the last run started, newest first."""
+        since = parse_ts(self.run.get("started") or "")
+        feed = self.feed_items(since)[-ACTIVITY_MAX:][::-1]
+        if not feed:
+            return ""
+        later = ('<details><summary>Show %d earlier</summary><ul class="feed">%s</ul></details>'
+                 % (len(feed) - ACTIVITY_SHOWN, "".join(feed[ACTIVITY_SHOWN:])) if len(feed) > ACTIVITY_SHOWN else "")
+        return '<section><h2>Activity · %s</h2><ul class="feed">%s</ul>%s</section>' % (
+            "this run" if since else "latest", "".join(feed[:ACTIVITY_SHOWN]), later)
+
+    def spend_html(self):
+        """Spend: every issue the page shows, the five with the most tokens listed."""
+        spent = [(n, self.tokens(n)) for n in self.shown if self.tokens(n)]
+        self.total = sum(t for _, t in spent)
+        # An unknown figure is never 0: with no token number on any shown issue the
+        # tile and the registry say so (`usage` events from hand-driven subagents,
+        # #911, carry tokens like a stage event does).
+        self.recorded = any(self.tokens(n) is not None for n in self.shown)
+        top = sorted(spent, key=lambda r: (-r[1], r[0]))[:TOP_SPEND]
+        if not top:
+            return ""
+        return ('<section><h2>Top spend · %d days</h2><table>%s<tr class="total"><td class="muted">total</td>'
+                '<td class="num"><b>%s</b></td></tr></table></section>' % (
+                    RECENT_DAYS, "".join('<tr><td>%s</td><td class="num">%s</td></tr>'
+                                         % (link(self.links.issue(n), "#%d" % n), bar(t, top[0][1], 120)) for n, t in top),
+                    esc(fmt_tok(self.total))))
+
+    def aside_html(self):
+        track = self.track_html()
+        return "".join((self.lanes_html(), self.activity_html(),
+                        '<section><h2>Priority track</h2>%s</section>' % track if track else "", self.spend_html()))
+
+    # ── the page and the registry facts ──────────────────────────────────────
+
+    def render(self):
+        """The page body: header, note, tiles, next step, the main column and the aside."""
+        header, note = self.header_html(), self.note_html()
+        column = "".join((self.needs_section(), self.flight_section(), self.queue_section(), self.merged_section()))
+        nxt_bar = self.next_bar()
+        aside = self.aside_html()
+        tiles = self.tiles_html()  # after the aside: it reads the spend the aside computed
+        return "".join([header, note, tiles, nxt_bar, '<div class="grid"><main>', column, "</main><aside>", aside, "</aside></div>"])
+
+    def facts(self):
+        """What a card, or a redraw from outside the checkout, needs (#903): the
+        page's own numbers and rows as data, the same facts the run pill and the
+        Lanes panel read."""
+        a, lanes = self.a, self.lanes
+        newest = max(lanes, key=lambda ln: parse_ts(ln.get("stage_start")) or EARLIEST, default=None)
+        facts = {"provider": "github" if self.provider == "github-api" else self.provider,
+                 "tiles": {"needs": len(self.by_state["Stuck"]), "in_flight": len(self.by_state["In progress"]),
+                           "queued": len(self.waiting), "merged_7d": self.counts["Done"],
+                           "tokens_7d": self.total if self.recorded else None},
+                 "needs": [self.needs_entry(n) for n in self.by_state["Stuck"][:REG_NEEDS]],
+                 "run": {"going": bool(self.going), "lanes": len(lanes)},
+                 "state_read": self.col_ts.strftime("%Y-%m-%dT%H:%M:%SZ") if self.col_ts else None}
+        if newest:
+            facts["run"].update({"issue": newest["issue"], "role": str(newest.get("role") or ""),
+                                 "stage_since": newest.get("stage_start")})
+        if a.root:
+            facts["root"] = a.root
+        if a.config and os.path.isfile(a.config):
+            facts["config"] = a.config if os.path.isabs(a.config) else os.path.abspath(a.config)
+        return facts
+
+
+def publish(page, body, facts):
+    """Write the page and update the registry and the index under <home>/maps. The
+    index is a registry of every repository rendered under this home. Two
+    renders, or a render and `map --forget`, each read it, change it and write
+    it back: the lock makes that one step, so neither loses the other's entry."""
+    a, slug, now, counts = page.a, page.slug, page.now, page.counts
+    maps = os.path.join(a.home, "maps")
+    os.makedirs(maps, exist_ok=True)
+    reg_path = os.path.join(maps, "index.json")
+    with registry_lock(os.path.join(maps, "index.json.lock")) as locked:
+        reg = read_state(reg_path) or {}
+        # A page keeps the name it has. A new one is named by the slug with "/" as
+        # "-", plus a hash of the slug when another repository already has that
+        # name (a-b/c and a/b-c).
+        fname = (reg.get(slug) or {}).get("file") if isinstance(reg.get(slug), dict) else None
+        if not isinstance(fname, str) or not re.fullmatch(r"[A-Za-z0-9._-]+\.html", fname):
+            fname = slug.replace("/", "-") + ".html"
+            if any(isinstance(v, dict) and v.get("file") == fname for k, v in reg.items() if k != slug):
+                fname = "%s-%s.html" % (fname[:-5], hashlib.sha1(slug.encode("utf-8")).hexdigest()[:8])
+        path = os.path.join(maps, fname)
+        write(path, doc("Talos map: " + slug, scrub(body), refresh=True))
+        index = os.path.join(maps, "index.html")
+        if locked:
+            reg[slug] = dict(facts, file=fname, updated=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                             line="%d merged · %d in flight · %d stuck · %d not started"
+                                  % (counts["Done"], counts["In progress"], counts["Stuck"], counts["Not started"]))
+            write(reg_path, json.dumps(reg, indent=1, sort_keys=True))
+            write(index, index_page(reg))
+    if not locked:
+        sys.stderr.write("talos-map: registry busy, not updated (no lock within %d s)\n" % LOCK_WAIT_S)
+    print("map=" + path)
+    print("index=" + index)
+
+
 def main(argv):
     ap = argparse.ArgumentParser()
     for k in ("events", "state", "home", "provider", "repo", "azure-org", "azure-project", "scripts", "titles", "stage-timeouts",
@@ -383,526 +997,14 @@ def main(argv):
     pinned = os.environ.get("TALOS_NOW", "")
     now = (datetime.datetime.fromtimestamp(int(pinned), datetime.timezone.utc) if pinned.isdigit()
            else datetime.datetime.now(datetime.timezone.utc))
-    every = read_events(a.events)
-    events = [e for e in every if num(e.get("issue"))]
-    run_end = max((t for t in (parse_ts(e.get("ts")) for e in every if e.get("event") == "run_end") if t), default=None)
-    snap = read_state(a.state) or {}
-    # The queue view: the collect of the run's last state read. An empty one (no
-    # snapshot, or a run that ended before it read the state) is no queue view,
-    # never an empty queue.
-    col = snap.get("collect") if isinstance(snap.get("collect"), dict) else {}
-    run = snap.get("run") if isinstance(snap.get("run"), dict) else {}
-    col_ts = parse_ts(snap.get("collect_ts")) if col else None
-    # agents.roles.<role>.stage_timeout_s and agents.stage_timeout_s, as
-    # `<role>=<s>,...,default=<s>` (talos.sh): a stage open longer than its
-    # timeout has been ended by the agent's own wrapper, so it is not running.
-    timeouts = {}
-    for part in a.stage_timeouts.split(","):
-        k, _, v = part.partition("=")
-        if k and re.fullmatch(r"[0-9]+", v) and int(v) >= 1:
-            timeouts[k] = int(v)
-    lanes, lanes_seen, lane_issues = read_lanes(os.path.join(os.path.dirname(a.state), "lanes"), now)
-
+    page = MapPage(a, slug, title_key, links, provider, now)
     if a.missing_titles:
-        # `talos.sh map --refresh` asks which issues the collect lists have no cached
-        # title, to decide whether one title list is worth a call. No page is written.
-        listed = {n for key in ("queued", "inflight", "held") for n in col.get(key) or [] if num(n)}
-        listed |= {p["issue"] for p in col.get("prs") or [] if isinstance(p, dict) and num(p.get("issue"))}
-        listed |= {i[1] for i in col.get("blocked") or [] if isinstance(i, list) and len(i) == 2 and i[0] == "issue" and num(i[1])}
-        listed |= {o["n"] for o in col.get("owners") or [] if isinstance(o, dict) and num(o.get("n"))}
-        for n in sorted(n for n in listed if not title_of(a.titles, title_key, n)):
+        for n in page.missing_titles():
             print(n)
         return 0
-
-    by_issue = {}
-    for e in events:
-        by_issue.setdefault(e["issue"], []).append(e)
-    merged = {n for n, evs in by_issue.items() if any(e.get("event") == "merged" for e in evs)}
-    # Merges the provider reported (`talos.sh map --refresh`, #889), for work that ran
-    # elsewhere. A merge with a local `merged` event keeps its local row; any other
-    # merge of the last RECENT_DAYS is a "merged elsewhere" row, keyed by its issue
-    # or, with none known, by its PR.
-    local_prs = {e["pr"] for evs in by_issue.values() for e in evs if e.get("event") == "merged" and num(e.get("pr"))}
-    elsewhere, orphans = {}, {}
-    for p in snap.get("merged_remote") if isinstance(snap.get("merged_remote"), list) else []:
-        at = parse_ts(p.get("mergedAt")) if isinstance(p, dict) else None
-        if not at or not num(p.get("number")) or (now - at).days >= RECENT_DAYS or p["number"] in local_prs:
-            continue
-        row = {"pr": p["number"], "title": str(p.get("title") or ""), "at": at}
-        if num(p.get("issue")):
-            if p["issue"] not in merged and (p["issue"] not in elsewhere or at > elsewhere[p["issue"]]["at"]):
-                elsewhere[p["issue"]] = row
-        else:
-            orphans[p["number"]] = row
-    merged |= set(elsewhere)
-    pr_of = {}
-    for n, evs in by_issue.items():
-        for e in evs:
-            if num(e.get("pr")):
-                pr_of[n] = e["pr"]
-    for p in col.get("prs") or []:
-        if isinstance(p, dict) and num(p.get("issue")) and num(p.get("n")):
-            pr_of[p["issue"]] = p["n"]
-    for n, row in elsewhere.items():
-        pr_of.setdefault(n, row["pr"])
-    queued =[n for n in col.get("queued") or [] if num(n)]
-    inflight = [n for n in col.get("inflight") or [] if num(n)]
-    pr_issues = [p.get("issue") for p in col.get("prs") or [] if isinstance(p, dict) and num(p.get("issue"))]
-    blocked = set()
-    for item in col.get("blocked") or []:
-        if isinstance(item, list) and len(item) == 2 and num(item[1]):
-            blocked.add(item[1] if item[0] != "PR" else next(
-                (p.get("issue") for p in col.get("prs") or [] if isinstance(p, dict) and p.get("n") == item[1]), item[1]))
-    # The collect is a read at col_ts and the log goes on after it (`done` writes
-    # a stage's events after the pass read the state): an issue is judged by its
-    # events since then, all of them when there is no collect. Stuck means
-    # waiting on a person: a stage that ended BLOCKED:, or what the collect says
-    # (a gate's block, the attempt ceiling), or an unanswered owner question.
-    # A failing review or QA verdict only sends the work back to the developer:
-    # that is a fix round, In progress, and so is a stage that started after the
-    # last failing verdict.
-    live_issues = {ln["issue"] for ln in lanes}
-
-    def open_stage(evs, past_blocked=False):
-        """(stage, start ts) of the issue's latest `stage_start` while it is open
-        (no `stage_complete` and no role event of its own for that stage after
-        it, no `blocked` after it unless `past_blocked`), else None."""
-        start = next((i for i in range(len(evs) - 1, -1, -1) if evs[i].get("event") == "stage_start"), -1)
-        if start < 0:
-            return None
-        stage = evs[start].get("stage")
-        if open_starts(evs).get(stage, (-1,))[0] != start:
-            return None
-        if any((e.get("event") == "blocked" and not past_blocked)
-               or (e.get("event") == "stage_complete" and e.get("role") == stage)
-               for e in evs[start + 1:]):
-            return None
-        return stage, parse_ts(evs[start].get("ts"))
-
-    def stalled_since(n, evs):
-        """(stage, start) of an open stage that no lane record vouches for and
-        that is older than its stage timeout (the role's, else the global one,
-        else 6 h), or None. A lane record is its own word: the agent's wrapper
-        ends it. A `blocked` after the start does not close it here: a fix round
-        records one and the start is still unfinished (display only; whether the
-        issue is running is `stage_running`)."""
-        op = open_stage(evs, past_blocked=True)
-        if not op or n in lane_issues or not op[1]:
-            return None
-        limit = timeouts.get(op[0]) or timeouts.get("default") or STAGE_TIMEOUT_S
-        return op if (now - op[1]).total_seconds() > limit else None
-
-    def running_now(n, evs):
-        """The one rule every row and stage bar reads for what is running now:
-        the open starts, none of them once the latest start is stalled."""
-        return {} if stalled_since(n, evs) else open_starts(evs)
-
-    def stage_running(n, evs):
-        """A stage is going only while its latest `stage_start` is open and
-        something vouches for it: its lane record when it has one (live by the
-        `run_going` rule), else a start younger than its stage timeout, newer
-        than the collect and than the last run's end (no collect: the start
-        counts)."""
-        op = open_stage(evs)
-        if not op:
-            return False
-        if n in lane_issues:
-            return n in live_issues
-        began = op[1]
-        return not began or not (stalled_since(n, evs) or (col_ts and began < col_ts) or (run_end and began < run_end))
-
-    moved, running, rounds = set(), set(), {}
-    for n, evs in by_issue.items():
-        rounds[n] = sum(1 for e in evs if e.get("event") == e.get("role") and e.get("verdict") in FAILING
-                        and e.get("verdict") != "BLOCKED")
-        if n in merged:
-            continue
-        if stage_running(n, evs):
-            running.add(n)
-            blocked.discard(n)
-        late = [e for e in evs if not col or (col_ts and (parse_ts(e.get("ts")) or col_ts) >= col_ts)]
-        if not late:
-            continue
-        moved.add(n)
-        said = [e for e in late if e.get("event") not in ("stage_start", "stage_complete", "run_end", "hand_note", "finding_outcome", "usage")]
-        if n in running:
-            continue
-        if said and is_blocked(said[-1]):
-            blocked.add(n)
-        elif said:
-            blocked.discard(n)
-    asks = {o["n"]: str(o.get("question") or "(question not readable)") for o in col.get("owners") or []
-            if isinstance(o, dict) and num(o.get("n")) and o.get("status") == "unanswered"}
-    blocked |= set(asks) - merged
-    # With a collect, the log alone no longer keeps an issue in flight (#878): an
-    # issue a run closed or abandoned has events after an old collect and no
-    # live label. It stays only while the collect lists it (the lists that name
-    # an issue: `capped` names verbs), a live lane works it, or a stage runs.
-    if col:
-        listed = set(queued) | set(inflight) | set(pr_issues) | blocked | set(asks) | {n for n in col.get("held") or [] if num(n)}
-        moved &= listed | running | {ln["issue"] for ln in lanes}
-
-    def state(n):
-        if n in merged:
-            return "Done"
-        if n in blocked:
-            return "Stuck"
-        if n in inflight or n in pr_issues or n in moved or n in running:
-            return "In progress"
-        return "Not started"
-
-    def merged_at(n):
-        """When the issue merged: its local `merged` event, else the provider's time."""
-        local = parse_ts(next((e.get("ts") for e in reversed(by_issue.get(n, [])) if e.get("event") == "merged"), ""))
-        return local or (elsewhere[n]["at"] if n in elsewhere else None)
-
-    recent = set()
-    for n in merged:
-        ts = merged_at(n)
-        if ts and (now - ts).days < RECENT_DAYS:
-            recent.add(n)
-    shown = sorted(set(queued) | set(inflight) | set(pr_issues) | blocked | recent | moved | running)
-
-    def tokens(n):
-        """The issue's recorded tokens, or None when no event carried a number.
-
-        Two rules. An issue merged elsewhere (no local `merged` event) counts only
-        its `usage` events: they are the recorded cost of work done on this machine
-        (#911), while its stage events are partial, stale ones from a run finished
-        elsewhere. Any other issue counts every non-orchestrator event."""
-        evs = [e for e in by_issue.get(n, []) if e.get("role") != "orchestrator"]
-        if n in elsewhere:
-            evs = [e for e in evs if e.get("event") == "usage"]
-        vals = [num(e.get("tokens")) for e in evs]
-        vals = [v for v in vals if v is not None]
-        return sum(vals) if vals else None
-
-    def stuck_reason(n):
-        if n in asks:
-            return asks[n].strip().splitlines()[0][:200] if asks[n].strip() else ""
-        for e in reversed(by_issue.get(n, [])):
-            if e.get("event") == "blocked" or e.get("verdict") in FAILING or is_blocked(e):
-                return str(e.get("summary") or e.get("verdict") or "").splitlines()[0][:200] if (e.get("summary") or e.get("verdict")) else ""
-        return ""
-
-    # The run state: the pill and the page header.
-    name = slug
-    counts = {"Done": 0, "In progress": 0, "Stuck": 0, "Not started": 0}
-    for n in shown:
-        counts[state(n)] += 1
-    counts["Done"] += len(orphans)
-    # A lane record is the word of a `talos.sh run` (#878); with none at all (a
-    # session driven by `talos.sh next` writes none) the snapshot's run entry decides.
-    going = bool(lanes) if lanes_seen else run_going(run, parse_ts(snap.get("ts")), now)
-    if going:
-        began = parse_ts(run.get("started"))
-        pill = '<span class="pill live"><span class="dot"></span>Run going%s%s</span>' % (
-            " · %d lanes" % len(lanes) if len(lanes) >= 2 else "",
-            " · started %s ago" % dur((now - began).total_seconds()) if began else "")
-    else:
-        if run.get("end"):
-            why = "last run ended: <code>%s</code>" % esc(str(run.get("end"))[:300])
-        elif run.get("active"):
-            why = "last run ended (no end line: it stopped without one)"
-        else:
-            why = "no run recorded"
-        pill = '<span class="pill idle"><span class="dot"></span>Idle · %s</span>' % why
-    header = '<header><h1>%s</h1>%s<span class="meta">updated %s · reloads every %d s</span></header>' % (
-        esc(name), pill, esc(when(now, now)), RELOAD_S)
-    note = "" if col else ('<p class="note">No run state yet: the queue, the next step and the owner questions '
-                           'appear after a <code>talos.sh run</code>. This page shows what the events log knows.</p>')
-
-    # Priority tiers, from the snapshot's own map. The collect's covers the
-    # queued and in-flight issues only: a merged issue is no longer in it.
-    prio = snap.get("priority") if isinstance(snap.get("priority"), dict) else {}
-    tiers = []
-    for label, val in (("p0", 0), ("p1", 1), ("p2", 2), ("unlabelled", None)):
-        ns = [n for n in shown if (prio.get(str(n)) == val if val is not None else str(n) not in prio)]
-        tiers.append((label, sum(1 for n in ns if state(n) == "Done"), len(ns)))
-    current = next((label for label, done, total in tiers if done < total), None)
-
-    def tier_html(label, done, total):
-        here = label == current
-        return ('<div class="tier">%s<span class="muted">%d of %d merged</span></div><div class="meter"><i style="width:%d%%"></i></div>'
-                % ('<span><b>%s</b><span class="here">you are here</span></span>' % esc(label) if here else "<b>%s</b>" % esc(label),
-                   done, total, done * 100 // total))
-    track = "".join(tier_html(*t) for t in tiers if t[2])
-
-    # Parts: needs you, in flight, queued, merged. Each issue is in one of them.
-    pr_stage = {p["issue"]: p.get("stage") for p in col.get("prs") or []
-                if isinstance(p, dict) and num(p.get("issue")) and isinstance(p.get("stage"), str)}
-    held = {n for n in col.get("held") or [] if num(n)}
-
-    def title_text(n):
-        return title_of(a.titles, title_key, n) or elsewhere.get(n, {}).get("title") or "(title not cached)"
-
-    def title_html(n):
-        return esc(title_text(n))
-
-    def head(n):
-        return '<div class="t">%s %s</div>' % (link(links.issue(n), "#%d" % n), title_html(n))
-
-    def tok_text(n):
-        t = tokens(n)
-        return "tokens —" if t is None else "%s tokens" % fmt_tok(t)
-
-    def pr_text(n):
-        pr = pr_of.get(n)
-        if not pr:
-            return ""
-        return "PR " + link(links.pr(pr), "#%d" % pr) + (" · stage " + esc(pr_stage[n]) if pr_stage.get(n) else "")
-
-    def sub(n, tag, *bits):
-        return '<div class="sub">%s%s</div>' % (tag, " · ".join(b for b in bits if b))
-
-    def last_line(n):
-        for e in reversed(by_issue.get(n, [])):
-            s = str(e.get("summary") or "").strip()
-            if s:
-                s = s.splitlines()[0]
-                return s if len(s) <= 120 else s[:119] + "…"
-        return ""
-
-    def stop_kind(n):
-        """Why a stuck issue waits, from what the map already reads. First match wins."""
-        evs = by_issue.get(n, [])
-        if n in asks:
-            return "owner"
-        stop = next((e for e in reversed(evs) if e.get("event") == "blocked" or is_blocked(e)), None)
-        if stop and stop.get("role") in ("pm", "planner"):
-            return "epic"
-        sts = dict(steps(evs, open_starts(evs)))
-        if all(sts[s] in ("done", "redone") for s in STEPS[:-1]) and sts["merge"] == "notreached":
-            return "merge"
-        return "blocked"
-
-    def stuck_at(n):
-        """When the issue stopped: its latest event, else the state read."""
-        evs = by_issue.get(n, [])
-        return (parse_ts(evs[-1].get("ts")) if evs else None) or col_ts
-
-    def needs_entry(n):
-        """A Needs you row for the registry: the text the page shows, not HTML."""
-        kind = stop_kind(n)
-        at = stuck_at(n)
-        why = " ".join(asks[n].split()) if kind == "owner" else stuck_reason(n) or STOP_WHY.get(kind) or "waiting on a person"
-        step = STOP_DO[kind] + ("." if kind in ("owner", "epic") else "")
-        return {"issue": n, "title": title_text(n)[:REG_TEXT_MAX], "kind": STOP_TAG[kind],
-                "since": at.strftime("%Y-%m-%dT%H:%M:%SZ") if at else "", "why": why[:REG_TEXT_MAX],
-                "next": step[:REG_TEXT_MAX], "url": links.issue(n)}
-
-    def needs_row(n):
-        evs = by_issue.get(n, [])
-        kind = stop_kind(n)
-        at = stuck_at(n)
-        tag = '<span class="tag stuck">%s</span>' % esc(STOP_TAG[kind] + (" · " + ago(at, now) if at else ""))
-        body = head(n) + sub(n, tag, pr_text(n), esc(tok_text(n)))
-        if kind == "owner":
-            body += '<div class="ask"><b>Question:</b> %s</div>' % esc(asks[n])
-        else:
-            body += '<div class="why">%s</div>' % esc(stuck_reason(n) or STOP_WHY.get(kind) or "waiting on a person")
-        step = link(links.issue(n), STOP_DO[kind]) + "." if kind in ("owner", "epic") else STOP_DO[kind]
-        return '<div class="row"><div>%s<div class="do">To continue: %s</div></div>%s</div>' % (
-            body, step, steps_html(evs, running_now(n, evs), kind == "merge"))
-
-    def flight_row(n):
-        evs = by_issue.get(n, [])
-        op = running_now(n, evs)
-        tag = ""
-        stalled = stalled_since(n, evs)
-        if stalled:
-            stage, since_at = stalled
-            tag = '<span class="tag stalled">%s</span>' % esc("%s · stalled since %s" % (
-                "QA" if stage == "qa" else stage, since_at.strftime("%Y-%m-%d")))
-        if op:
-            stage, (_, ts) = max(op.items(), key=lambda kv: kv[1][0])
-            began = parse_ts(ts)
-            tag = '<span class="tag run">%s</span>' % esc(("QA" if stage == "qa" else stage)
-                                                          + (" · running " + dur((now - began).total_seconds()) if began else ""))
-        last = last_line(n)
-        return '<div class="row"><div>%s%s%s</div>%s</div>' % (
-            head(n), sub(n, tag, "fix round %d" % rounds[n] if rounds.get(n) else "", pr_text(n), esc(tok_text(n))),
-            '<div class="why">Last: %s</div>' % esc(last) if last else "", steps_html(evs, op))
-
-    by_state = {s: [n for n in shown if state(n) == s] for s in counts}
-    main = []
-    if by_state["Stuck"]:
-        main.append('<section class="needs" id="needs"><h2>Needs you <span class="n">%d</span></h2>%s</section>'
-                    % (len(by_state["Stuck"]), "".join(needs_row(n) for n in by_state["Stuck"])))
-    key = "".join('<span><i style="background:var(--%s)"></i>%s</span>' % (c, w) for c, w in KEY)
-    main.append('<section id="flight"><h2>In flight <span class="n">%d</span></h2><div class="key">%s</div>%s</section>'
-                % (len(by_state["In progress"]), key,
-                   "".join(flight_row(n) for n in by_state["In progress"]) or '<p class="muted">nothing in flight</p>'))
-    waiting = []
-    for n in queued:
-        if state(n) == "Not started" and n not in waiting:
-            waiting.append(n)
-    if waiting:
-        def queue_row(i, n):
-            p = prio.get(str(n))
-            chip = '<span class="pri p%d">p%d</span>' % (p, p) if num(p) is not None and p >= 0 else '<span class="pri">—</span>'
-            return ('<tr><td class="nw muted">%d</td><td class="nw">%s</td><td>%s</td><td class="nw">%s</td><td class="hide-sm muted">%s</td></tr>'
-                    % (i, link(links.issue(n), "#%d" % n), title_html(n), chip,
-                       "waiting on you · pipeline:needs-owner" if n in held else "next free lane"))
-        main.append('<section id="queue"><h2>Queued <span class="n">%d</span></h2><table><tr><th>#</th><th>issue</th><th>title</th>'
-                    '<th>priority</th><th class="hide-sm">why it waits</th></tr>%s</table></section>'
-                    % (len(waiting), "".join(queue_row(i, n) for i, n in enumerate(waiting, 1))))
-    if by_state["Done"] or orphans:
-        # One list of rows, newest merge first: an issue's, or a PR's that closes no known issue.
-        done = sorted([("issue", n) for n in by_state["Done"]] + [("pr", n) for n in orphans],
-                      key=lambda r: (orphans[r[1]]["at"] if r[0] == "pr" else merged_at(r[1])) or now, reverse=True)
-        widest = max([tokens(n) or 0 for kind, n in done if kind == "issue"] + [1])
-        elsewhere_cell = '<span class="muted">merged elsewhere</span>'
-
-        def merged_row(kind, n):
-            if kind == "pr":
-                o = orphans[n]
-                return ('<tr><td class="nw">—</td><td>%s</td><td class="nw hide-sm">%s</td><td class="nw hide-sm muted">%s</td><td class="nw num">%s</td></tr>'
-                        % (esc(o["title"]) or "(no title)", link(links.pr(n), "#%d" % n), esc(ago(o["at"], now)), elsewhere_cell))
-            pr, t, m = pr_of.get(n), tokens(n), merged_at(n)
-            return ('<tr><td class="nw">%s</td><td>%s</td><td class="nw hide-sm">%s</td><td class="nw hide-sm muted">%s</td><td class="nw num">%s</td></tr>'
-                    % (link(links.issue(n), "#%d" % n), title_html(n), link(links.pr(pr), "#%d" % pr) if pr else "—",
-                       esc(ago(m, now)) if m else "—", elsewhere_cell if n in elsewhere else bar(t, widest, 60)))
-        rows = [merged_row(*r) for r in done]
-        more = ('<details><summary>Show %d more</summary><table>%s</table></details>' % (len(rows) - MERGED_SHOWN, "".join(rows[MERGED_SHOWN:]))
-                if len(rows) > MERGED_SHOWN else "")
-        main.append('<section><h2>Merged · last %d days <span class="n">%d</span></h2><table><tr><th>issue</th><th>title</th>'
-                    '<th class="hide-sm">PR</th><th class="hide-sm">merged</th><th class="num">tokens</th></tr>%s</table>%s</section>'
-                    % (RECENT_DAYS, len(rows), "".join(rows[:MERGED_SHOWN]), more))
-
-    # Next step.
-    nxt_bar = ""
-    if col:
-        nxt = ""
-        tmp = "%s.collect.%d.json" % (a.state, os.getpid())
-        try:
-            with open(tmp, "w") as f:
-                json.dump(col, f)
-            p = subprocess.run([sys.executable, "-I", os.path.join(a.scripts, "pipeline-next.py"), "where", tmp],
-                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20)
-            for ln in p.stdout.decode("utf-8", "replace").splitlines():
-                if ln.startswith("next: "):
-                    nxt = ln[6:]
-        except Exception:
-            pass
-        finally:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-        nxt_bar = '<div class="next"><b>Next step</b> · %s%s</div>' % (
-            esc(nxt or "unknown"), ' <span class="muted">(queue as of %s)</span>' % esc(when(col_ts, now)) if col_ts else "")
-
-    # Activity: what changed since the last run started, newest first.
-    since = parse_ts(run.get("started") or "")
-    feed = []
-    for e in events:
-        ts = parse_ts(e.get("ts"))
-        if since and (not ts or ts < since):
-            continue
-        ev, v = e.get("event"), e.get("verdict")
-        if ev == "merged":
-            what = esc("merged" + (" PR #%d" % e["pr"] if num(e.get("pr")) else ""))
-        elif ev == "blocked":
-            what = '<span class="v-bad">blocked</span>: ' + esc(str(e.get("summary") or "")[:160])
-        elif ev == e.get("role") and v:
-            what = "%s %s" % (esc(e.get("role")), '<span class="%s">%s</span>' % (
-                "v-bad" if v in FAILING else "v-ok", esc(v)) if v in FAILING or v in PASSING else esc(v))
-        else:
-            continue
-        old = bool(ts and ts.date() < now.date())
-        feed.append('<li><time>%s</time><span>%s %s</span></li>' % (
-            ts.strftime("%Y-%m-%d %H:%M" if old else "%H:%M") if ts else "—",
-            link(links.issue(e["issue"]), "#%d" % e["issue"]), what))
-    feed = feed[-ACTIVITY_MAX:][::-1]
-    aside = []
-    if lanes:
-        def lane_row(ln):
-            began = parse_ts(ln.get("stage_start"))
-            what = " · ".join(b for b in (esc(ln.get("role") or ""), dur((now - began).total_seconds()) if began else "") if b)
-            return '<li><span>lane %d · %s</span><span class="muted">%s</span></li>' % (
-                ln["n"], link(links.issue(ln["issue"]), "#%d" % ln["issue"]), what)
-        aside.append('<section id="lanes"><h2>Lanes <span class="n">%d</span></h2><ul class="lanes">%s</ul></section>'
-                     % (len(lanes), "".join(lane_row(ln) for ln in lanes)))
-    if feed:
-        later = ('<details><summary>Show %d earlier</summary><ul class="feed">%s</ul></details>'
-                 % (len(feed) - ACTIVITY_SHOWN, "".join(feed[ACTIVITY_SHOWN:])) if len(feed) > ACTIVITY_SHOWN else "")
-        aside.append('<section><h2>Activity · %s</h2><ul class="feed">%s</ul>%s</section>' % (
-            "this run" if since else "latest", "".join(feed[:ACTIVITY_SHOWN]), later))
-    if track:
-        aside.append('<section><h2>Priority track</h2>%s</section>' % track)
-
-    # Spend: every issue the page shows, the five with the most tokens listed.
-    spent = [(n, tokens(n)) for n in shown if tokens(n)]
-    total = sum(t for _, t in spent)
-    # An unknown figure is never 0: with no token number on any shown issue the
-    # tile and the registry say so (`usage` events from hand-driven subagents,
-    # #911, carry tokens like a stage event does).
-    recorded = any(tokens(n) is not None for n in shown)
-    top = sorted(spent, key=lambda r: (-r[1], r[0]))[:TOP_SPEND]
-    if top:
-        aside.append('<section><h2>Top spend · %d days</h2><table>%s<tr class="total"><td class="muted">total</td>'
-                     '<td class="num"><b>%s</b></td></tr></table></section>' % (
-                         RECENT_DAYS, "".join('<tr><td>%s</td><td class="num">%s</td></tr>'
-                                              % (link(links.issue(n), "#%d" % n), bar(t, top[0][1], 120)) for n, t in top),
-                         esc(fmt_tok(total))))
-
-    tiles = '<div class="kpis">%s</div>' % "".join((
-        '<a class="kpi%s" href="#needs"><b>%d</b><span>needs you</span></a>' % (" alert" if by_state["Stuck"] else "", len(by_state["Stuck"])),
-        '<a class="kpi" href="#flight"><b>%d</b><span>in flight</span></a>' % len(by_state["In progress"]),
-        '<a class="kpi" href="#queue"><b>%d</b><span>queued</span></a>' % len(waiting),
-        '<div class="kpi"><b>%d</b><span>merged · %d days</span></div>' % (counts["Done"], RECENT_DAYS),
-        '<div class="kpi"><b>%s</b><span>tokens · %d days%s</span></div>' % (
-            esc(fmt_tok(total) if recorded else "—"), RECENT_DAYS, "" if recorded else " · not recorded")))
-    parts = [header, note, tiles, nxt_bar, '<div class="grid"><main>', "".join(main), "</main><aside>", "".join(aside), "</aside></div>"]
-
-    # What a card, or a redraw from outside the checkout, needs (#903): the
-    # page's own numbers and rows as data, the same facts the run pill and the
-    # Lanes panel read.
-    newest = max(lanes, key=lambda ln: parse_ts(ln.get("stage_start")) or EARLIEST, default=None)
-    facts = {"provider": "github" if provider == "github-api" else provider,
-             "tiles": {"needs": len(by_state["Stuck"]), "in_flight": len(by_state["In progress"]), "queued": len(waiting),
-                       "merged_7d": counts["Done"], "tokens_7d": total if recorded else None},
-             "needs": [needs_entry(n) for n in by_state["Stuck"][:REG_NEEDS]],
-             "run": {"going": bool(going), "lanes": len(lanes)},
-             "state_read": col_ts.strftime("%Y-%m-%dT%H:%M:%SZ") if col_ts else None}
-    if newest:
-        facts["run"].update({"issue": newest["issue"], "role": str(newest.get("role") or ""),
-                             "stage_since": newest.get("stage_start")})
-    if a.root:
-        facts["root"] = a.root
-    if a.config and os.path.isfile(a.config):
-        facts["config"] = a.config if os.path.isabs(a.config) else os.path.abspath(a.config)
-
-    maps = os.path.join(a.home, "maps")
-    os.makedirs(maps, exist_ok=True)
-    # The index: a registry of every repository rendered under this home. Two
-    # renders, or a render and `map --forget`, each read it, change it and write
-    # it back: the lock makes that one step, so neither loses the other's entry.
-    reg_path = os.path.join(maps, "index.json")
-    with registry_lock(os.path.join(maps, "index.json.lock")) as locked:
-        reg = read_state(reg_path) or {}
-        # A page keeps the name it has. A new one is named by the slug with "/" as
-        # "-", plus a hash of the slug when another repository already has that
-        # name (a-b/c and a/b-c).
-        fname = (reg.get(slug) or {}).get("file") if isinstance(reg.get(slug), dict) else None
-        if not isinstance(fname, str) or not re.fullmatch(r"[A-Za-z0-9._-]+\.html", fname):
-            fname = slug.replace("/", "-") + ".html"
-            if any(isinstance(v, dict) and v.get("file") == fname for k, v in reg.items() if k != slug):
-                fname = "%s-%s.html" % (fname[:-5], hashlib.sha1(slug.encode("utf-8")).hexdigest()[:8])
-        page = os.path.join(maps, fname)
-        write(page, doc("Talos map: " + name, scrub("".join(parts)), refresh=True))
-        index = os.path.join(maps, "index.html")
-        if locked:
-            reg[slug] = dict(facts, file=fname, updated=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                             line="%d merged · %d in flight · %d stuck · %d not started"
-                                  % (counts["Done"], counts["In progress"], counts["Stuck"], counts["Not started"]))
-            write(reg_path, json.dumps(reg, indent=1, sort_keys=True))
-            write(index, index_page(reg))
-    if not locked:
-        sys.stderr.write("talos-map: registry busy, not updated (no lock within %d s)\n" % LOCK_WAIT_S)
-    print("map=" + page)
-    print("index=" + index)
+    page.judge()
+    body = page.render()
+    publish(page, body, page.facts())
     return 0
 
 
