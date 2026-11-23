@@ -491,7 +491,7 @@
 #         stage's final message never does (stderr has the `note` lines and the
 #         `dispatch-failed ... reason=<why>` line). The playbook's end-state
 #         table (skills/pipeline/SKILL.md) has one action for each end.
-# run-reasons: qa-comment-missing usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable map-failed worktree-unavailable same-verdict-same-head verify-timeout qa-flaky config-mutated environment
+# run-reasons: qa-comment-missing usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable map-failed worktree-unavailable same-verdict-same-head verify-timeout qa-flaky config-mutated environment issue-closed
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         state-unavailable ready-pr-failed draft-unverified head-unresolved
 #         merge-failed provider-failed config-mutated worktree-unavailable (exit 1; 2 for usage),
