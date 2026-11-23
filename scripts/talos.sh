@@ -2383,7 +2383,7 @@ _talos_queue_run() {
 _talos_gate_merge() {
   [ "$#" -eq 2 ] || _talos_stop usage 2
   local _pr="$1" _n="$2" _prl _isl _all _missing="" _line _r _stale="" _stalelist=""
-  local _draft _cierr _sha _cnt _synced=0 _m _MEMBERS
+  local _draft _cierr _sha _cnt _m _MEMBERS
   _talos_isnum "$_pr" && _talos_isnum "$_n" || _talos_stop usage 2
   _talos_prepare gate-merge pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
                             pipeline-draft-check.sh pipeline-notify.sh pipeline-mergebase.sh
@@ -2567,20 +2567,27 @@ _talos_gate_merge() {
         # Fail closed: a conflict check that cannot run never ends in a merge.
         _talos_emit reason conflict-check-unverified
         _talos_verdict wait
-      elif [ -n "$_OUT" ]; then
+      elif [ -z "$_OUT" ]; then
+        # No conflict locally: a PR the provider still reads CONFLICTING is its
+        # field lagging a push, not a conflict. Anything else goes on to the merge.
+        _talos_cap _vcs pr-mergeable "$_pr"
+        if [ "$_RC" -eq 1 ]; then
+          _talos_emit reason base-synced
+          _talos_verdict wait
+        fi
+      else
         if bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_pr" > /dev/null; then
-          _synced=1
+          # The sync pushed a merged head: the provider's field catches up later.
+          _talos_emit reason base-synced
+          _talos_verdict wait
         elif [ "$(cfg merge.auto_sync)" = "true" ]; then
           _talos_cap _vcs update-branch "$_pr"
-          [ "$_RC" -ne 0 ] || _synced=1
-        fi
-        if [ "$_synced" -eq 1 ]; then
-          # The sync just pushed: the provider may still read CONFLICTING for a
-          # while, so a trial merge that comes back clean ends in the wait too.
-          _talos_cap _vcs pr-mergeable "$_pr"
-          if [ "$_RC" -ne 1 ] || _talos_local_clean "$_pr"; then
-            _talos_emit reason base-synced
-            _talos_verdict wait
+          if [ "$_RC" -eq 0 ]; then
+            _talos_cap _vcs pr-mergeable "$_pr"
+            if [ "$_RC" -ne 1 ]; then
+              _talos_emit reason base-synced
+              _talos_verdict wait
+            fi
           fi
         fi
         _talos_emit reason merge-conflict
