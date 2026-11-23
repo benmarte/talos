@@ -172,3 +172,14 @@ talos_claim_resolve() {
   TALOS_CLAIM_STATE="$_tc_state"
   export TALOS_CLAIM_STATE
 }
+
+# _talos_repo -> prints "owner/name": the `repo` or `vcs.repo` key, else the
+# origin remote (_talos_remote_slug, pipeline-paths.sh). Shared by
+# pipeline-hooks.sh and pipeline-eval.sh (#1014); nothing when none resolves.
+_talos_repo() {
+  local repo
+  repo="$(cfg repo)"
+  [ -n "$repo" ] || repo="$(cfg vcs.repo)"
+  [ -n "$repo" ] || repo="$(_talos_remote_slug "$(git remote get-url origin 2>/dev/null)")"
+  printf '%s' "$repo"
+}

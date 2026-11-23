@@ -126,23 +126,19 @@
 #   Git history is never modified. Nothing is committed.
 set -euo pipefail
 
-# printable <text> -- <text> with every control character replaced by `?`, for
-# paths, arguments and tool output echoed to the terminal: a path from the
-# environment, an argument, a marketplace JSON entry or `claude` output must not
-# be able to inject an escape sequence into the install log. That is C0 + DEL
-# and the UTF-8 C1 controls (U+0080-U+009F, bytes c2 80..c2 9f; U+009B is a
-# one-character CSI), the same set pipeline-agent.sh strips in _plain. They are
-# replaced, never deleted: deleting can join the bytes either side into a new
-# control (c2 c2 9b 9b -> c2 9b, c2 1b 9b -> c2 9b), a `?` cannot. tr takes the
-# single-byte ones, sed the two-byte ones (no python3 needed). Other UTF-8 text
-# passes through. Defined first: the argument parser below echoes with it.
-_P_C2=$'\xc2'; _P_LO=$'\x80'; _P_HI=$'\x9f'
-printable() {
-  printf '%s' "$1" | LC_ALL=C tr '\000-\037\177' '?' \
-    | LC_ALL=C sed "s/${_P_C2}[${_P_LO}-${_P_HI}]/?/g"
-}
-
 SRC="$(cd "$(dirname "$0")" && pwd)"
+# printable <text> -- <text> with every control character replaced by `?`, for
+# paths, arguments and tool output echoed to the terminal (the install log must
+# not carry an injected escape sequence). It lives in scripts/pipeline-paths.sh,
+# shared with pipeline-instructions.sh (#1014). Sourced first: the argument
+# parser below echoes with it.
+if [ -f "$SRC/scripts/pipeline-paths.sh" ]; then
+  # shellcheck source=scripts/pipeline-paths.sh
+  . "$SRC/scripts/pipeline-paths.sh"
+else
+  echo "error: $SRC/scripts/pipeline-paths.sh is missing; this is not a complete Talos source tree" >&2
+  exit 1
+fi
 TARGET=""
 FORCE_MODE=""       # "overwrite" | "no-overwrite" | "" (default varies by mode)
 # --harness: raw value, whether it was given (an empty value is an error, so it

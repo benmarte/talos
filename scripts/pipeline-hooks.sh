@@ -283,19 +283,6 @@ _validate_nonneg_int() {
   printf '%s' "$raw"
 }
 
-# _hooks_repo -> prints "owner/name", resolved from config or the origin remote.
-_hooks_repo() {
-  local repo
-  repo="$(cfg repo)"
-  [ -n "$repo" ] || repo="$(cfg vcs.repo)"
-  if [ -z "$repo" ]; then
-    repo="$(git remote get-url origin 2>/dev/null \
-      | sed -E 's#^git@([^:/]+)[:/]#https://\1/#; s#\.git$##' \
-      | sed -E 's#^https://[^/]+/##')"
-  fi
-  printf '%s' "$repo"
-}
-
 # _hooks_run <hook_cmd> <timeout_s> <stdin_json> <role> <issue> <worktree>
 # Runs <hook_cmd> with <stdin_json> on stdin under talos_bounded and sets:
 #   _HOOKS_RUN_RC   the command's exit code, or non-zero if it was killed at the
@@ -346,7 +333,7 @@ pre_dispatch() {
   timeout_s="$(_hooks_timeout_s)"
 
   local repo base_branch
-  repo="$(_hooks_repo)"
+  repo="$(_talos_repo)"
   base_branch="$(cfg base_branch)"
 
   # ── Build the stdin JSON via python3 json.dumps (never string-concat) ──────
@@ -514,7 +501,7 @@ post_stage() {
   hook_cmd="$(cfg hooks.post_stage)"
 
   local repo
-  repo="$(_hooks_repo)"
+  repo="$(_talos_repo)"
 
   local model runner
   runner="$(cfg agents.runner)"
@@ -693,7 +680,7 @@ run_end() {
     case "${2:-}" in ''|*[!0-9]*) _hooks_usage; exit 2 ;; esac
     issue="$2"
   fi
-  _events_append "$(TALOS_RE_LINE="$line" TALOS_RE_ISSUE="$issue" TALOS_RE_REPO="$(_hooks_repo)" python3 -I -c '
+  _events_append "$(TALOS_RE_LINE="$line" TALOS_RE_ISSUE="$issue" TALOS_RE_REPO="$(_talos_repo)" python3 -I -c '
 import datetime, json, os
 e = os.environ
 words = {}
@@ -798,7 +785,7 @@ except OSError:
 sys.exit(1)' && return 0
   fi
   _events_append "$(TALOS_HE_EVENT="$event" TALOS_HE_ROLE="$role" TALOS_HE_ISSUE="$issue" TALOS_HE_PR="$pr" \
-    TALOS_HE_SHA="$sha" TALOS_HE_VERDICT="$verdict" TALOS_HE_REPO="$(_hooks_repo)" python3 -I -c '
+    TALOS_HE_SHA="$sha" TALOS_HE_VERDICT="$verdict" TALOS_HE_REPO="$(_talos_repo)" python3 -I -c '
 import datetime, json, os
 e = os.environ
 print(json.dumps({

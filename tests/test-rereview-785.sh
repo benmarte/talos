@@ -370,7 +370,7 @@ else
 fi
 
 # ── AC17: the same-area check ignores everything under **Non-blocking notes:** ──
-eval "$(sed -n "/^_TALOS_AREA_PY='/,/^'\$/p" "$TALOS_ROOT/scripts/talos.sh")"
+eval "$(sed -n "/^_TALOS_COMMENT_PY='/,/^'\$/p; /^_TALOS_AREA_PY=/,/^'\$/p" "$TALOS_ROOT/scripts/talos.sh")"
 notes_body() {  # FILE IMPORTANT-PATH NOTE-PATH: one Important finding, a Nit and a Pre-existing note
   printf '**Agent:** reviewer (talos)\n\n**Review:** CHANGES — 1 finding\n\n- [Important] %s:1 — a real defect\n\n**Non-blocking notes:**\n- [Nit] %s:9 — naming\n- [Pre-existing] %s:3 — old\n' "$2" "$3" "$3" > "$1"
 }

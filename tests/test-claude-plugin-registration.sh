@@ -137,16 +137,13 @@ has_ctl() {
 # The sanitisers themselves. Deleting a control can join its neighbours into a
 # new one (c2 c2 9b 9b -> c2 9b, c2 1b 9b -> c2 9b), so no output may hold an
 # ESC or a c2 80..c2 9f pair, whatever the input; other UTF-8 passes through.
-eval "$(awk '/^_P_C2=/{p=1} p{print} p&&/^}/{exit}' "$INSTALL")"
-eval "$(awk '/^_P_C2=/{p=1} p{print} p&&/^}/{exit}' "$TALOS_ROOT/scripts/pipeline-instructions.sh")"
+eval "$(awk '/^_P_C2=/{p=1} p{print} p&&/^}/{exit}' "$TALOS_ROOT/scripts/pipeline-paths.sh")"
 for _in in "$(printf '\302\302\233\233')" "$(printf '\302\033\233')" "$(printf '\302\302\302\200\200\200')" \
            "$(printf '\033\302\033\233\233')" "$(printf '\302\t\233\177')" "$(printf 'a\033[31mb\302\233c')"; do
   assert_eq "0" "$(has_ctl "$(printable "$_in")")" "printable: no ESC or C1 control survives input $(printf '%s' "$_in" | od -An -tx1 | tr -d '\n')"
-  assert_eq "0" "$(has_ctl "$(_printable "$_in")")" "_printable: no ESC or C1 control survives input $(printf '%s' "$_in" | od -An -tx1 | tr -d '\n')"
 done
 _ok="$(printf 'caf\303\251 \303\204 \342\202\254 \342\202\233 \302\240x')"
 assert_eq "$_ok" "$(printable "$_ok")" "printable: e-acute, A-umlaut, euro, e2 82 9b and c2 a0 pass through"
-assert_eq "$_ok" "$(_printable "$_ok")" "_printable: e-acute, A-umlaut, euro, e2 82 9b and c2 a0 pass through"
 
 # A repo path holding ESC and c2 9b, with an existing CLAUDE.md and GEMINI.md
 # (so the Claude and Gemini notices print the repo-derived paths), and a hostile

@@ -227,9 +227,8 @@ except Exception:
     pass' "$1" 2>/dev/null || true
 }
 _slug() {  # remote url -> "owner-name": namespaces thread anchors per repo
-  local u="${1%.git}" IFS=/ n=0 a="" b="" p h
-  case "$u" in http://*|https://*) u="${u#*://}"; u="${u#www.}" ;; esac
-  case "$u" in git@*:*) h="${u#git@}"; u="${h%%:*}/${h#*:}" ;; esac
+  local u IFS=/ n=0 a="" b="" p
+  u="$(_talos_remote_slug "$1")" || u="${1%.git}"
   set -f
   for p in $u; do [ -n "$p" ] && { a="$b"; b="$p"; n=$((n + 1)); }; done
   set +f
@@ -237,7 +236,7 @@ _slug() {  # remote url -> "owner-name": namespaces thread anchors per repo
 }
 
 _remote="$(git -C "$PWD" remote get-url origin 2>/dev/null)"
-_NOTIFY_REPO="${PIPELINE_REPO:-$(printf '%s' "$_remote" | sed 's|.*github\.com[:/]||; s|\.git$||')}"
+_NOTIFY_REPO="${PIPELINE_REPO:-$(_talos_remote_slug "$_remote")}"
 REPO_SLUG="$(_slug "$_remote")"
 [ -z "$REPO_SLUG" ] && REPO_SLUG="default"
 
