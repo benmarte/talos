@@ -2477,7 +2477,9 @@ _talos_gate_merge() {
     *)
       case "$_ERR" in *"pr-checks-required: failed:"*) : ;; *) _talos_stop ci-unverified ;; esac
       _cierr="$_ERR"
-      _sha="$(_vcs pr-head "$_pr")" || _talos_stop head-unresolved
+      _talos_cap _vcs pr-head "$_pr"
+      [ "$_RC" -eq 0 ] || _talos_stop head-unresolved
+      _sha="$_OUT"
       [[ "$_sha" =~ ^[0-9a-f]{40}$ ]] || _talos_stop head-unresolved
       _talos_trust
       _talos_cap _vcs read-comments "$_pr"
@@ -2534,13 +2536,13 @@ _talos_gate_merge() {
       elif [ -n "$_OUT" ]; then
         if bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_pr" > /dev/null; then
           _synced=1
-        elif [ "$(cfg merge.auto_sync)" = "true" ] && _vcs update-branch "$_pr" > /dev/null; then
-          _synced=1
+        elif [ "$(cfg merge.auto_sync)" = "true" ]; then
+          _talos_cap _vcs update-branch "$_pr"
+          [ "$_RC" -ne 0 ] || _synced=1
         fi
         if [ "$_synced" -eq 1 ]; then
-          _r=0
-          _vcs pr-mergeable "$_pr" > /dev/null || _r=$?
-          if [ "$_r" -ne 1 ]; then
+          _talos_cap _vcs pr-mergeable "$_pr"
+          if [ "$_RC" -ne 1 ]; then
             _talos_emit reason base-synced
             _talos_verdict wait
           fi
@@ -2769,7 +2771,7 @@ _talos_pipeline_prs() {
 # exists for github and github-api only; any other provider is judged by
 # pr-mergeable alone, with no path list.
 _talos_sibling() {
-  local _n="$1" _s="$2" _via="" _r=0 _known=0
+  local _n="$1" _s="$2" _via="" _known=0
   case "$(cfg vcs.provider)" in
     github | github-api)
       _talos_cap _vcs conflict-files "$_s"
@@ -2793,8 +2795,8 @@ _talos_sibling() {
     [ "$_RC" -ne 0 ] || _via=update-branch
   fi
   if [ -n "$_via" ]; then
-    _vcs pr-mergeable "$_s" > /dev/null || _r=$?
-    [ "$_r" -ne 1 ] || _via=""
+    _talos_cap _vcs pr-mergeable "$_s"
+    [ "$_RC" -ne 1 ] || _via=""
   fi
   if [ -z "$_via" ]; then
     _talos_emit sibling "$_s action=developer"
@@ -5767,8 +5769,9 @@ _talos_run_loop() {
   _inflight_list=""
   if [ -z "$_issue" ] && [ "$_iter" -lt "$_max" ]; then
     if ! _state_json="$(_talos_collect_get)"; then
-      _state_json="$(bash "$SCRIPT_DIR"/pipeline-status-file.sh collect 2>/dev/null)" \
-        && _talos_collect_put "$_state_json"
+      # A rate-limited collect (exit 7, #1009) ends the run on the wait, in _talos_run_capture.
+      _talos_run_capture collect bash "$SCRIPT_DIR"/pipeline-status-file.sh collect
+      if [ "$_RC" -eq 0 ]; then _state_json="$_OUT"; _talos_collect_put "$_state_json"; else _state_json=""; fi
     fi
     case "$_state_json" in
       '{'*'}')
@@ -5892,7 +5895,12 @@ _talos_run_loop() {
           "verdict=merge"*)
             _RUN_CI="$(sed -n 's/^ci_runs=//p' <<<"$_r" | head -n 1)"
             _talos_emit merged pr="$_pr"
-            if _vcs merge-pr "$_pr" --sha "$_head" > /dev/null 2> "$_CFG_CACHE_DIR/merge-err"; then
+            _mrc=0
+            _vcs merge-pr "$_pr" --sha "$_head" > /dev/null 2> "$_CFG_CACHE_DIR/merge-err" || _mrc=$?
+            # A rate limit (exit 7, #1009) is a wait, not a failed merge: nothing
+            # merged, and the next run reads the PR and gates it again.
+            if [ "$_mrc" -eq 7 ]; then : > "$_TALOS_OUT"; _talos_rate_wait "$(cat "$_CFG_CACHE_DIR/merge-err")"; fi
+            if [ "$_mrc" -eq 0 ]; then
               # merge-pr says on stderr when the merge went through but the
               # head branch stayed: one warn per branch, for the run's end (#653).
               cat "$_CFG_CACHE_DIR/merge-err" >&2
@@ -6718,7 +6726,9 @@ _talos_run_blocked_fix() {
 _talos_run_blocked_pr() {
   local _st _pr
   if ! _st="$(_talos_collect_get)"; then
-    _st="$(bash "$SCRIPT_DIR"/pipeline-status-file.sh collect 2>/dev/null)" || return 1
+    _talos_run_capture collect bash "$SCRIPT_DIR"/pipeline-status-file.sh collect
+    [ "$_RC" -eq 0 ] || return 1
+    _st="$_OUT"
   fi
   _pr="$(python3 -I -c 'import json, sys
 for p in json.loads(sys.stdin.read()).get("prs") or []:
@@ -6760,13 +6770,13 @@ _talos_run_lease() {
 # as before: its "conflicts with base" FAIL and the developer merge-base round.
 # The caller holds the issue's lease, which this releases when it ends the run.
 _talos_run_presync() {
-  local _pr="$1" _n="$2" _r=0
+  local _pr="$1" _n="$2"
   _talos_cap _vcs pr-mergeable "$_pr"
   [ "$_RC" -eq 1 ] || return 0
   _talos_run_capture mergebase bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_pr"
   [ "$_RC" -eq 0 ] || return 0
-  _vcs pr-mergeable "$_pr" > /dev/null || _r=$?
-  [ "$_r" -ne 1 ] || return 0
+  _talos_cap _vcs pr-mergeable "$_pr"
+  [ "$_RC" -ne 1 ] || return 0
   _talos_collect_drop   # the push moved the PR's head: the next pass reads it fresh
   _talos_lease_release "$_n"
   _talos_emit stop "action=wait reason=base-synced pr=$_pr issue=$_n"
@@ -6832,7 +6842,9 @@ _talos_run_qa_draft_guard() {
     *) _talos_stop draft-unverified ;;
   esac
   _talos_collect_drop
-  _st="$(bash "$SCRIPT_DIR"/pipeline-status-file.sh collect 2>/dev/null)" || _talos_stop state-unavailable
+  _talos_run_capture collect bash "$SCRIPT_DIR"/pipeline-status-file.sh collect
+  [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
+  _st="$_OUT"
   _talos_collect_put "$_st"
   _stage="$(python3 -I -c 'import json, sys
 for p in json.loads(sys.stdin.read()).get("prs") or []:
