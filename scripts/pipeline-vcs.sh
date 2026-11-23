@@ -1743,14 +1743,12 @@ _list_cap_warn() {
   fi
 }
 
-# ── gh api --paginate multi-page merge (gitlab, azure) ───────────────────────
-# `gh api --paginate <endpoint>` fetches every page of a REST list endpoint
-# (following Link: rel="next" headers internally) with NO cap, but per gh's
-# own --help text: "Each page is a separate JSON array or object" — pages are
-# written to stdout back-to-back with no separator, not merged into one
-# array. Reads that raw concatenated stdout on stdin and prints a single
-# flattened JSON array containing every item from every page, in order.
-_gh_paginate_merge() {
+# ── multi-page merge for the gitlab and azure adapters ───────────────────────
+# `glab api --paginate` (and `az rest` page by page) writes every page as a
+# separate JSON array or object, back-to-back with no separator, not merged
+# into one array. Reads that raw concatenated stdout on stdin and prints a
+# single flattened JSON array containing every item from every page, in order.
+_vcs_paginate_merge() {
   python3 -I -c "
 import json, sys
 data = sys.stdin.read()
@@ -3964,6 +3962,92 @@ _vcs_shared_check_approval_run() {
   exit $?
 }
 
+# _vcs_shared_check_approval <pr-n> <flag> <marker-fn> <identity cmd...>
+#   The whole body of every provider's check-approval-sha once its id check and
+#   --dry-run are done: <flag> is --stale-list, --evidence-list or anything
+#   else (neither); <marker-fn> <pr-n> prints the JSON _vcs_shared_check_approval_run
+#   reads, non-zero or empty when the fetch failed (exit 1, naming the PR).
+_vcs_shared_check_approval() {
+  local n="$1" flag="$2" marker_fn="$3"; shift 3
+  local stale_list_flag="false" evidence_flag="false" pr_data
+  case "$flag" in
+    --stale-list) stale_list_flag="true" ;;
+    --evidence-list) evidence_flag="true" ;;
+  esac
+  pr_data="$("$marker_fn" "$n")" || pr_data=""
+  if [ -z "$pr_data" ]; then
+    echo "pipeline-vcs: check-approval-sha: could not fetch PR #$n data" >&2
+    exit 1
+  fi
+  _vcs_shared_check_approval_run "$pr_data" "$stale_list_flag" "$evidence_flag" "$@"
+}
+
+# _vcs_shared_read_attempt_run <issue-n> <fetch-fn> <identity cmd...>
+#   The whole body of every provider's read-attempt once its id check and
+#   --dry-run are done: <fetch-fn> <issue-n> prints the issue's comments as
+#   {"comments": [...]} (exit 1 naming the issue when it fails); the trust set
+#   is resolved by _vi_trust_load with <identity cmd...> as the login lookup;
+#   then _vcs_shared_read_attempt prints the counts.
+_vcs_shared_read_attempt_run() {
+  local n="$1" fetch_fn="$2" issue_data; shift 2
+  issue_data="$("$fetch_fn" "$n")" || { echo "pipeline-vcs: read-attempt: could not fetch issue #$n data" >&2; exit 1; }
+  _vi_trust_load "$@"
+  printf '%s' "$issue_data" | _vcs_shared_read_attempt
+}
+
+# _vcs_shared_check_attempt <issue-n> <read-fn>
+#   The whole body of every provider's check-attempt once its id check and
+#   --dry-run are done: <read-fn> <issue-n> prints the verb's read-attempt
+#   answer. Exit 1 (with the reason) when either ceiling is already reached;
+#   records nothing.
+_vcs_shared_check_attempt() {
+  local n="$1" read_fn="$2" max_stage max_total state rc
+  max_stage="$(cfg limits.max_fix_attempts)"
+  max_total="$(cfg limits.max_total_dispatches)"
+  state="$("$read_fn" "$n" 2>&1)"
+  rc=$?
+  if [ $rc -ne 0 ]; then
+    echo "pipeline-vcs: check-attempt: read-attempt failed: $state" >&2
+    exit 1
+  fi
+  # Pass through any machine-readable talos: markers from read-attempt to our
+  # own stdout, then narrow state to only the parseable stage=...count=...total=
+  # line (filters out both talos: markers and any stderr warnings captured via 2>&1).
+  printf '%s\n' "$state" | grep '^talos:' || true
+  state="$(printf '%s\n' "$state" | grep '^stage=')"
+  local cur_stage cur_count cur_total
+  cur_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
+  cur_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
+  cur_total="$(printf '%s' "$state" | sed 's/.*total=\([0-9]*\).*/\1/')"
+  if ! _vcs_shared_attempt_blocked "check-attempt" "$cur_count" "$cur_total" "$max_stage" "$max_total" "$cur_stage"; then
+    exit 1
+  fi
+  echo "pipeline-vcs: check-attempt: ok (stage=$cur_stage count=$cur_count total=$cur_total; max_stage=$max_stage max_total=$max_total)"
+  exit 0
+}
+
+# _vcs_shared_validate_stage <issue-n> <stage> [<id-check-fn>]
+#   record-attempt's argument guards, in the order every provider applies them:
+#   a missing number, a missing stage, <id-check-fn> record-attempt <issue-n>
+#   (the provider's numeric-id check, when it has one), then a stage outside
+#   [A-Za-z0-9._-] (it would corrupt the marker line). Returns 1 with the
+#   message on stderr.
+_vcs_shared_validate_stage() {
+  local n="$1" stage="$2" id_check_fn="${3:-}"
+  [ -n "$n" ]     || { echo "pipeline-vcs: record-attempt: missing issue number" >&2; return 1; }
+  [ -n "$stage" ] || { echo "pipeline-vcs: record-attempt: missing stage argument" >&2; return 1; }
+  [ -z "$id_check_fn" ] || "$id_check_fn" record-attempt "$n" || return 1
+  case "$stage" in
+    *[!A-Za-z0-9._-]*) echo "pipeline-vcs: record-attempt: stage may only use letters, digits, '.', '_' and '-', got '$stage'" >&2; return 1 ;;
+  esac
+}
+
+# _vcs_is_github -- true for the one GitHub implementation, whichever
+# transport (vcs.provider github or github-api) serves it.
+_vcs_is_github() {
+  [ "$PROVIDER" = "github" ] || [ "$PROVIDER" = "github-api" ]
+}
+
 # _vcs_shared_check_pr_files (#177 slice 3)
 #   stdin:  the PR's changed file paths, one per line. Both adapters fetch
 #           this via their paginated `pr-files` mechanism (_gh_pages)
@@ -5268,6 +5352,13 @@ json.dump({"headRefOid": (pr.get("head") or {}).get("sha", ""),
            "comments": json.loads(head)["comments"]}, sys.stdout)'
 }
 
+# _gh_read_attempt <issue> -- read-attempt's answer for a GitHub issue: the
+# verb's body, and what check-attempt reads in-process.
+_gh_read_attempt() {
+  _gh_num read-attempt issue "$1"
+  _vcs_shared_read_attempt_run "$1" _gh_comments_obj _gh_user_login
+}
+
 # _gh_check_table <pr> [<required names>] -- _gh_sha_check_table for the PR's
 # head commit. Non-zero when a read fails.
 _gh_check_table() {
@@ -6548,15 +6639,11 @@ json.dump([dict(p, headRefName=(p.get('head') or {}).get('ref', '')) for p in pr
       # Print "stage=<s> count=<k> total=<t>" from the most-recent attempt
       # marker on the issue. Prints "stage= count=0 total=0" when no marker
       # exists (new issue). Exits 0 always (read-only query).
-      local n="${1:-}" issue_data trusted_authors verify_authors
+      local n="${1:-}"
       [ -z "$n" ] && { echo "pipeline-vcs: read-attempt: missing issue number" >&2; exit 1; }
       _gh_num "$verb" issue "$n"
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] read-attempt $n: GET $_GH_API/issues/$n/comments (paginated) and extract the last talos:attempt marker"; return 0; }
-      issue_data="$(_gh_comments_obj "$n")" || { echo "pipeline-vcs: read-attempt: could not fetch issue #$n data" >&2; exit 1; }
-      trusted_authors="$(cfg markers.trusted_authors)"
-      verify_authors="$(cfg markers.verify_authors)"
-      _vcs_shared_reader_identity "$verify_authors" _gh_user_login
-      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" VERIFY_AUTHORS="$verify_authors" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
+      _gh_read_attempt "$n"
       ;;
 
     check-attempt)
@@ -6568,38 +6655,14 @@ json.dump([dict(p, headRefName=(p.get('head') or {}).get('ref', '')) for p in pr
       local n="${1:-}"
       [ -z "$n" ] && { echo "pipeline-vcs: check-attempt: missing issue number" >&2; exit 1; }
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] check-attempt $n: compare current attempt state against configured ceilings"; return 0; }
-      local max_stage max_total
-      max_stage="$(cfg limits.max_fix_attempts)"
-      max_total="$(cfg limits.max_total_dispatches)"
-      local state
-      state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$n" ${REPO:+--repo "$REPO"} 2>&1)"
-      local rc=$?
-      if [ $rc -ne 0 ]; then
-        echo "pipeline-vcs: check-attempt: read-attempt failed: $state" >&2
-        exit 1
-      fi
-      # Pass through any machine-readable talos: markers from read-attempt to our
-      # own stdout, then narrow state to only the parseable stage=...count=...total=
-      # line (filters out both talos: markers and any stderr warnings captured via 2>&1).
-      printf '%s\n' "$state" | grep '^talos:' || true
-      state="$(printf '%s\n' "$state" | grep '^stage=')"
-      local cur_stage cur_count cur_total
-      cur_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
-      cur_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
-      cur_total="$(printf '%s' "$state" | sed 's/.*total=\([0-9]*\).*/\1/')"
-      if ! _vcs_shared_attempt_blocked "check-attempt" "$cur_count" "$cur_total" "$max_stage" "$max_total" "$cur_stage"; then
-        exit 1
-      fi
-      echo "pipeline-vcs: check-attempt: ok (stage=$cur_stage count=$cur_count total=$cur_total; max_stage=$max_stage max_total=$max_total)"
-      exit 0
+      _vcs_shared_check_attempt "$n" _gh_read_attempt
       ;;
 
     record-attempt)
       # record-attempt <issue-n> <stage> [--pr <pr-n> | --idempotency-key <token>]:
       # see _vcs_shared_record_attempt.
       local n="${1:-}" stage="${2:-}"
-      [ -z "$n" ]     && { echo "pipeline-vcs: record-attempt: missing issue number" >&2; exit 1; }
-      [ -z "$stage" ] && { echo "pipeline-vcs: record-attempt: missing stage argument" >&2; exit 1; }
+      _vcs_shared_validate_stage "$n" "$stage" || exit 1
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] record-attempt $n $stage: read prior state, post <!-- talos:attempt stage=$stage ... --> marker"; return 0; }
       # The write: POST the marker comment and print its URL (it may
       # legitimately be empty); non-zero only when the write itself failed.
@@ -6619,23 +6682,12 @@ json.dump([dict(p, headRefName=(p.get('head') or {}).get('ref', '')) for p in pr
       # earned at the current head SHA (waivers: merge.approval_waiver_paths; code,
       # tests, agent instructions and pipeline config are never waivable).
       # Fail-closed. Marker extraction and the SHA/waiver logic are
-      # _vcs_shared_check_approval_marker / _vcs_shared_check_approval_sha; this
-      # arm is fetch (the PR, every comment) -> call.
-      local n="${1:-}"; shift
-      local stale_list_flag="false" evidence_flag="false"
-      case "${1:-}" in
-        --stale-list) stale_list_flag="true" ;;
-        --evidence-list) evidence_flag="true" ;;
-      esac
+      # _vcs_shared_check_approval_marker / _vcs_shared_check_approval_sha; see
+      # _vcs_shared_check_approval.
+      local n="${1:-}"
       _gh_num "$verb" PR "$n"
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] check-approval-sha $n: verify all approval labels match current head SHA"; return 0; }
-      local pr_data
-      pr_data="$(_gh_marker_data "$n")" || pr_data=""
-      if [ -z "$pr_data" ]; then
-        echo "pipeline-vcs: check-approval-sha: could not fetch PR #$n data" >&2
-        exit 1
-      fi
-      _vcs_shared_check_approval_run "$pr_data" "$stale_list_flag" "$evidence_flag" _gh_user_login
+      _vcs_shared_check_approval "$n" "${2:-}" _gh_marker_data _gh_user_login
       ;;
     *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;
   esac
@@ -6941,11 +6993,11 @@ EOF
   _gl_no_items() {
     local _raw
     _raw="$(glab api --paginate "projects/$(_gl_api_project)/merge_requests?state=opened&labels=$_TALOS_NEEDS_OWNER_LABEL_URL&per_page=100")" || return 1
-    printf '%s' "$_raw" | _gh_paginate_merge | python3 -I -c '
+    printf '%s' "$_raw" | _vcs_paginate_merge | python3 -I -c '
 import json, sys
 try:
     mrs = json.load(sys.stdin)
-    # _gh_paginate_merge wraps an error object into a one-item list, so a
+    # _vcs_paginate_merge wraps an error object into a one-item list, so a
     # real MR is told by its iid.
     assert isinstance(mrs, list) and all(isinstance(m, dict) and isinstance(m.get("iid"), int) for m in mrs)
     out = [{"number": m["iid"], "state": "open",
@@ -7012,6 +7064,10 @@ print(host.lower() + "\t" + path)
       ''|*[!0-9]*) echo "pipeline-vcs: $1: expected a numeric MR iid, got '$2'" >&2; return 1 ;;
     esac
   }
+  # read-attempt's answer for issue <iid> (the arm's id check is already done):
+  # the verb's body, and what check-attempt reads in-process.
+  _gl_issue_notes() { _gl_notes issues "$1"; }
+  _gl_read_attempt() { _vcs_shared_read_attempt_run "$1" _gl_issue_notes _gl_current_user; }
   # glab MR list JSON on stdin -> the shared {number,state,title,
   # headRefName,body} PR shape (find-pr, check-closing-keyword).
   _gl_mrs_to_prs() {
@@ -7081,11 +7137,11 @@ print(json.dumps(d))
   _gl_notes() {
     local _raw
     _raw="$(glab api --paginate "projects/$(_gl_api_project)/$1/$2/notes?per_page=100&order_by=created_at&sort=asc")" || return 1
-    printf '%s' "$_raw" | _gh_paginate_merge | python3 -I -c '
+    printf '%s' "$_raw" | _vcs_paginate_merge | python3 -I -c '
 import json, sys
 try:
     notes = json.load(sys.stdin)
-    # _gh_paginate_merge wraps an error object into a one-item list, so a
+    # _vcs_paginate_merge wraps an error object into a one-item list, so a
     # real note is told by its id.
     assert isinstance(notes, list) and all(isinstance(n, dict) and "id" in n for n in notes)
     out = [{"id": n.get("id"), "body": n.get("body") or "",
@@ -7142,7 +7198,7 @@ for p in paths:
     local _raw
     _raw="$(glab api --paginate "projects/$(_gl_api_project)/merge_requests/$1/diffs?per_page=100")" || return 1
     [ -n "$_raw" ] || return 1
-    printf '%s' "$_raw" | _gh_paginate_merge
+    printf '%s' "$_raw" | _vcs_paginate_merge
   }
   # MR <iid>'s per-file additions and deletions in _diff_stat_format's input
   # shape (#766): the +/- lines of each file's hunks (the diff field has no
@@ -7206,7 +7262,7 @@ print(json.dumps(out))
       [ -n "$_gldc_since" ] && _gldc_ep="${_gldc_ep}&since=${_gldc_since}T00:00:00Z"
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] glab api --paginate $_gldc_ep"; return 0; }
       _gldc_raw="$(glab api --paginate "$_gldc_ep")" || exit 1
-      printf '%s' "$_gldc_raw" | _gh_paginate_merge | _vcs_commits_shape gitlab || exit 1
+      printf '%s' "$_gldc_raw" | _vcs_paginate_merge | _vcs_commits_shape gitlab || exit 1
       ;;
     list-regresses)
       # The scoreboard's fix-forward read (#800): the `**Regresses:** #<n>` lines
@@ -7221,8 +7277,8 @@ print(json.dumps(out))
       fi
       _glr_iss="$(glab api --paginate "$_glr_proj/issues?$_glr_q")" || exit 1
       _glr_mrs="$(glab api --paginate "$_glr_proj/merge_requests?$_glr_q")" || exit 1
-      _glr_iss="$(printf '%s' "$_glr_iss" | _gh_paginate_merge | _vcs_regresses_items gitlab issue)" || exit 1
-      _glr_mrs="$(printf '%s' "$_glr_mrs" | _gh_paginate_merge | _vcs_regresses_items gitlab pr)" || exit 1
+      _glr_iss="$(printf '%s' "$_glr_iss" | _vcs_paginate_merge | _vcs_regresses_items gitlab issue)" || exit 1
+      _glr_mrs="$(printf '%s' "$_glr_mrs" | _vcs_paginate_merge | _vcs_regresses_items gitlab pr)" || exit 1
       printf '%s\n%s\n' "$_glr_iss" "$_glr_mrs" | _vcs_regresses_shape "$_glr_since" || exit 1
       ;;
     list-merged-prs)
@@ -7236,7 +7292,7 @@ print(json.dumps(out))
       [ -n "$_glmp_since" ] && _glmp_ep="${_glmp_ep}&updated_after=${_glmp_since}T00:00:00Z"
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] glab api --paginate $_glmp_ep"; return 0; }
       _glmp_raw="$(glab api --paginate "$_glmp_ep")" || exit 1
-      printf '%s' "$_glmp_raw" | _gh_paginate_merge | _vcs_merged_prs_shape gitlab "$_glmp_since" "$(_gl_repo_path)" || exit 1
+      printf '%s' "$_glmp_raw" | _vcs_paginate_merge | _vcs_merged_prs_shape gitlab "$_glmp_since" "$(_gl_repo_path)" || exit 1
       ;;
     list-issues)
       # glab's default page size is well under 100; --per-page raises it to
@@ -7437,15 +7493,11 @@ print((d.get('sha') or (d.get('diff_refs') or {}).get('head_sha') or '').lower()
       ;;
     read-attempt)
       # read-attempt <issue> (#736): as github, from the issue's notes.
-      local n="${1:-}" issue_data trusted_authors verify_authors
+      local n="${1:-}"
       [ -z "$n" ] && { echo "pipeline-vcs: read-attempt: missing issue number" >&2; exit 1; }
       _gl_require_iid read-attempt "$n" || exit 1
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] read-attempt $n: GET projects/$(_gl_api_project)/issues/$n/notes (paginated) and extract the last talos:attempt marker"; return 0; }
-      issue_data="$(_gl_notes issues "$n")" || { echo "pipeline-vcs: read-attempt: could not fetch issue #$n data" >&2; exit 1; }
-      trusted_authors="$(cfg markers.trusted_authors)"
-      verify_authors="$(cfg markers.verify_authors)"
-      _vcs_shared_reader_identity "$verify_authors" _gl_current_user
-      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" VERIFY_AUTHORS="$verify_authors" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
+      _gl_read_attempt "$n"
       ;;
     check-attempt)
       # check-attempt <issue> (#736): exit 1 (with reason) when either ceiling
@@ -7454,37 +7506,13 @@ print((d.get('sha') or (d.get('diff_refs') or {}).get('head_sha') or '').lower()
       [ -z "$n" ] && { echo "pipeline-vcs: check-attempt: missing issue number" >&2; exit 1; }
       _gl_require_iid check-attempt "$n" || exit 1
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] check-attempt $n: compare current attempt state against configured ceilings"; return 0; }
-      local max_stage max_total state rc
-      max_stage="$(cfg limits.max_fix_attempts)"
-      max_total="$(cfg limits.max_total_dispatches)"
-      state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$n" ${REPO:+--repo "$REPO"} 2>&1)"
-      rc=$?
-      if [ $rc -ne 0 ]; then
-        echo "pipeline-vcs: check-attempt: read-attempt failed: $state" >&2
-        exit 1
-      fi
-      printf '%s\n' "$state" | grep '^talos:' || true
-      state="$(printf '%s\n' "$state" | grep '^stage=')"
-      local cur_stage cur_count cur_total
-      cur_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
-      cur_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
-      cur_total="$(printf '%s' "$state" | sed 's/.*total=\([0-9]*\).*/\1/')"
-      if ! _vcs_shared_attempt_blocked "check-attempt" "$cur_count" "$cur_total" "$max_stage" "$max_total" "$cur_stage"; then
-        exit 1
-      fi
-      echo "pipeline-vcs: check-attempt: ok (stage=$cur_stage count=$cur_count total=$cur_total; max_stage=$max_stage max_total=$max_total)"
-      exit 0
+      _vcs_shared_check_attempt "$n" _gl_read_attempt
       ;;
     record-attempt)
       # record-attempt <issue> <stage> [--pr <mr> | --idempotency-key <token>]
       # (#736): see _vcs_shared_record_attempt; the write is an issue note.
       local n="${1:-}" stage="${2:-}"
-      [ -z "$n" ]     && { echo "pipeline-vcs: record-attempt: missing issue number" >&2; exit 1; }
-      [ -z "$stage" ] && { echo "pipeline-vcs: record-attempt: missing stage argument" >&2; exit 1; }
-      _gl_require_iid record-attempt "$n" || exit 1
-      case "$stage" in
-        *[!A-Za-z0-9._-]*) echo "pipeline-vcs: record-attempt: stage may only use letters, digits, '.', '_' and '-', got '$stage'" >&2; exit 1 ;;
-      esac
+      _vcs_shared_validate_stage "$n" "$stage" _gl_require_iid || exit 1
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] record-attempt $n $stage: read prior state, post <!-- talos:attempt stage=$stage ... --> marker"; return 0; }
       # Notes keep their markdown as typed, so the marker needs no conversion.
       _gl_post_attempt_marker() { glab issue note "$1" --message "$2" $RARG; }
@@ -7493,24 +7521,11 @@ print((d.get('sha') or (d.get('diff_refs') or {}).get('head_sha') or '').lower()
       ;;
     check-approval-sha)
       # check-approval-sha <iid> [--stale-list|--evidence-list] (#736): as
-      # github; this arm is fetch (_gl_marker_data) ->
-      # _vcs_shared_check_approval_run.
+      # github; see _vcs_shared_check_approval (the fetch is _gl_marker_data).
       local n="${1:-}"
-      [ "$#" -eq 0 ] || shift
-      local stale_list_flag="false" evidence_flag="false"
-      case "${1:-}" in
-        --stale-list) stale_list_flag="true" ;;
-        --evidence-list) evidence_flag="true" ;;
-      esac
       _gl_require_iid check-approval-sha "$n" || exit 1
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] check-approval-sha $n: verify all approval labels match current head SHA"; return 0; }
-      local pr_data
-      pr_data="$(_gl_marker_data "$n")" || pr_data=""
-      if [ -z "$pr_data" ]; then
-        echo "pipeline-vcs: check-approval-sha: could not fetch PR #$n data" >&2
-        exit 1
-      fi
-      _vcs_shared_check_approval_run "$pr_data" "$stale_list_flag" "$evidence_flag" _gl_current_user
+      _vcs_shared_check_approval "$n" "${2:-}" _gl_marker_data _gl_current_user
       ;;
     list-prs)
       # Same reasoning as list-issues above: raise the page size and warn
@@ -7857,7 +7872,7 @@ sys.stdout.write(json.load(sys.stdin).get('description') or '')
         local _out
         _out="$(glab api --paginate "projects/$(_gl_api_project)/merge_requests?state=opened&per_page=100")" || return 1
         [ -n "$_out" ] || return 1
-        printf '%s' "$_out" | _gh_paginate_merge | _gl_mrs_to_prs
+        printf '%s' "$_out" | _vcs_paginate_merge | _gl_mrs_to_prs
       }
       printf '%s' "$_glck_body" | REPO="$_glck_repo" \
         _vcs_shared_check_closing_keyword "$issue_n" "$_glck_number" "$pr_ref" _gl_fetch_closing_siblings gitlab "$(_gl_repo_host)"
@@ -8485,6 +8500,9 @@ elif v:
       ''|*[!0-9]*) echo "pipeline-vcs: $1: expected a numeric id, got '$2'" >&2; return 1 ;;
     esac
   }
+  # read-attempt's answer for work item <id> (the arm's id check is already
+  # done): the verb's body, and what check-attempt reads in-process.
+  _az_read_attempt() { _vcs_shared_read_attempt_run "$1" _az_wi_comments_obj az account show --query user.name --output tsv; }
   # PR <id>'s policy evaluation records, a JSON array (rerun-ci, #304):
   # `az repos pr policy list --id <id>`, which calls GET _apis/policy/
   # evaluations?artifactId=vstfs:///CodeReview/CodeReviewId/<projectId>/<id>
@@ -8663,7 +8681,7 @@ for c in d["changeEntries"]:
       _len="$(printf '%s' "$_page" | _json_array_len)" || return 1
       [ "$_len" = 0 ] || _capped=1
     fi
-    _active="$(printf '%s' "$_raw" | _gh_paginate_merge 2>/dev/null)" || return 1
+    _active="$(printf '%s' "$_raw" | _vcs_paginate_merge 2>/dev/null)" || return 1
     printf '[[%s],%s]' "$_linked" "$_active" | python3 -I -c '
 import json, re, sys
 me, n, cap = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -8861,7 +8879,7 @@ for l in json.load(sys.stdin)["value"]:
       [ "$_ni_len" = "$_ni_top" ] || break
       [ "$_ni_pages" -lt "$_ni_max" ] || return 1
     done
-    _ni_active="$(printf '%s' "$_ni_raw" | _gh_paginate_merge 2>/dev/null | tr -d '\n')" || return 1
+    _ni_active="$(printf '%s' "$_ni_raw" | _vcs_paginate_merge 2>/dev/null | tr -d '\n')" || return 1
     _ni_ids="$(printf '%s' "$_ni_active" | python3 -I -c '
 import json, sys
 print(" ".join(str(int(p["pullRequestId"])) for p in json.load(sys.stdin)))
@@ -9141,7 +9159,7 @@ json.dump({"headRefOid": sha,
         fi
         _azdc_skip=$((_azdc_skip + 100))
       done
-      printf '%s' "$_azdc_all" | _gh_paginate_merge || exit 1
+      printf '%s' "$_azdc_all" | _vcs_paginate_merge || exit 1
       ;;
     list-regresses)
       # The scoreboard's fix-forward read (#800): the `**Regresses:** #<n>` lines of
@@ -9182,7 +9200,7 @@ print(len(d), min((p.get("creationDate") or "")[:10] for p in d) if d else "")
         _azr_skip=$((_azr_skip + 100))
       done
       _azr_wi="$(printf '%s' "$_azr_wi" | _vcs_regresses_items azure issue)" || exit 1
-      _azr_prs="$(printf '%s' "$_azr_prs" | _gh_paginate_merge | _vcs_regresses_items azure pr)" || exit 1
+      _azr_prs="$(printf '%s' "$_azr_prs" | _vcs_paginate_merge | _vcs_regresses_items azure pr)" || exit 1
       printf '%s\n%s\n' "$_azr_wi" "$_azr_prs" | _vcs_regresses_shape "$_azr_since" || exit 1
       ;;
     list-merged-prs)
@@ -9220,7 +9238,7 @@ print(len(d), "old" if floor and d and all((p.get("creationDate") or "9")[:10] <
         fi
         _azmp_skip=$((_azmp_skip + 100))
       done
-      _azmp_list="$(printf '%s' "$_azmp_all" | _gh_paginate_merge | _vcs_merged_prs_shape azure "$_azmp_since" "")" || exit 1
+      _azmp_list="$(printf '%s' "$_azmp_all" | _vcs_paginate_merge | _vcs_merged_prs_shape azure "$_azmp_since" "")" || exit 1
       for _azmp_n in $(printf '%s' "$_azmp_list" | python3 -I -c 'import json, sys; print(*[p["number"] for p in json.load(sys.stdin) if p["issue"] is None])'); do
         _azmp_w="$(az repos pr work-item list --id "$_azmp_n" $ORG_ARG --output json 2>/dev/null | python3 -I -c '
 import json, sys
@@ -9553,15 +9571,11 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
       ;;
     read-attempt)
       # read-attempt <work-item-id> (#685): as github, from the work item's comments.
-      local n="${1:-}" issue_data trusted_authors verify_authors
+      local n="${1:-}"
       [ -z "$n" ] && { echo "pipeline-vcs: read-attempt: missing issue number" >&2; exit 1; }
       _az_require_id read-attempt "$n" || exit 1
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] read-attempt $n: GET .../workItems/$n/comments (paginated) and extract the last talos:attempt marker"; return 0; }
-      issue_data="$(_az_wi_comments_obj "$n")" || { echo "pipeline-vcs: read-attempt: could not fetch issue #$n data" >&2; exit 1; }
-      trusted_authors="$(cfg markers.trusted_authors)"
-      verify_authors="$(cfg markers.verify_authors)"
-      _vcs_shared_reader_identity "$verify_authors" az account show --query user.name --output tsv
-      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" VERIFY_AUTHORS="$verify_authors" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
+      _az_read_attempt "$n"
       ;;
     check-attempt)
       # check-attempt <work-item-id> (#685): exit 1 (with reason) when either
@@ -9570,37 +9584,13 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
       [ -z "$n" ] && { echo "pipeline-vcs: check-attempt: missing issue number" >&2; exit 1; }
       _az_require_id check-attempt "$n" || exit 1
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] check-attempt $n: compare current attempt state against configured ceilings"; return 0; }
-      local max_stage max_total state rc
-      max_stage="$(cfg limits.max_fix_attempts)"
-      max_total="$(cfg limits.max_total_dispatches)"
-      state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$n" ${REPO:+--repo "$REPO"} 2>&1)"
-      rc=$?
-      if [ $rc -ne 0 ]; then
-        echo "pipeline-vcs: check-attempt: read-attempt failed: $state" >&2
-        exit 1
-      fi
-      printf '%s\n' "$state" | grep '^talos:' || true
-      state="$(printf '%s\n' "$state" | grep '^stage=')"
-      local cur_stage cur_count cur_total
-      cur_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
-      cur_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
-      cur_total="$(printf '%s' "$state" | sed 's/.*total=\([0-9]*\).*/\1/')"
-      if ! _vcs_shared_attempt_blocked "check-attempt" "$cur_count" "$cur_total" "$max_stage" "$max_total" "$cur_stage"; then
-        exit 1
-      fi
-      echo "pipeline-vcs: check-attempt: ok (stage=$cur_stage count=$cur_count total=$cur_total; max_stage=$max_stage max_total=$max_total)"
-      exit 0
+      _vcs_shared_check_attempt "$n" _az_read_attempt
       ;;
     record-attempt)
       # record-attempt <work-item-id> <stage> [--pr <pr-n> | --idempotency-key <token>]
       # (#685): see _vcs_shared_record_attempt; the write is a work-item comment.
       local n="${1:-}" stage="${2:-}"
-      [ -z "$n" ]     && { echo "pipeline-vcs: record-attempt: missing issue number" >&2; exit 1; }
-      [ -z "$stage" ] && { echo "pipeline-vcs: record-attempt: missing stage argument" >&2; exit 1; }
-      _az_require_id record-attempt "$n" || exit 1
-      case "$stage" in
-        *[!A-Za-z0-9._-]*) echo "pipeline-vcs: record-attempt: stage may only use letters, digits, '.', '_' and '-', got '$stage'" >&2; exit 1 ;;
-      esac
+      _vcs_shared_validate_stage "$n" "$stage" _az_require_id || exit 1
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] record-attempt $n $stage: read prior state, post <!-- talos:attempt stage=$stage ... --> marker"; return 0; }
       # Work-item comments render HTML and _md_to_html would escape the marker
       # line, so post the body as HTML already: the text line in <p>, then the
@@ -9615,23 +9605,11 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
       ;;
     check-approval-sha)
       # check-approval-sha <id> [--stale-list|--evidence-list] (#684): as github;
-      # this arm is fetch (_az_marker_data) -> _vcs_shared_check_approval_run.
-      local n="${1:-}"; shift
-      local stale_list_flag="false" evidence_flag="false"
-      case "${1:-}" in
-        --stale-list) stale_list_flag="true" ;;
-        --evidence-list) evidence_flag="true" ;;
-      esac
+      # see _vcs_shared_check_approval (the fetch is _az_marker_data).
+      local n="${1:-}"
       _az_require_id check-approval-sha "$n" || exit 1
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] check-approval-sha $n: verify all approval labels match current head SHA"; return 0; }
-      local pr_data
-      pr_data="$(_az_marker_data "$n")" || pr_data=""
-      if [ -z "$pr_data" ]; then
-        echo "pipeline-vcs: check-approval-sha: could not fetch PR #$n data" >&2
-        exit 1
-      fi
-      _vcs_shared_check_approval_run "$pr_data" "$stale_list_flag" "$evidence_flag" \
-        az account show --query user.name --output tsv
+      _vcs_shared_check_approval "$n" "${2:-}" _az_marker_data az account show --query user.name --output tsv
       ;;
     list-prs)
       # PAGINATION (#171): `az repos pr list --top` exists (unlike `az boards
@@ -11613,7 +11591,7 @@ if [ "$VERB" = "label-pr" ] && [ "${#ARGS[@]}" -ge 1 ]; then
   # exists for each approval label being added.  Exit 1 (fatal) if absent.
   # Only implemented for the github provider (check-approval-sha is github-only).
   if [ "$_REQUIRE_MARKER" = "true" ] && [ -n "$_ADDING_APPROVAL_LABELS" ] \
-      && [ "$DRY_RUN" != "true" ] && { [ "$PROVIDER" = "github" ] || [ "$PROVIDER" = "github-api" ]; }; then
+      && [ "$DRY_RUN" != "true" ] && _vcs_is_github; then
     _lp_marker_found=false
     if _lp_stamped="$(_vcs_stamped_roles "$_LABEL_PR_N")"; then
       for _lp_lbl in $_ADDING_APPROVAL_LABELS; do
@@ -12666,7 +12644,8 @@ _vcs_ref_checks_required_dispatch() {
 # `ci-failure-excerpt: unavailable (<reason>)` line, exit 0: the verb never fails
 # a run. Per job: `job <name> (run <id>):`, then at most 40 lines of FAIL<2 spaces>,
 # the expected:/actual:/missing: line after one, `first failure:` and `RESULT:`
-# (control characters stripped, 300 characters a line); 120 lines in all.
+# (control characters stripped, 300 characters a line, `<!--` shown as `<!- -` and
+# `-->` as `- ->` so no line can carry a Talos marker, #1008); 120 lines in all.
 _vcs_ci_failure_excerpt_filter() {
   python3 -I -c '
 import re, sys
@@ -12681,6 +12660,9 @@ out, prev = [], False
 for raw in sys.stdin.buffer.read().decode("utf-8", "replace").split("\n"):
     line = pre.sub("", raw, count=1)
     line = ctrl.sub("", ansi.sub("", line.replace("\t", " "))).rstrip()[:300]
+    # #1008: no HTML comment opener or closer survives, so a log line cannot
+    # carry a parseable Talos marker into a prompt or a trusted comment.
+    line = line.replace("<!--", "<!- -").replace("-->", "- ->")
     if keep.match(line):
         out.append(line)
         prev = line.startswith("FAIL  ")
@@ -12944,7 +12926,7 @@ fi
 # occur here because we never re-read the labels we just applied.
 if [ "$VERB" = "label-pr" ] && [ -n "${_ADDING_APPROVAL_LABELS:-}" ] \
     && [ "${_REQUIRE_MARKER:-false}" = "false" ] && [ "$DRY_RUN" != "true" ] \
-    && { [ "$PROVIDER" = "github" ] || [ "$PROVIDER" = "github-api" ]; } && [ "$_DISPATCH_RC" -eq 0 ]; then
+    && _vcs_is_github && [ "$_DISPATCH_RC" -eq 0 ]; then
   _pd_missing=false
   if _pd_stamped="$(_vcs_stamped_roles "$_LABEL_PR_N")"; then
     for _pd_lbl in $_ADDING_APPROVAL_LABELS; do
@@ -12969,7 +12951,7 @@ fi
 # not trigger this). GitHub-only. Exit remains 0 (nudge, not a wall).
 if [ "$VERB" = "comment-pr" ] && [ "$_DISPATCH_RC" -eq 0 ] \
     && [ "$DRY_RUN" != "true" ] \
-    && { [ "$PROVIDER" = "github" ] || [ "$PROVIDER" = "github-api" ]; }; then
+    && _vcs_is_github; then
   _cp_warn_body="${ARGS[1]-}"
   if [ -n "$_cp_warn_body" ]; then
     printf '%s' "$_cp_warn_body" | python3 -I -c "
