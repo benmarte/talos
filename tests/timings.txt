@@ -249,6 +249,7 @@
 32 test-red-ci-routes-to-gate.sh
 42 test-ref-checks-required-928.sh
 1 test-reference-reasons-documented.sh
+6 test-repo-derive-no-api.sh
 163 test-repo-guides-789.sh
 15 test-require-roles-848.sh
 26 test-required-when-835.sh
