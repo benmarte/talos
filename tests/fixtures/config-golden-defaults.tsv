@@ -148,4 +148,5 @@ verify.walk.require_video	false	table	pipeline-criteria.sh
 verify.guide	VERIFY.md	table	talos.sh
 verify.qa_mode	local	table	pipeline/SKILL.md
 verify.targeted	true	table	docs
+verify.ci_scope	full	table	docs
 verify.timeout_ms	600000	table	docs

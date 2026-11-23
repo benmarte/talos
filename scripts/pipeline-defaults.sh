@@ -121,6 +121,7 @@ verify	list		-	-	repo
 verify.commands	list		-	-	repo
 verify.qa_mode	enum	local	-	-	repo
 verify.targeted	bool	true	-	-	any
+verify.ci_scope	enum	full	-	-	repo
 verify.targeted_commands	list		-	-	repo
 verify.dev_tests	list		-	-	repo
 verify.e2e	str		-	-	repo
