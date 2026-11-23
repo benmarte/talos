@@ -959,18 +959,59 @@ AZURE_ORG="$(cfg vcs.azure.org_url)"
 AZURE_PROJECT="$(cfg vcs.azure.project)"
 FILE_PATH="$(cfg vcs.file.source.path)"
 
-# Auto-detect repo for github/gitlab if not set.
-# github-api uses only git remote (no gh call) to avoid CLI dependency.
+# _repo_from_remote: print owner/repo (gitlab: group[/sub]/project) parsed from
+# the origin remote, exit 0; exit 1 when the remote is not a github.com or
+# gitlab.com URL (an SSH alias host, a self-hosted instance, a port-and-path
+# form that does not split). No API call (#1037).
+_repo_from_remote() {
+  local _u _h _p
+  _u="$(git remote get-url origin 2>/dev/null)" || return 1
+  if [[ "$_u" =~ ^[A-Za-z][A-Za-z0-9+.-]*://([^@/]*@)?(github\.com|gitlab\.com)(:[0-9]+)?/(.+)$ ]]; then
+    _h="${BASH_REMATCH[2]}" _p="${BASH_REMATCH[4]}"
+  elif [[ "$_u" =~ ^([^@/:]+@)?(github\.com|gitlab\.com):(.+)$ ]]; then
+    _h="${BASH_REMATCH[2]}" _p="${BASH_REMATCH[3]}"
+  else
+    return 1
+  fi
+  _p="${_p%/}"
+  _p="${_p%.git}"
+  if [ "$_h" = "github.com" ]; then
+    [[ "$_p" =~ ^[^/]+/[^/]+$ ]] || return 1
+  else
+    [[ "$_p" =~ ^[^/]+(/[^/]+)+$ ]] || return 1
+  fi
+  printf '%s\n' "$_p"
+}
+
+# Auto-detect repo for github/gitlab if not set: the origin remote first (no
+# call), `gh api` only when the remote does not parse (#1037). github-api uses
+# only the git remote (no gh call) to avoid CLI dependency. A repo resolved
+# cleanly is exported as PIPELINE_REPO (the vcs.repo env layer), so every verb
+# process this one starts inherits it and never looks it up again.
 if [ -z "$REPO" ] && [ "$PROVIDER" != "file" ]; then
   if [ "$PROVIDER" = "github-api" ]; then
     REPO="$(git remote get-url origin 2>/dev/null \
       | sed 's|.*github\.com[:/]||; s|\.git$||' || echo "")"
   else
-    REPO="$(gh api 'repos/{owner}/{repo}' --jq .full_name 2>/dev/null \
-      || git remote get-url origin 2>/dev/null \
-      | sed 's|.*github.com[:/]||; s|.*gitlab.com[:/]||; s|\.git$||' \
-      || echo "")"
+    REPO="$(_repo_from_remote)" || REPO=""
+    [ -n "$REPO" ] || REPO="$(gh api 'repos/{owner}/{repo}' --jq .full_name 2>/dev/null)" || REPO=""
+    if [ -n "$REPO" ]; then
+      export PIPELINE_REPO="$REPO"
+    else
+      _REPO_UNPARSED=1   # the remote as it is (self-hosted, Azure): not worth exporting
+      REPO="$(git remote get-url origin 2>/dev/null \
+        | sed 's|.*github.com[:/]||; s|.*gitlab.com[:/]||; s|\.git$||' \
+        || echo "")"
+    fi
   fi
+fi
+# resolve-repo: print the repo the auto-detect settled on and nothing else, for a
+# caller that starts many verb processes (the collect pass) to resolve it once and
+# export it. Exit 1 when nothing resolved or only the unparsed remote was left.
+if [ "$VERB" = "resolve-repo" ]; then
+  { [ -n "$REPO" ] && [ -z "${_REPO_UNPARSED:-}" ]; } || exit 1
+  printf '%s\n' "$REPO"
+  exit 0
 fi
 # ADO wants the repository name alone: vcs.repo "project/name" (the shape the
 # git remote gives) is reduced to its last path segment. Empty stays empty (#705).
