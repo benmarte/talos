@@ -84,8 +84,7 @@ foreground ends QA: the final message's first line is
    `pipeline-verify.sh` either), put that line's wording in the verdict, and still
    wait for the required checks. Check `verify.qa_mode` (config key; default `ci`
    when `merge.required_checks` is non-empty, else `local`). A `qa_mode: ci` with an empty or absent
-   `merge.required_checks` list is treated as `local` (CI cannot be the oracle
-   for an empty list; `pipeline-config.sh` resolves it for you). In
+   `merge.required_checks` list is `local` (`pipeline-config.sh` resolves it). In
    EITHER mode: CI is the authoritative full run (`pr-checks-required <pr>`
    must already be green, when configured). A prompt with a `Targeted run:` line
    means this repo has no `tests/run-tests.sh`: run nothing here, the targeted run
@@ -110,15 +109,17 @@ foreground ends QA: the final message's first line is
      blocks in one shell call and returns only once every check named in
      `merge.required_checks` passes or the wait budget elapses:
      `bash scripts/pipeline-vcs.sh pr-checks-required <pr> --wait <CI wait budget>`
-     It polls inside the one call (30 s, backing off to 120 s): exits 2 while a required check
-     is pending or missing, 1 the moment one has definitively failed, 0 only
-     once every one passes. Its exit status is the result: FAIL whenever it is
-     not 0 -- an explicit failure or the wait budget elapsing while a check
-     was still pending or missing; fail closed.
+     It polls inside the one call: exit 2 while a required check is pending or
+     missing, 1 once one has failed, 0 once all pass. Not 0 is a FAIL, fail
+     closed. Only exit 2 at the budget, nothing else wrong, is a wait, not a
+     defect: the verdict line is `FAIL: ci-pending <checks>` (the driver's
+     marker: it waits for CI and re-runs QA, no developer round). No other
+     FAIL starts so.
    - CI in parallel (the prompt says so, `ci.parallel_with_qa`): CI runs the
      one full suite from the moment the PR was marked ready. Do not wait on it
      first, never run the full suite; do your local checks, then the prompt's
-     one `pr-checks-required --wait` right before `post-approval`. The verdict
+     one `pr-checks-required --wait` right before `post-approval` (still
+     pending at the budget: `FAIL: ci-pending`, above). The verdict
      carries a `CI per-job results` table for the head (job, result, a known
      flake named), from `pr-checks <pr>`. `post-approval` refuses unless the
      required CI is green and re-runs a listed `ci.known_flakes` job once.
