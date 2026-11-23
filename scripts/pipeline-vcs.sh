@@ -5411,7 +5411,7 @@ _gh_read_attempt() {
 # head commit. Non-zero when a read fails.
 _gh_check_table() {
   local _sha
-  _sha="$(_gh_try GET "$_GH_API/pulls/$1" | _gh_field head.sha)" || return 1
+  _sha="$(_gh_pull_cached "$1" | _gh_field head.sha)" || return 1
   [ -n "$_sha" ] || return 1
   _gh_sha_check_table "$_sha" "${2:-}"
 }
@@ -6109,7 +6109,7 @@ sys.exit(1 if d.get("errors") or not d.get("data") else 0)' \
       ;;
     pr-is-draft)
       # (#332) Fail closed: see _vcs_shared_pr_is_draft.
-      _github_fetch_draft() { _gh_try GET "$_GH_API/pulls/$1"; }
+      _github_fetch_draft() { _gh_pull_cached "$1"; }
       _vcs_shared_pr_is_draft "${1:-}" draft "GET $_GH_API/pulls/${1:-} (.draft)" _github_fetch_draft
       ;;
     pr-ci-runs)
@@ -6202,7 +6202,10 @@ print(json.dumps([{'number': i.get('number'), 'title': i.get('title', ''),
                    'headRefName': (i.get('head') or {}).get('ref', ''),
                    'baseRefName': (i.get('base') or {}).get('ref', ''),
                    'labels': [{'name': l.get('name')} for l in (i.get('labels') or [])],
-                   'isCrossRepository': cross(i)}
+                   'isCrossRepository': cross(i),
+                   # (#1038) the head and the draft state, so collect asks neither pr-head nor pr-is-draft
+                   'headRefOid': (i.get('head') or {}).get('sha', ''),
+                   'isDraft': i.get('draft')}
                   for i in items]))
 "
       ;;

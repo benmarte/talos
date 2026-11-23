@@ -497,7 +497,7 @@ assert_contains "$out" "baseRefName" "list-prs includes baseRefName in its outpu
 # isCrossRepository (#346): same-repo false, fork true, deleted fork (null head repo) true.
 out="$(STUB_GH_PRS_RAW='[{"number":1,"title":"a","head":{"ref":"b1","repo":{"full_name":"acme/widget"}},"base":{"ref":"main","repo":{"full_name":"acme/widget"}},"labels":[]},{"number":2,"title":"b","head":{"ref":"b2","repo":{"full_name":"evil/widget"}},"base":{"ref":"main","repo":{"full_name":"acme/widget"}},"labels":[]},{"number":3,"title":"c","head":{"ref":"b3","repo":null},"base":{"ref":"main","repo":{"full_name":"acme/widget"}},"labels":[]}]' bash "$VCS" list-prs)"
 assert_eq "1:False 2:True 3:True" "$(printf '%s' "$out" | python3 -c "import json,sys; print(' '.join('%d:%s' % (p['number'], p['isCrossRepository']) for p in json.load(sys.stdin)))")" "list-prs exposes isCrossRepository (same repo false, fork true, deleted fork true)"
-assert_eq "number title headRefName baseRefName labels isCrossRepository" "$(printf '%s' "$out" | python3 -c "import json,sys; print(' '.join(json.load(sys.stdin)[0].keys()))")" "list-prs keeps its existing fields in order and appends isCrossRepository"
+assert_eq "number title headRefName baseRefName labels isCrossRepository headRefOid isDraft" "$(printf '%s' "$out" | python3 -c "import json,sys; print(' '.join(json.load(sys.stdin)[0].keys()))")" "list-prs keeps its existing fields in order and appends isCrossRepository"
 rm talos.pipeline.json
 
 # ── Issue #171: list-issues/list-prs pagination (github/gh CLI provider) ─────

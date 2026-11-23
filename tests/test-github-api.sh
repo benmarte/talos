@@ -1340,7 +1340,7 @@ assert_contains "$out" '"number": 150' "#171 github-api: list-prs includes the l
 printf '%s\n' '[{"number":1,"title":"a","head":{"ref":"b1","repo":{"full_name":"acme/widget"}},"base":{"ref":"main","repo":{"full_name":"acme/widget"}},"labels":[]},{"number":2,"title":"b","head":{"ref":"b2","repo":{"full_name":"evil/widget"}},"base":{"ref":"main","repo":{"full_name":"acme/widget"}},"labels":[]},{"number":3,"title":"c","head":{"ref":"b3","repo":null},"base":{"ref":"main","repo":{"full_name":"acme/widget"}},"labels":[]}]' > "$CURL_QUEUE"
 out="$(bash "$VCS" list-prs)"
 assert_eq "1:False:main 2:True:main 3:True:main" "$(printf '%s' "$out" | python3 -c "import json,sys; print(' '.join('%d:%s:%s' % (p['number'], p['isCrossRepository'], p['baseRefName']) for p in json.load(sys.stdin)))")" "#346 github-api: list-prs exposes isCrossRepository and baseRefName"
-assert_eq "number title headRefName baseRefName labels isCrossRepository" "$(printf '%s' "$out" | python3 -c "import json,sys; print(' '.join(json.load(sys.stdin)[0].keys()))")" "#346 github-api: list-prs appends the new fields after the existing ones"
+assert_eq "number title headRefName baseRefName labels isCrossRepository headRefOid isDraft" "$(printf '%s' "$out" | python3 -c "import json,sys; print(' '.join(json.load(sys.stdin)[0].keys()))")" "#346 github-api: list-prs appends the new fields after the existing ones"
 
 # ── Issue #172: record-attempt --idempotency-key idempotency (github-api) ───
 export GITHUB_TOKEN="$TEST_TOKEN"
