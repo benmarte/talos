@@ -168,6 +168,7 @@
 20 test-lock-contention.sh
 4 test-lock-reclaim.sh
 4 test-lock.sh
+4 test-map-dashboard-midnight.sh
 4 test-map-no-runner-907.sh
 22 test-map-refresh-889.sh
 8 test-map-registry-903.sh
