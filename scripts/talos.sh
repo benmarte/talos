@@ -2584,7 +2584,7 @@ _talos_gate_merge() {
           _talos_cap _vcs update-branch "$_pr"
           if [ "$_RC" -eq 0 ]; then
             _talos_cap _vcs pr-mergeable "$_pr"
-            if [ "$_RC" -ne 1 ]; then
+            if [ "$_RC" -ne 1 ] || _talos_local_clean "$_pr"; then
               _talos_emit reason base-synced
               _talos_verdict wait
             fi

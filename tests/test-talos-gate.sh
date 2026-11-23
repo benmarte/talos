@@ -49,7 +49,8 @@ for a in "$@"; do
 done
 if [ "$n" = "hooks" ]; then cat > "$d/hooks.stdin"; fi
 if [ -f "$d/$key.err" ]; then cat "$d/$key.err" >&2; fi
-if [ -f "$d/$key.out" ]; then cat "$d/$key.out"; fi
+if [ -f "$d/$key.once" ]; then cat "$d/$key.once"; rm -f "$d/$key.once"
+elif [ -f "$d/$key.out" ]; then cat "$d/$key.out"; fi
 rc=0
 if [ -f "$d/$key.rc" ]; then rc="$(cat "$d/$key.rc")"; fi
 exit "$rc"
@@ -559,6 +560,12 @@ set_stub pr-mergeable 2 "UNKNOWN"
 gm
 assert_eq "verdict=wait
 reason=base-synced" "$OUT" "wait: UNKNOWN mergeability after the sync fails open, as every best-effort gate does"
+set_stub pr-mergeable 1 "CONFLICTING"; set_stub conflict-files 0 ""
+printf '%s' "CHANGELOG.md" > "$STUB_DIR/conflict-files.once"
+gm
+assert_eq "verdict=wait
+reason=base-synced" "$OUT" "wait: update-branch synced, the provider still reads CONFLICTING and the local trial merge is clean, so its field lags: no redispatch"
+set_stub conflict-files 0 "CHANGELOG.md"
 set_stub pr-mergeable 0 "MERGEABLE"; set_stub update-branch 0
 cfg_json '{"merge": {"auto_sync": false}}'
 rm -f "$STUB_DIR/journal"
