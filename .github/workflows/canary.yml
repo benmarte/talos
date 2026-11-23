@@ -25,7 +25,7 @@ jobs:
   base-currency:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - name: Fetch origin/main
@@ -47,7 +47,7 @@ jobs:
     timeout-minutes: 30
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Run test shard
         run: bash tests/run-tests.sh --no-cache --quiet --shard ${{ matrix.shard }}
 
@@ -62,7 +62,7 @@ jobs:
     if: ${{ vars.TALOS_CANARY_REPO != '' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Run canary
         env:
           TALOS_CANARY_REPO: ${{ vars.TALOS_CANARY_REPO }}

@@ -65,10 +65,10 @@
 99 test-claude-permissions.sh
 142 test-claude-plugin-registration.sh
 22 test-claude-runner-model.sh
+8 test-cleanup-dead-code.sh
 69 test-closing-keyword-siblings-cap.sh
 5 test-closing-keyword-unverified-wait.sh
 52 test-closing-keyword.sh
-8 test-cleanup-dead-code.sh
 6 test-cloud-followups.sh
 14 test-cloud-footer.sh
 72 test-cloud-session.sh
@@ -360,6 +360,7 @@
 13 test-view-issue-spec-trust-847.sh
 31 test-view-issue-spec.sh
 48 test-work-video-827.sh
+1 test-workflow-actions-pinned.sh
 2 test-workflow-lint.sh
 28 test-worktree-checkpoint.sh
 20 test-worktree-commit-docs.sh
