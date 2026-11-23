@@ -379,7 +379,10 @@ def main(argv):
     if not re.fullmatch(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+", slug):
         sys.stderr.write("talos-map: no repository slug\n")
         return 1
-    now = datetime.datetime.now(datetime.timezone.utc)
+    # TALOS_NOW (unix seconds) pins the clock, as it does in talos.sh: tests only.
+    pinned = os.environ.get("TALOS_NOW", "")
+    now = (datetime.datetime.fromtimestamp(int(pinned), datetime.timezone.utc) if pinned.isdigit()
+           else datetime.datetime.now(datetime.timezone.utc))
     every = read_events(a.events)
     events = [e for e in every if num(e.get("issue"))]
     run_end = max((t for t in (parse_ts(e.get("ts")) for e in every if e.get("event") == "run_end") if t), default=None)
