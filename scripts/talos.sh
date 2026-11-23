@@ -3883,7 +3883,11 @@ _talos_prompt() {
         fi
       fi
       _talos_pv QA_CI_STEP ""
-      if [ "$_skip" = 1 ] && [ "$_v" != pre-ci ]; then
+      # #1010: verify.ci_scope changed = this repo's PR CI runs only the tests a
+      # change selects and the merge queue runs the full suite; default full.
+      if [ "$_skip" = 1 ] && [ "$_v" != pre-ci ] && [ "$(cfg verify.ci_scope)" = changed ]; then
+        _talos_pv QA_TARGETED_LINE "Targeted run skipped: \`merge.required_checks\` is set and \`verify.ci_scope\` is \`changed\`, so CI ran the tests this change selects and the merge queue runs the full suite. Run no \`tests/run-tests.sh\` command of any form (not the step 2 \`run-tests.sh --changed\`, not \`--for\`, no pattern, no full suite, not through \`pipeline-verify.sh\`); write \`targeted run skipped: CI ran the tests this change selects (merge.required_checks)\` in the verdict. \`qa-run\` still checks every criterion red/green, and the required-checks gate is unchanged."
+      elif [ "$_skip" = 1 ] && [ "$_v" != pre-ci ]; then
         _talos_pv QA_TARGETED_LINE "Targeted run skipped: \`merge.required_checks\` is set, so CI is the full run at the head. Run no \`tests/run-tests.sh\` command of any form (not the step 2 \`run-tests.sh --changed\`, not \`--for\`, no pattern, no full suite, not through \`pipeline-verify.sh\`); write \`targeted run skipped: CI is the full run (merge.required_checks)\` in the verdict. \`qa-run\` still checks every criterion red/green, and the required-checks gate is unchanged."
       fi
       if [ "$_v" = pre-ci ]; then

@@ -45,8 +45,17 @@ concurrency = doc.get('concurrency', {}) or {}
 cancel = concurrency.get('cancel-in-progress')
 permissions = doc.get('permissions', {}) or {}
 ok = (
-    'paths-ignore' in push
-    and '**.md' in push['paths-ignore']
+    (
+        # #1010: the template keeps paths-ignore on push; this repo's own push
+        # trigger has none (a Markdown-only merge-queue candidate must run the
+        # required check) and names the queue branches.
+        ('$kind' == 'template'
+            and 'paths-ignore' in push
+            and '**.md' in push['paths-ignore'])
+        or ('$kind' == 'repo'
+            and 'paths-ignore' not in push
+            and 'talos/queue/**' in (push.get('branches') or []))
+    )
     # cancel-in-progress must NOT be the unconditional boolean True -- an
     # in-flight push-to-main run (e.g. the macOS job) must survive a second
     # merge landing on top of it. It must instead be an expression scoped
@@ -73,7 +82,13 @@ print('OK' if ok else 'STRUCTURE_MISMATCH')
     echo "  skip: PyYAML not installed -- falling back to a structural grep"
     local content
     content="$(cat "$file")"
-    assert_contains "$content" "paths-ignore:" "$label: push has paths-ignore"
+    if [ "$kind" = template ]; then
+      assert_contains "$content" "paths-ignore:" "$label: push has paths-ignore"
+    else
+      assert_not_contains "$(grep -v '^[[:space:]]*#' "$file")" "paths-ignore:" \
+        "$label: push has no paths-ignore (#1010)"
+      assert_contains "$content" "talos/queue/**" "$label: push covers the queue branches (#1010)"
+    fi
     assert_not_contains "$content" "cancel-in-progress: true" \
       "$label: cancel-in-progress is not the unconditional boolean true"
     assert_contains "$content" "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" \
