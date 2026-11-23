@@ -34,6 +34,8 @@ Paths such as `scripts/talos.sh` are relative to the Talos install (`~/.talos` a
 
 `run --issue <N>` works one issue and ends after its merge with `stop merged pr=<M>`.
 
+**`stop reason=issue-closed issue=<n>` (exit 0).** The driver routes from the state it read at the top of the pass, and another lane's merge queue can merge this issue's PR and close the issue while the run goes on. Right before every stage dispatch `talos.sh run` reads the issue again (one `view-issue`) and, when the dispatch names a PR, the PR (`pr-state`, GitHub). An issue that reads closed, or a PR that reads merged, ends the run on that stop line: nothing is dispatched, no attempt is recorded, no label is added (the issue is not left `pipeline:blocked`) and the run's lease is released. A read that fails prints one `warn reason=pre-dispatch-unread` and the dispatch goes on as before.
+
 Verbs: `env`, `state [--summary]`, `next [--issue N]`, `prompt`, `done`, `gate fix-round|merge`, `docs-gate`, `post-merge`, `sweep`, `summary`, `claim`, `lease prune`, `evidence prune`, `queue list|run`, `map`, `run`. (`map --refresh` is described under Project map; `queue` under [Merge queue](#merge-queue).)
 
 ### Stages
@@ -981,6 +983,7 @@ Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azu
 | `assign-issue` | yes | yes | yes | exception: local-only |
 | `assign-pr` | yes | yes (merge requests) | yes (no-op: a pull request has no assignee, its creator is the account user) | exception: local-only |
 | `comment-pr`, `pr-head`, `pr-head-ref`, `check-approval-sha` | yes | yes | yes | exception: no PRs |
+| `pr-state` | yes (`open`, `closed` or `merged`; `talos.sh run` reads it before a dispatch) | exception: not implemented | exception: not implemented | exception: no PRs |
 | `ci-failure-excerpt` | yes (the failing lines of each failed required job, read with `gh run view --log-failed`) | answers `ci-failure-excerpt: unavailable (...)`, exit 0 | answers `ci-failure-excerpt: unavailable (...)`, exit 0 | answers `ci-failure-excerpt: unavailable (...)`, exit 0 |
 | `enqueue-pr` | yes (GitHub's merge queue) | exception: exits 2 | exception: exits 2 | exception: exits 2 |
 | `rate-limit` | yes (core and graphql quota) | exception: exits 2 | exception: exits 2 | exception: exits 2 |

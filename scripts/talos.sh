@@ -497,13 +497,14 @@
 #         merge-failed provider-failed config-mutated worktree-unavailable (exit 1; 2 for usage),
 #         and with exit 0 stop-requested iterations-exhausted stage-blocked
 #         qa-fail-unchanged-head spec-unusable fix-round-unchanged-head
-#         checkout-return-failed same-verdict-same-head qa-flaky; plus the stop reasons
+#         checkout-return-failed same-verdict-same-head qa-flaky issue-closed (#1057: the
+#         issue reads closed, or its PR merged, right before a dispatch); plus the stop reasons
 #         of `next`, passed through (exit 1)
 #   warn: notify-failed board-failed spend-upsert-failed lease-release-failed
 #         map-failed (the run's first map failure only, then the map is off for the
 #         run; at the run's end: one stderr line, the end line already out)
 #         model-invalid label-failed comment-failed budget-check-failed
-#         inflight-unreadable
+#         inflight-unreadable pre-dispatch-unread
 #
 # docs-gate  Does the docs stage need an LLM? One line: `docs=dispatch
 #         reason=docs-paths paths-file=<f>` | `docs=dispatch reason=always|fetch-failed`
@@ -6114,6 +6115,44 @@ _talos_run_warns() {
   done <<< "$1"
 }
 
+# _talos_run_issue_gone <issue> <pr or empty> (#1057): the check right before a
+# stage is dispatched. The issue is read once (`view-issue`) and the PR, when the
+# dispatch names one, once (`pr-state`). An issue that reads closed, or a PR that
+# reads merged, ends the run -- `stop reason=issue-closed issue=<n>`, exit 0 --
+# with the lease released and nothing dispatched, recorded or labelled. A read
+# that fails warns once (`pre-dispatch-unread`) and the dispatch goes on, as it
+# did before; an answer that is not parseable counts as open, and a provider
+# without `pr-state` is not warned about.
+_talos_run_issue_gone() {
+  local _n="$1" _pr="$2" _gone=0 _st _warned=0
+  [ -n "$_n" ] || return 0
+  _talos_cap _vcs view-issue "$_n"
+  if [ "$_RC" -ne 0 ]; then
+    _talos_warn pre-dispatch-unread "issue=$_n"; _warned=1
+  else
+    _st="$(python3 -I -c 'import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+    s = d.get("state") if isinstance(d, dict) else None
+except ValueError:
+    s = None
+print(s.lower() if isinstance(s, str) else "")' <<<"$_OUT" 2>/dev/null)"
+    case "$_st" in closed | done) _gone=1 ;; esac
+  fi
+  if [ "$_gone" -eq 0 ] && [ -n "$_pr" ]; then
+    _talos_cap _vcs pr-state "$_pr"
+    if [ "$_RC" -eq 0 ]; then
+      [ "${_OUT%%$'\n'*}" != merged ] || _gone=1
+    elif [ "$_warned" -eq 0 ] && ! grep -Eq 'not implemented for provider|unknown verb' <<<"$_ERR"; then
+      _talos_warn pre-dispatch-unread "issue=$_n pr=$_pr"
+    fi
+  fi
+  [ "$_gone" -eq 1 ] || return 0
+  _talos_lease_release "$_n"
+  _talos_emit stop "reason=issue-closed issue=$_n"
+  _talos_flush; exit 0
+}
+
 # _talos_run_dispatch <action-line> [<shape> [<prior-file>]]: one dispatched
 # stage, the four calls the playbook's act path used to spell out. The action
 # line's stage comes off a sanitised single line (`action=dispatch stage=<role>
@@ -6130,6 +6169,10 @@ _talos_run_dispatch() {
     validator | planner | pm | threat | developer) [ -n "$_n" ] || _run_fail unknown-act ;;
     qa | reviewer | security | adversarial | docs) [ -n "$_pr" ] || _run_fail unknown-act ;;
   esac
+
+  # #1057: the state `next` routed from may be stale (another lane's merge queue
+  # can merge this PR and close the issue mid-run), so it is read again here.
+  _talos_run_issue_gone "$_n" "$_pr"
 
   # #835: the review-roles decision is on the PR before a review role runs.
   case "$_role" in
