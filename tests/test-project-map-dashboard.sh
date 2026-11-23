@@ -25,13 +25,16 @@ MAP="$TH/maps/acme-widget.html"
 STATE="$SANDBOX/.git/talos"
 META="$HOME/.cache/talos/meta"
 mkdir -p "$STATE" "$META"
+# The fixture times are "N seconds ago" and the map reads the same clock: pin it
+# at midday UTC so no entry crosses midnight, whatever time of day this runs (#1023).
+export TALOS_NOW=1781524800   # 2026-06-15T12:00:00Z
 
 # ev <event> <role> <issue> <pr> <verdict> <tokens> <summary> <seconds ago> [<stage>]
 ev() {
   python3 -I -c '
-import datetime, json, sys
+import datetime, json, os, sys
 a = sys.argv
-ts = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=int(a[8]))
+ts = datetime.datetime.fromtimestamp(int(os.environ["TALOS_NOW"]), datetime.timezone.utc) - datetime.timedelta(seconds=int(a[8]))
 e = {"event": a[1], "role": a[2], "issue": int(a[3]), "pr": int(a[4]) if a[4] else None,
      "verdict": a[5] or None, "tokens": int(a[6]) if a[6] else None, "summary": a[7],
      "ts": ts.strftime("%Y-%m-%dT%H:%M:%SZ")}
@@ -42,8 +45,8 @@ print(json.dumps(e))' "$@" >> "$STATE/events.jsonl"
 start() { ev stage_start orchestrator "$1" "${3:-}" "" "" "" "$2" "$4"; }   # <issue> <seconds ago> [<pr>] <stage>
 snap() {  # <seconds since the run started | none (an ended run) | norun> <collect JSON> [<priority JSON> [<collect age s, 60>]]
   python3 -I -c '
-import datetime, json, sys
-now = datetime.datetime.now(datetime.timezone.utc)
+import datetime, json, os, sys
+now = datetime.datetime.fromtimestamp(int(os.environ["TALOS_NOW"]), datetime.timezone.utc)
 f = lambda s: (now - datetime.timedelta(seconds=int(s))).strftime("%Y-%m-%dT%H:%M:%SZ")
 run = {} if sys.argv[2] == "norun" else \
     {"active": False, "started": f(30000), "end": "stop at " + f(10) + " done"} if sys.argv[2] == "none" \
