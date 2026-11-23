@@ -32,6 +32,9 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.dont_write_bytecode = True  # no __pycache__ in the install
+sys.path.insert(0, HERE)
+import talos_events
 ROLES = ("validator", "pm", "planner", "developer", "qa", "reviewer", "security", "docs", "adversarial")
 NAME = re.compile(r"agent-([A-Za-z0-9_-]+)\.jsonl")
 SLUG = re.compile(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+")
@@ -93,11 +96,8 @@ def read_transcript(path, fmt):
     anon = 0
     with f:
         for line in f:
-            try:
-                d = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(d, dict):
+            d = talos_events.parse_line(line)
+            if d is None:
                 continue
             ts = parse_ts(d.get("timestamp"))
             if ts:
@@ -194,20 +194,10 @@ class Log:
     def __init__(self, path):
         self.path = path
         self.issues, self.prs, self.agents = set(), {}, set()
-        try:
-            with open(path, "rb") as f:
-                for line in f:
-                    self.note(line)
-        except OSError:
-            pass
+        for e in talos_events.read_events(path):
+            self.note(e)
 
-    def note(self, line):
-        try:
-            e = json.loads(line)
-        except ValueError:
-            return
-        if not isinstance(e, dict):
-            return
+    def note(self, e):
         n, pr = e.get("issue"), e.get("pr")
         if isinstance(n, int) and not isinstance(n, bool):
             self.issues.add(n)
@@ -246,11 +236,8 @@ class Log:
             data = b"".join(chunks)
             for line in data.splitlines():
                 if b'"agent_id"' in line and b'"usage"' in line:
-                    try:
-                        e = json.loads(line)
-                    except ValueError:
-                        continue
-                    if isinstance(e, dict) and e.get("event") == "usage" and e.get("agent_id") == event["agent_id"]:
+                    e = talos_events.parse_line(line)
+                    if e and e.get("event") == "usage" and e.get("agent_id") == event["agent_id"]:
                         self.agents.add(event["agent_id"])
                         return False
             if data and not data.endswith(b"\n"):

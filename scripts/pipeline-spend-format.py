@@ -20,11 +20,16 @@ budget in `talos.sh next` (`session_context`, #605).
 """
 
 import json
-import math
 import os
 import stat
+import sys
 import unicodedata
 from decimal import Decimal
+
+sys.dont_write_bytecode = True  # no __pycache__ in the install
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import talos_events
+from talos_events import as_count
 
 _ABBREV = {
     "developer": "dev", "adversarial": "adv", "security": "sec",
@@ -64,16 +69,6 @@ def role_label(role):
 def role_abbrev(role):
     label = role_label(role)
     return _ABBREV.get(label, label)
-
-
-def as_count(v):
-    """A recorded non-negative finite number as an int, or None (null, bool,
-    string, negative, Infinity and NaN are all unrecorded)."""
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
-        return None
-    if isinstance(v, float) and not math.isfinite(v):
-        return None
-    return int(v)
 
 
 def fmt_compact(n):
@@ -273,8 +268,10 @@ def transcript_usage(f, seen, since="", cap=TRANSCRIPT_CAP, name=""):
     for n, line in enumerate(f):
         if b'"usage"' not in line:
             continue
+        d = talos_events.parse_line(line)
+        if d is None:
+            continue
         try:
-            d = json.loads(line)
             msg = d["message"]
             u = msg["usage"]
             if str(d.get("timestamp", ""))[:19] < since[:19]:
