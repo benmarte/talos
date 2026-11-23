@@ -87,7 +87,7 @@ jobs:
     env:
       ACTIONLINT_VERSION: '1.7.12'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # The release's own checksums file, from the pinned tag, must match the tarball.
       - name: Install actionlint (pinned version, checksum verified)
         run: |
