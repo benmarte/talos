@@ -30,7 +30,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
-  group: tests-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  group: tests-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}-${{ github.event.pull_request.draft == true && 'draft' || 'ready' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
