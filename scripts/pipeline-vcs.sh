@@ -4072,7 +4072,7 @@ _vcs_shared_check_attempt() {
 #   a missing number, a missing stage, <id-check-fn> record-attempt <issue-n>
 #   (the provider's numeric-id check, when it has one), then a stage outside
 #   [A-Za-z0-9._-] (it would corrupt the marker line). Returns 1 with the
-#   message on stderr.
+#   message on stderr; 2 (a usage error) for a stage outside the known roles.
 _vcs_shared_validate_stage() {
   local n="$1" stage="$2" id_check_fn="${3:-}"
   [ -n "$n" ]     || { echo "pipeline-vcs: record-attempt: missing issue number" >&2; return 1; }
@@ -4080,6 +4080,14 @@ _vcs_shared_validate_stage() {
   [ -z "$id_check_fn" ] || "$id_check_fn" record-attempt "$n" || return 1
   case "$stage" in
     *[!A-Za-z0-9._-]*) echo "pipeline-vcs: record-attempt: stage may only use letters, digits, '.', '_' and '-', got '$stage'" >&2; return 1 ;;
+  esac
+  # A stage read-attempt would refuse (KNOWN_STAGES, from TALOS_ROLES) must not
+  # be recorded: the marker would make every later record-attempt fail on its
+  # read (#1046). A usage error, exit 2, before anything is read or posted.
+  _vcs_shared_contract_env
+  case " $TALOS_CONTRACT_ROLES_ENV " in
+    *" $stage "*) ;;
+    *) echo "pipeline-vcs: record-attempt: unknown stage \"$stage\" (known: $TALOS_CONTRACT_ROLES_ENV)" >&2; return 2 ;;
   esac
 }
 
@@ -6703,7 +6711,7 @@ json.dump([dict(p, headRefName=(p.get('head') or {}).get('ref', '')) for p in pr
       # record-attempt <issue-n> <stage> [--pr <pr-n> | --idempotency-key <token>]:
       # see _vcs_shared_record_attempt.
       local n="${1:-}" stage="${2:-}"
-      _vcs_shared_validate_stage "$n" "$stage" || exit 1
+      _vcs_shared_validate_stage "$n" "$stage" || exit $?
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] record-attempt $n $stage: read prior state, post <!-- talos:attempt stage=$stage ... --> marker"; return 0; }
       # The write: POST the marker comment and print its URL (it may
       # legitimately be empty); non-zero only when the write itself failed.
@@ -7553,7 +7561,7 @@ print((d.get('sha') or (d.get('diff_refs') or {}).get('head_sha') or '').lower()
       # record-attempt <issue> <stage> [--pr <mr> | --idempotency-key <token>]
       # (#736): see _vcs_shared_record_attempt; the write is an issue note.
       local n="${1:-}" stage="${2:-}"
-      _vcs_shared_validate_stage "$n" "$stage" _gl_require_iid || exit 1
+      _vcs_shared_validate_stage "$n" "$stage" _gl_require_iid || exit $?
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] record-attempt $n $stage: read prior state, post <!-- talos:attempt stage=$stage ... --> marker"; return 0; }
       # Notes keep their markdown as typed, so the marker needs no conversion.
       _gl_post_attempt_marker() { glab issue note "$1" --message "$2" $RARG; }
@@ -9631,7 +9639,7 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
       # record-attempt <work-item-id> <stage> [--pr <pr-n> | --idempotency-key <token>]
       # (#685): see _vcs_shared_record_attempt; the write is a work-item comment.
       local n="${1:-}" stage="${2:-}"
-      _vcs_shared_validate_stage "$n" "$stage" _az_require_id || exit 1
+      _vcs_shared_validate_stage "$n" "$stage" _az_require_id || exit $?
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] record-attempt $n $stage: read prior state, post <!-- talos:attempt stage=$stage ... --> marker"; return 0; }
       # Work-item comments render HTML and _md_to_html would escape the marker
       # line, so post the body as HTML already: the text line in <p>, then the
