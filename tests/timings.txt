@@ -360,6 +360,7 @@
 13 test-view-issue-spec-trust-847.sh
 31 test-view-issue-spec.sh
 48 test-work-video-827.sh
+2 test-workflow-lint.sh
 28 test-worktree-checkpoint.sh
 20 test-worktree-commit-docs.sh
 2 test-worktree-to-base-842.sh
