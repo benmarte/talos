@@ -12644,7 +12644,8 @@ _vcs_ref_checks_required_dispatch() {
 # `ci-failure-excerpt: unavailable (<reason>)` line, exit 0: the verb never fails
 # a run. Per job: `job <name> (run <id>):`, then at most 40 lines of FAIL<2 spaces>,
 # the expected:/actual:/missing: line after one, `first failure:` and `RESULT:`
-# (control characters stripped, 300 characters a line); 120 lines in all.
+# (control characters stripped, 300 characters a line, `<!--` shown as `<!- -` and
+# `-->` as `- ->` so no line can carry a Talos marker, #1008); 120 lines in all.
 _vcs_ci_failure_excerpt_filter() {
   python3 -I -c '
 import re, sys
@@ -12659,6 +12660,9 @@ out, prev = [], False
 for raw in sys.stdin.buffer.read().decode("utf-8", "replace").split("\n"):
     line = pre.sub("", raw, count=1)
     line = ctrl.sub("", ansi.sub("", line.replace("\t", " "))).rstrip()[:300]
+    # #1008: no HTML comment opener or closer survives, so a log line cannot
+    # carry a parseable Talos marker into a prompt or a trusted comment.
+    line = line.replace("<!--", "<!- -").replace("-->", "- ->")
     if keep.match(line):
         out.append(line)
         prev = line.startswith("FAIL  ")
