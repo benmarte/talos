@@ -251,37 +251,20 @@ cmd_list() {
     return 0
   fi
 
-  python3 -I - "$log_path" "$issue" "$role" "$event" "$last" "$json_mode" <<'PYEOF'
+  python3 -I - "$log_path" "$issue" "$role" "$event" "$last" "$json_mode" "$SCRIPT_DIR" <<'PYEOF'
 import json
 import sys
 
-log_path, issue, role, event, last, json_mode = sys.argv[1:7]
+log_path, issue, role, event, last, json_mode, scripts_dir = sys.argv[1:8]
+sys.dont_write_bytecode = True  # no __pycache__ in the install
+sys.path.insert(0, scripts_dir)
+import talos_events
 
-def matches(rec):
-    if issue and str(rec.get("issue")) != issue:
-        return False
-    if role and rec.get("role") != role:
-        return False
-    if event and rec.get("event") != event:
-        return False
-    return True
-
-records = []
-skipped = 0
-with open(log_path, "r", errors="replace") as f:
-    for line in f:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-            if not isinstance(rec, dict):
-                raise ValueError("not an object")
-        except (ValueError, TypeError):
-            skipped += 1
-            continue
-        if matches(rec):
-            records.append(rec)
+stats = {}
+records = [rec for rec in talos_events.read_events(
+    log_path, issue=issue or None, kinds=(event,) if event else None, stats=stats)
+    if not role or rec.get("role") == role]
+skipped = stats["skipped"]
 
 if last:
     try:
@@ -382,16 +365,13 @@ issue_set = set(issues.split(",")) if issues else set()
 
 _MAX = sys.float_info.max
 
-def _number(v):
-    """v when it is a finite non-negative number, else None (unrecorded): a
-    string, bool, negative, Infinity or NaN must neither crash the sums nor
-    reach --json as a bare NaN/Infinity (#393). Values stay as recorded, so a
-    valid log prints exactly as before."""
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
-        return None
-    if isinstance(v, float) and not math.isfinite(v):
-        return None
-    return v
+# A figure that is not a finite non-negative number (a string, bool, negative,
+# Infinity or NaN) is unrecorded: it must neither crash the sums nor reach
+# --json as a bare NaN/Infinity (#393). Values stay as recorded.
+sys.dont_write_bytecode = True  # no __pycache__ in the install
+sys.path.insert(0, scripts_dir)
+import talos_events
+_number = talos_events.number
 
 def _add(a, b):
     """a + b, clamped to the largest float when the sum overflows: two valid
@@ -452,71 +432,62 @@ pending = {}
 def _usage_less(rec):
     return all(_number(rec.get(k)) is None for k in ("tokens", "tool_uses", "duration_s"))
 events = []   # (issue, pr, role, tokens or None, model, cache write, cache read, pool or None) -- report modes only
-skipped = 0
 have_ci_runs = False
 have_pool = False
-# a missing log reaches here only for --summary, which reports it as no events
-with open(log_path if os.path.isfile(log_path) else os.devnull, "r", errors="replace") as f:
-    for line in f:
-        line = line.strip()
-        if not line:
+stats = {}
+# a missing log reads as an empty one (only --summary reaches here without a file:
+# it reports no events)
+for rec in talos_events.read_events(log_path, stats=stats):
+    # #550: a dispatch marker for the status line, not a finished stage;
+    # a run_end is the run's stop line, not a stage either, and a hand_note
+    # records a person's intervention, a finding_outcome how a review finding ended.
+    if rec.get("event") in ("stage_start", "run_end", "hand_note", "finding_outcome"):
+        continue
+    if not matches(rec):
+        continue
+    key = (rec.get("issue"), rec.get("role"))
+    if rec.get("event") == "stage_complete":
+        pending[key] = rec.get("pr")
+    elif key in pending:
+        open_pr = pending.pop(key)
+        if rec.get("event") == rec.get("role") and open_pr in (None, rec.get("pr")) and _usage_less(rec):
+            # the run is already counted; only its verdict adds a re-stamp
+            if rec.get("verdict") in ("RESTAMP_PASS", "RESTAMP_FAIL"):
+                groups[key]["restamp"] += 1
             continue
-        try:
-            rec = json.loads(line)
-            if not isinstance(rec, dict):
-                raise ValueError("not an object")
-        except (ValueError, TypeError):
-            skipped += 1
-            continue
-        # #550: a dispatch marker for the status line, not a finished stage;
-        # a run_end is the run's stop line, not a stage either, and a hand_note
-        # records a person's intervention, a finding_outcome how a review finding ended.
-        if rec.get("event") in ("stage_start", "run_end", "hand_note", "finding_outcome"):
-            continue
-        if not matches(rec):
-            continue
-        key = (rec.get("issue"), rec.get("role"))
-        if rec.get("event") == "stage_complete":
-            pending[key] = rec.get("pr")
-        elif key in pending:
-            open_pr = pending.pop(key)
-            if rec.get("event") == rec.get("role") and open_pr in (None, rec.get("pr")) and _usage_less(rec):
-                # the run is already counted; only its verdict adds a re-stamp
-                if rec.get("verdict") in ("RESTAMP_PASS", "RESTAMP_FAIL"):
-                    groups[key]["restamp"] += 1
-                continue
-        if key not in groups:
-            groups[key] = _new_group()
-            order.append(key)
-        g = groups[key]
-        g["events"] += 1
-        tokens = _number(rec.get("tokens"))
-        g["tokens"] = _add(g["tokens"], tokens or 0)
-        g["tool_uses"] = _add(g["tool_uses"], _number(rec.get("tool_uses")) or 0)
-        g["duration_s"] = _add(g["duration_s"], _number(rec.get("duration_s")) or 0)
-        if tokens is None:
-            g["unrecorded"] += 1
-        if rec.get("verdict") in ("RESTAMP_PASS", "RESTAMP_FAIL"):
-            g["restamp"] += 1
-        split = [_number(rec.get(field)) for field in SPLIT]
-        for field, n in zip(SPLIT, split):
-            g[field] = _add_some(g[field], n)
-        if split[3] is None:
-            g["cache_unrecorded"] += 1
-        pool = rec.get("pool")
-        if isinstance(pool, str) and pool in POOLS:
-            have_pool = True
-            g[pool + "_tokens"] = _add(g[pool + "_tokens"], tokens or 0)
-            g[pool + "_cache_read_tokens"] = _add(g[pool + "_cache_read_tokens"], split[3] or 0)
-        else:
-            pool = None
-            g["pool_unrecorded"] += 1
-        ci_runs = rec.get("ci_runs")
-        if type(ci_runs) is int and ci_runs >= 0:
-            have_ci_runs = True
-            g["ci_runs"] += ci_runs
-        if report:
-            events.append((rec.get("issue"), rec.get("pr"), rec.get("role"), tokens, rec.get("model"), split[2], split[3], pool))
+    if key not in groups:
+        groups[key] = _new_group()
+        order.append(key)
+    g = groups[key]
+    g["events"] += 1
+    tokens = _number(rec.get("tokens"))
+    g["tokens"] = _add(g["tokens"], tokens or 0)
+    g["tool_uses"] = _add(g["tool_uses"], _number(rec.get("tool_uses")) or 0)
+    g["duration_s"] = _add(g["duration_s"], _number(rec.get("duration_s")) or 0)
+    if tokens is None:
+        g["unrecorded"] += 1
+    if rec.get("verdict") in ("RESTAMP_PASS", "RESTAMP_FAIL"):
+        g["restamp"] += 1
+    split = [_number(rec.get(field)) for field in SPLIT]
+    for field, n in zip(SPLIT, split):
+        g[field] = _add_some(g[field], n)
+    if split[3] is None:
+        g["cache_unrecorded"] += 1
+    pool = rec.get("pool")
+    if isinstance(pool, str) and pool in POOLS:
+        have_pool = True
+        g[pool + "_tokens"] = _add(g[pool + "_tokens"], tokens or 0)
+        g[pool + "_cache_read_tokens"] = _add(g[pool + "_cache_read_tokens"], split[3] or 0)
+    else:
+        pool = None
+        g["pool_unrecorded"] += 1
+    ci_runs = rec.get("ci_runs")
+    if type(ci_runs) is int and ci_runs >= 0:
+        have_ci_runs = True
+        g["ci_runs"] += ci_runs
+    if report:
+        events.append((rec.get("issue"), rec.get("pr"), rec.get("role"), tokens, rec.get("model"), split[2], split[3], pool))
+skipped = stats["skipped"]
 
 order.sort(key=lambda k: (str(k[0]), str(k[1])))
 
@@ -690,7 +661,7 @@ def render_summary(fmt):
     # issue ascending, its PR rows in PR order, its pre-PR row last
     row_order.sort(key=lambda k: (num_key(k[0]), k[0], k[1] is None, num_key(k[1]), k[1] or ""))
 
-    def num(v):
+    def count_text(v):
         return fmt.fmt_num(fmt.as_count(v))
 
     per_issue = {}
@@ -717,7 +688,7 @@ def render_summary(fmt):
         for k in rest:
             rest_tokens = _add(rest_tokens, rows_by[k]["tokens"])
             rest_unrecorded += rows_by[k]["unrecorded"]
-        folded = "+%d more rows: %s" % (len(rest), num(rest_tokens))
+        folded = "+%d more rows: %s" % (len(rest), count_text(rest_tokens))
         if rest_unrecorded:
             folded += " (+%d unrecorded)" % rest_unrecorded
 
@@ -736,7 +707,7 @@ def render_summary(fmt):
     table = [("issue", "PR", "tokens", "cache write", "cache read", "unrecorded", "stage models")]
     for k in shown:
         r = rows_by[k]
-        table.append(("#" + k[0], "pre-PR" if k[1] is None else "#" + k[1], num(r["tokens"]),
+        table.append(("#" + k[0], "pre-PR" if k[1] is None else "#" + k[1], count_text(r["tokens"]),
                       *cache_cells(r["events"]), str(r["unrecorded"]), stage_models(r["models"])))
     widths = [max(len(t[i]) for t in table) for i in range(6)]
     lines = ["Token spend — run summary"]
@@ -745,9 +716,9 @@ def render_summary(fmt):
     if folded:
         lines.append(folded)
     pr_rows = sorted((k for k in row_order if k[1] is not None), key=lambda k: -rows_by[k]["tokens"])
-    lines.append("Top PRs: " + (", ".join("#%s %s" % (k[1], num(rows_by[k]["tokens"])) for k in pr_rows[:3]) or "none"))
-    lines.append("Per issue: " + ", ".join("#%s %s" % (i, num(v)) for i, v in per_issue.items()))
-    total_line = "Total: " + num(grand)
+    lines.append("Top PRs: " + (", ".join("#%s %s" % (k[1], count_text(rows_by[k]["tokens"])) for k in pr_rows[:3]) or "none"))
+    lines.append("Per issue: " + ", ".join("#%s %s" % (i, count_text(v)) for i, v in per_issue.items()))
+    total_line = "Total: " + count_text(grand)
     if grand_unrecorded:
         total_line += " (+%d unrecorded)" % grand_unrecorded
     lines.append(total_line + " (cache reads not included) · " + fmt.fmt_cache(*cache_of(stage_events)))
@@ -821,44 +792,33 @@ newest = None
 recorded = {}
 unrecorded = 0
 total = 0
-skipped = 0
 # #604: cache reads and writes over the same scope; None until an event has one
 cache_read = cache_write = None
 cache_unrecorded = 0
-with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-    for line in f:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-            if not isinstance(rec, dict):
-                raise ValueError("not an object")
-        except (ValueError, TypeError):
-            skipped += 1
-            continue
-        if str(rec.get("issue")) != issue:
-            continue
-        if pr and (rec.get("pr") is None or str(rec.get("pr")) != pr):
-            continue
-        if rec.get("role") == "orchestrator":
-            continue
-        newest = rec
-        tokens = as_count(rec.get("tokens"))
-        if tokens is None:
-            unrecorded += 1
-        else:
-            total += tokens
-            label = role_label(rec.get("role"))
-            recorded[label] = recorded.get(label, 0) + tokens
-        read, write = as_count(rec.get("cache_read_tokens")), as_count(rec.get("cache_write_tokens"))
-        if read is None:
-            cache_unrecorded += 1
-        else:
-            cache_read = (cache_read or 0) + read
-        if write is not None:
-            cache_write = (cache_write or 0) + write
+import talos_events  # sys.path already holds the scripts dir (above)
+stats = {}
+for rec in talos_events.read_events(log_path, issue=issue, stats=stats):
+    if pr and (rec.get("pr") is None or str(rec.get("pr")) != pr):
+        continue
+    if rec.get("role") == "orchestrator":
+        continue
+    newest = rec
+    tokens = as_count(rec.get("tokens"))
+    if tokens is None:
+        unrecorded += 1
+    else:
+        total += tokens
+        label = role_label(rec.get("role"))
+        recorded[label] = recorded.get(label, 0) + tokens
+    read, write = as_count(rec.get("cache_read_tokens")), as_count(rec.get("cache_write_tokens"))
+    if read is None:
+        cache_unrecorded += 1
+    else:
+        cache_read = (cache_read or 0) + read
+    if write is not None:
+        cache_write = (cache_write or 0) + write
 
+skipped = stats["skipped"]
 if skipped:
     print(f"pipeline-events: skipped {skipped} malformed line(s)", file=sys.stderr)
 if newest is None:
@@ -935,48 +895,27 @@ cmd_scoreboard() {
     return 1
   }
 
-  python3 -I - "$log_path" "$repo" "$since" "$json_mode" "$SCRIPT_DIR/pipeline-vcs.sh" <<'PYEOF'
+  python3 -I - "$log_path" "$repo" "$since" "$json_mode" "$SCRIPT_DIR/pipeline-vcs.sh" "$SCRIPT_DIR" <<'PYEOF'
 import datetime
 import json
-import math
 import re
 import subprocess
 import sys
 
-log_path, repo_filter, since, json_mode, vcs_script = sys.argv[1:6]
+log_path, repo_filter, since, json_mode, vcs_script, scripts_dir = sys.argv[1:7]
+sys.dont_write_bytecode = True  # no __pycache__ in the install
+sys.path.insert(0, scripts_dir)
+import talos_events
+from talos_events import tokens_of  # the event's tokens as a finite non-negative number, or None
 
-records = []
-skipped = 0
-try:
-    with open(log_path, "r", errors="replace") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-                if not isinstance(rec, dict):
-                    raise ValueError("not an object")
-            except (ValueError, TypeError):
-                skipped += 1
-                continue
-            records.append(rec)
-except OSError:
-    pass  # a missing or unreadable log reads as an empty one
+# a missing or unreadable log reads as an empty one
+stats = {}
+records = list(talos_events.read_events(log_path, stats=stats))
+skipped = stats["skipped"]
 
 
 def key(v):
     return None if v is None else str(v)
-
-
-def tokens_of(rec):
-    """The event's tokens as a number, or None when it is not a finite non-negative one."""
-    v = rec.get("tokens")
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
-        return None
-    if not math.isfinite(v) or v < 0:
-        return None
-    return v
 
 
 def day_of(rec):

@@ -1,0 +1,123 @@
+$ cost
+pipeline-events: skipped 6 malformed line(s)
+issue	role	events	tokens	tool_uses	duration_s	unrecorded	restamp	input_tokens	output_tokens	cache_write_tokens	cache_read_tokens	cache_unrecorded
+21	developer	1	50000	60	900	0	0	unrecorded	unrecorded	20000	400000	0
+21	orchestrator	1	0	0	0	1	0	unrecorded	unrecorded	unrecorded	unrecorded	1
+21	pm	1	2000	4	60	0	0	unrecorded	unrecorded	unrecorded	unrecorded	1
+21	qa	1	0	5	200	1	0	unrecorded	unrecorded	unrecorded	unrecorded	1
+21	reviewer	1	12000	9	120	0	0	unrecorded	unrecorded	unrecorded	unrecorded	1
+21	validator	1	1000	3	40	0	0	unrecorded	unrecorded	unrecorded	unrecorded	1
+22	developer	1	0	2	30	1	0	unrecorded	unrecorded	unrecorded	unrecorded	1
+22	other	1	700	1	10	0	0	unrecorded	unrecorded	unrecorded	unrecorded	1
+24	developer	1	4000	0	0	0	0	unrecorded	unrecorded	unrecorded	unrecorded	1
+TOTAL		9	69700	84	1360	2	0	unrecorded	unrecorded	20000	400000	7
+rc=0
+$ cost --json
+pipeline-events: skipped 6 malformed line(s)
+{"rows": [{"issue": 21, "role": "developer", "events": 1, "tokens": 50000, "tool_uses": 60, "duration_s": 900, "unrecorded": 0, "restamp": 0, "input_tokens": null, "output_tokens": null, "cache_write_tokens": 20000, "cache_read_tokens": 400000, "cache_unrecorded": 0}, {"issue": 21, "role": "orchestrator", "events": 1, "tokens": 0, "tool_uses": 0, "duration_s": 0, "unrecorded": 1, "restamp": 0, "input_tokens": null, "output_tokens": null, "cache_write_tokens": null, "cache_read_tokens": null, "cache_unrecorded": 1}, {"issue": 21, "role": "pm", "events": 1, "tokens": 2000, "tool_uses": 4, "duration_s": 60, "unrecorded": 0, "restamp": 0, "input_tokens": null, "output_tokens": null, "cache_write_tokens": null, "cache_read_tokens": null, "cache_unrecorded": 1}, {"issue": 21, "role": "qa", "events": 1, "tokens": 0, "tool_uses": 5, "duration_s": 200, "unrecorded": 1, "restamp": 0, "input_tokens": null, "output_tokens": null, "cache_write_tokens": null, "cache_read_tokens": null, "cache_unrecorded": 1}, {"issue": 21, "role": "reviewer", "events": 1, "tokens": 12000, "tool_uses": 9, "duration_s": 120, "unrecorded": 0, "restamp": 0, "input_tokens": null, "output_tokens": null, "cache_write_tokens": null, "cache_read_tokens": null, "cache_unrecorded": 1}, {"issue": 21, "role": "validator", "events": 1, "tokens": 1000, "tool_uses": 3, "duration_s": 40, "unrecorded": 0, "restamp": 0, "input_tokens": null, "output_tokens": null, "cache_write_tokens": null, "cache_read_tokens": null, "cache_unrecorded": 1}, {"issue": 22, "role": "developer", "events": 1, "tokens": 0, "tool_uses": 2, "duration_s": 30, "unrecorded": 1, "restamp": 0, "input_tokens": null, "output_tokens": null, "cache_write_tokens": null, "cache_read_tokens": null, "cache_unrecorded": 1}, {"issue": 22, "role": "other", "events": 1, "tokens": 700, "tool_uses": 1, "duration_s": 10, "unrecorded": 0, "restamp": 0, "input_tokens": null, "output_tokens": null, "cache_write_tokens": null, "cache_read_tokens": null, "cache_unrecorded": 1}, {"issue": "24", "role": "developer", "events": 1, "tokens": 4000, "tool_uses": 0, "duration_s": 0, "unrecorded": 0, "restamp": 0, "input_tokens": null, "output_tokens": null, "cache_write_tokens": null, "cache_read_tokens": null, "cache_unrecorded": 1}], "total": {"events": 9, "tokens": 69700, "tool_uses": 84, "duration_s": 1360, "unrecorded": 2, "restamp": 0, "input_tokens": null, "output_tokens": null, "cache_write_tokens": 20000, "cache_read_tokens": 400000, "cache_unrecorded": 7}}
+rc=0
+$ cost --issue 21 --line
+pipeline-events: skipped 6 malformed line(s)
+talos: #21 qa done — tokens unrecorded, 5 tools, 3m20s · issue total 65k (+2 unrecorded) (dev 50k, rev 12k, pm 2k, val 1k) · cache read 400k (not in total, +5 unrecorded), cache write 20k (in total)
+rc=0
+$ cost --issue 21 --pr 31 --line
+pipeline-events: skipped 6 malformed line(s)
+talos: #31 qa done — tokens unrecorded, 5 tools, 3m20s · PR total 62k (+2 unrecorded) (dev 50k, rev 12k) · cache read 400k (not in total, +3 unrecorded), cache write 20k (in total)
+rc=0
+$ cost --issue 21 --markdown
+pipeline-events: skipped 6 malformed line(s)
+### Token spend — #21
+
+| stage | model | runs | tokens | cache write | cache read | tool uses | duration | re-stamps | unrecorded |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `developer` | `sonnet` | 1 | 50k | 20k | 400k | 60 | 15m00s | 0 | 0 |
+| `pm` | `sonnet` | 1 | 2k | unrecorded | unrecorded | 4 | 1m00s | 0 | 0 |
+| `qa` | `sonnet` | 1 | unrecorded | unrecorded | unrecorded | 5 | 3m20s | 0 | 1 |
+| `reviewer` | `sonnet` | 1 | 12k | unrecorded | unrecorded | 9 | 2m00s | 0 | 0 |
+| `validator` | `sonnet` | 1 | 1k | unrecorded | unrecorded | 3 | 40s | 0 | 0 |
+| TOTAL |  | 5 | 65k | 20k (+4 unrecorded) | 400k (+4 unrecorded) | 81 | 22m00s | 0 | 1 |
+
+Tokens as reported by the harness: `tokens` and TOTAL are fresh input + output + cache write, cache reads not included (they are the `cache read` column); no dollar cost; unrecorded = runs with no usage reported (adapter and pi paths)
+
+Orchestrator lifecycle rows (such as spend-guard blocks) are not counted in the rows or the total.
+rc=0
+$ cost --issue 21 --pr 31 --markdown
+pipeline-events: skipped 6 malformed line(s)
+### Token spend — #21
+
+| stage | model | runs | tokens | cache write | cache read | tool uses | duration | re-stamps | unrecorded |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `developer` | `sonnet` | 1 | 50k | 20k | 400k | 60 | 15m00s | 0 | 0 |
+| `pm` | `sonnet` | 1 | 2k | unrecorded | unrecorded | 4 | 1m00s | 0 | 0 |
+| `qa` | `sonnet` | 1 | unrecorded | unrecorded | unrecorded | 5 | 3m20s | 0 | 1 |
+| `reviewer` | `sonnet` | 1 | 12k | unrecorded | unrecorded | 9 | 2m00s | 0 | 0 |
+| `validator` | `sonnet` | 1 | 1k | unrecorded | unrecorded | 3 | 40s | 0 | 0 |
+| TOTAL |  | 5 | 65k | 20k (+4 unrecorded) | 400k (+4 unrecorded) | 81 | 22m00s | 0 | 1 |
+
+This PR (#31): 62k (62000 tokens, cache reads not included) (+1 unrecorded) · cache read 400k (+2 unrecorded), cache write 20k
+
+Tokens as reported by the harness: `tokens` and TOTAL are fresh input + output + cache write, cache reads not included (they are the `cache read` column); no dollar cost; unrecorded = runs with no usage reported (adapter and pi paths)
+
+Orchestrator lifecycle rows (such as spend-guard blocks) are not counted in the rows or the total.
+rc=0
+$ list
+pipeline-events: skipped 6 malformed line(s)
+2026-06-15T09:00:00Z	validator	validator	21		CONFIRMED	
+2026-06-15T09:05:00Z	pm	pm	21		SPEC	
+2026-06-15T09:30:00Z	stage_complete	developer	21	31	PR_OPENED	
+2026-06-15T09:30:05Z	developer	developer	21	31	OPENED	
+2026-06-15T09:50:00Z	reviewer	reviewer	21	31	APPROVED	
+2026-06-15T10:10:00Z	qa	qa	21	31	PASS	
+2026-06-15T10:11:00Z	hand_note	orchestrator	21	31		
+2026-06-15T10:20:00Z	merged	orchestrator	21	31	merged	
+2026-06-15T10:21:00Z	run_end	orchestrator				
+2026-06-15T11:00:00Z	developer	developer	22		BLOCKED	
+2026-06-15T11:30:00Z	usage	other	22			
+2026-06-15T11:40:00Z	stage_start	developer	23			
+2026-06-15T11:45:00Z	developer	developer	24		PR_OPENED	
+rc=0
+$ list --json --issue 21
+pipeline-events: skipped 6 malformed line(s)
+{"event": "validator", "role": "validator", "issue": 21, "pr": null, "verdict": "CONFIRMED", "tokens": 1000, "tool_uses": 3, "duration_s": 40, "model": "sonnet", "ts": "2026-06-15T09:00:00Z"}
+{"event": "pm", "role": "pm", "issue": 21, "pr": null, "verdict": "SPEC", "tokens": 2000, "tool_uses": 4, "duration_s": 60, "model": "sonnet", "ts": "2026-06-15T09:05:00Z"}
+{"event": "stage_complete", "role": "developer", "issue": 21, "pr": 31, "verdict": "PR_OPENED", "tokens": 50000, "tool_uses": 60, "duration_s": 900, "model": "sonnet", "ts": "2026-06-15T09:30:00Z", "cache_read_tokens": 400000, "cache_write_tokens": 20000}
+{"event": "developer", "role": "developer", "issue": 21, "pr": 31, "verdict": "OPENED", "tokens": null, "tool_uses": null, "duration_s": null, "model": "sonnet", "ts": "2026-06-15T09:30:05Z"}
+{"event": "reviewer", "role": "reviewer", "issue": 21, "pr": 31, "verdict": "APPROVED", "tokens": 12000, "tool_uses": 9, "duration_s": 120, "model": "sonnet", "ts": "2026-06-15T09:50:00Z"}
+{"event": "qa", "role": "qa", "issue": 21, "pr": 31, "verdict": "PASS", "tokens": "n/a", "tool_uses": 5, "duration_s": 200, "model": "sonnet", "ts": "2026-06-15T10:10:00Z"}
+{"event": "hand_note", "role": "orchestrator", "issue": 21, "pr": 31, "verdict": null, "tokens": null, "tool_uses": null, "duration_s": null, "model": "sonnet", "ts": "2026-06-15T10:11:00Z", "kind": "unblocked"}
+{"event": "merged", "role": "orchestrator", "issue": 21, "pr": 31, "verdict": "merged", "tokens": null, "tool_uses": null, "duration_s": null, "model": "sonnet", "ts": "2026-06-15T10:20:00Z"}
+rc=0
+$ list --role developer --last 2
+pipeline-events: skipped 6 malformed line(s)
+2026-06-15T11:40:00Z	stage_start	developer	23			
+2026-06-15T11:45:00Z	developer	developer	24		PR_OPENED	
+rc=0
+$ tail
+pipeline-events: skipped 6 malformed line(s)
+2026-06-15T09:00:00Z	validator	validator	21		CONFIRMED	
+2026-06-15T09:05:00Z	pm	pm	21		SPEC	
+2026-06-15T09:30:00Z	stage_complete	developer	21	31	PR_OPENED	
+2026-06-15T09:30:05Z	developer	developer	21	31	OPENED	
+2026-06-15T09:50:00Z	reviewer	reviewer	21	31	APPROVED	
+2026-06-15T10:10:00Z	qa	qa	21	31	PASS	
+2026-06-15T10:11:00Z	hand_note	orchestrator	21	31		
+2026-06-15T10:20:00Z	merged	orchestrator	21	31	merged	
+2026-06-15T10:21:00Z	run_end	orchestrator				
+2026-06-15T11:00:00Z	developer	developer	22		BLOCKED	
+2026-06-15T11:30:00Z	usage	other	22			
+2026-06-15T11:40:00Z	stage_start	developer	23			
+2026-06-15T11:45:00Z	developer	developer	24		PR_OPENED	
+rc=0
+$ scoreboard
+pipeline-events: scoreboard: list-default-commits failed (exit 1); that column is unknown
+pipeline-events: scoreboard: list-regresses failed (exit 1); that column is unknown
+pipeline-events: skipped 6 malformed line(s)
+repo	week	merged	hands_free	fix_rounds_per_pr	tokens_per_pr	run_ends	finding_outcomes	reverts	fix_forwards
+-	2026-W25	1	0	0.0	62000	done:1	-	?	?
+rc=0
+$ scoreboard --json
+pipeline-events: scoreboard: list-default-commits failed (exit 1); that column is unknown
+pipeline-events: scoreboard: list-regresses failed (exit 1); that column is unknown
+pipeline-events: skipped 6 malformed line(s)
+{"rows": [{"repo": "-", "week": "2026-W25", "merged": 1, "hands_free": 0, "fix_rounds": 0, "tokens": 62000, "tokens_unrecorded": 0, "run_ends": {"done": 1}, "finding_outcomes": {}, "reverts": null, "fix_forwards": null}]}
+rc=0

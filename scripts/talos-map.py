@@ -39,6 +39,11 @@ import sys
 import time
 import urllib.parse
 
+sys.dont_write_bytecode = True  # no __pycache__ in the install
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import talos_events
+from talos_events import num
+
 STEPS = ("validator", "pm", "dev", "review", "qa", "docs", "merge")
 STEP_OF = {"validator": "validator", "pm": "pm", "developer": "dev", "reviewer": "review", "security": "review",
            "adversarial": "review", "qa": "qa", "docs": "docs"}
@@ -125,25 +130,9 @@ def esc(v):
     return html.escape("" if v is None else str(v), quote=True)
 
 
-def num(v):
-    return v if isinstance(v, int) and not isinstance(v, bool) else None
-
-
 def read_events(path):
-    out = []
-    try:
-        with open(path, "r", errors="replace") as f:
-            for line in f:
-                try:
-                    d = json.loads(line)
-                except ValueError:
-                    continue
-                # A run_end line may carry no issue: it is still the end of a run.
-                if isinstance(d, dict) and (num(d.get("issue")) or d.get("event") == "run_end"):
-                    out.append(d)
-    except OSError:
-        pass
-    return out
+    # A run_end line may carry no issue: it is still the end of a run.
+    return [d for d in talos_events.read_events(path) if num(d.get("issue")) or d.get("event") == "run_end"]
 
 
 def read_state(path):
