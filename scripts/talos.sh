@@ -4304,13 +4304,6 @@ _talos_lease_scan() {
   done < "$_f" 2>/dev/null || return 2
 }
 
-# _talos_lease_held_line <file> <issue> <now>: print the effective lease line
-# (nothing when free); rc 2 when the ledger cannot be read.
-_talos_lease_held_line() {
-  _talos_lease_scan "$@" || return 2
-  printf '%s' "$_LS_BEST"
-}
-
 # _talos_lease_read <issue>: 0 free (no lease, or nothing the reader counts as
 # one), 1 held by another run (prints the effective holder line), 2 the ledger
 # is unavailable. The best-effort prune of an expired line runs only when the

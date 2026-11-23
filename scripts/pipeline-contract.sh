@@ -55,8 +55,7 @@ TALOS_APPROVAL_ROLES=(qa reviewer security adversarial docs)
 # ── Labels ─────────────────────────────────────────────────────────────────
 # Format: "name|color|description" (pipe-delimited -- label names contain
 # ':', so a pipe is the field separator). This is the shape
-# bootstrap-labels.sh has always used; kept so it, and talos_contract_json,
-# can read it directly.
+# bootstrap-labels.sh has always used; kept so it can read it directly.
 
 # pipeline:* state-machine labels applied by the orchestrator/subagents as
 # an issue or PR moves through the pipeline.
@@ -175,46 +174,4 @@ talos_contract_check_label_length() {
     return 1
   fi
   return 0
-}
-
-# ── talos_contract_json ──────────────────────────────────────────────────────
-# Prints the whole contract as JSON: {"roles", "stage_labels",
-# "approval_labels" (each entry carries its "role"), "stage_marker_labels", "misc_labels",
-# "markers"}. Each *_labels entry is {"name", "color", "description"}.
-talos_contract_json() {
-  TALOS_ROLES_ENV="${TALOS_ROLES[*]}" \
-  TALOS_APPROVAL_ROLES_ENV="${TALOS_APPROVAL_ROLES[*]}" \
-  TALOS_STAGE_LABELS_ENV="$(printf '%s\n' "${TALOS_STAGE_LABELS[@]}")" \
-  TALOS_APPROVAL_LABELS_ENV="$(printf '%s\n' "${TALOS_APPROVAL_LABELS[@]}")" \
-  TALOS_STAGE_MARKER_LABELS_ENV="$(printf '%s\n' "${TALOS_STAGE_MARKER_LABELS[@]}")" \
-  TALOS_MISC_LABELS_ENV="$(printf '%s\n' "${TALOS_MISC_LABELS[@]}")" \
-  TALOS_MARKERS_ENV="${TALOS_MARKERS[*]}" \
-  python3 -I -c "
-import json, os
-
-def parse_labels(env_name):
-    out = []
-    for line in os.environ.get(env_name, '').split(chr(10)):
-        line = line.strip()
-        if not line:
-            continue
-        name, color, description = line.split('|', 2)
-        out.append({'name': name, 'color': color, 'description': description})
-    return out
-
-approval_roles  = os.environ.get('TALOS_APPROVAL_ROLES_ENV', '').split()
-approval_labels = parse_labels('TALOS_APPROVAL_LABELS_ENV')
-for i, entry in enumerate(approval_labels):
-    entry['role'] = approval_roles[i] if i < len(approval_roles) else None
-
-contract = {
-    'roles':           os.environ.get('TALOS_ROLES_ENV', '').split(),
-    'stage_labels':    parse_labels('TALOS_STAGE_LABELS_ENV'),
-    'approval_labels': approval_labels,
-    'stage_marker_labels': parse_labels('TALOS_STAGE_MARKER_LABELS_ENV'),
-    'misc_labels':     parse_labels('TALOS_MISC_LABELS_ENV'),
-    'markers':         os.environ.get('TALOS_MARKERS_ENV', '').split(),
-}
-print(json.dumps(contract, indent=2))
-"
 }
