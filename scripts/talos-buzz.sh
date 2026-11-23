@@ -171,7 +171,7 @@ stop = ""
 mapped = ""
 warn = "merged-unavailable" if "warn reason=merged-unavailable" in out else ""
 for l in out:
-    m = re.match(r"stop reason=([a-z][a-z0-9:-]*)$", l)
+    m = re.match(r"stop reason=([a-z][a-z0-9:-]*)(?: detail=[a-z0-9:._-]+)?$", l)
     if m:
         stop = m.group(1)
     if l.startswith("map="):

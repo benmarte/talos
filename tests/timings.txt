@@ -193,6 +193,7 @@
 4 test-mergesync.sh
 63 test-multi-user.sh
 41 test-needs-owner.sh
+8 test-next-collect-call-budget.sh
 12 test-next-router-golden.sh
 20 test-no-pyyaml-install-step.sh
 16 test-notify-buzz.sh
@@ -216,6 +217,7 @@
 3 test-pr-change-selection.sh
 55 test-pr-draft.sh
 3 test-pr-mergeable.sh
+8 test-preexisting-findings-dedupe.sh
 5 test-preqa-union-sync.sh
 7 test-project-map-dashboard.sh
 34 test-project-map-live.sh

@@ -16,7 +16,10 @@ caller's cwd and environment off sys.path). The callers are thin wrappers:
                 after every other enabled approval) or empty/off. `required-when`
                 is `yes` when roles.required_when is set (#835): each PR's review
                 roles are then narrowed by `pipeline-vcs.sh required-roles`, the
-                one resolver; no key (`no`), no call.
+                one resolver; no key (`no`), no call. `issue` (#1038) scopes the
+                per-PR reads to that issue's PRs and adds `"scope": <N>`. A PR's
+                head and draft state come from its list-prs item (`headRefOid`,
+                `isDraft`) when it has them, else from pr-head and pr-is-draft.
     pr-side     talos.sh next: the PR-side answer from a state file: an
                 `action=...` line, or the sentinel `issue-side` when no PR answers.
     issue-side  talos.sh next: the issue-side answer (queue walk, routing,
@@ -80,9 +83,29 @@ def opts_from(args):
     return dict((args[i][2:], args[i + 1]) for i in range(0, len(args) - 1, 2))
 
 
-def die(msg):
+def die(msg, detail=''):
+    """Fail the collect. `detail` (#1038) is `<read>:<cause>`: which read failed
+    and why (`deadline`, `auth`, `failed` or `invalid`). It goes to the file
+    named by TALOS_STATE_DETAIL_FILE, which talos.sh reads to say it on the stop
+    line; the stderr line is the same as ever."""
     sys.stderr.write('pipeline-status-file: %s\n' % msg)
+    path = os.environ.get('TALOS_STATE_DETAIL_FILE', '')
+    if detail and path:
+        try:
+            with open(path, 'w') as f:
+                f.write(detail)
+        except OSError:
+            pass
     sys.exit(1)
+
+
+AUTH_RE = re.compile(r'\bHTTP 40[13]\b|Bad credentials|gh auth login|az login', re.I)
+
+
+def read_failed(verb, err, msg):
+    """A read verb exited non-zero: `auth` when its stderr says the credentials
+    were refused, else `failed`. (A rate limit never gets here: it is a wait.)"""
+    die(msg, '%s:%s' % (verb, 'auth' if AUTH_RE.search(err) else 'failed'))
 
 
 RATE_LIMITED = 7  # pipeline-vcs.sh: the provider's rate limit is on (#1004)
@@ -120,6 +143,7 @@ def _label_set(item):
 # ── bounded read verbs (collect, next_stage) ─────────────────────────────────
 
 opts = {}
+listed_draft = {}  # PR number -> the `isDraft` boolean its list-prs item carried (#1038)
 _deadline = None
 _running = None  # the read verb's Popen, so a signal can stop it
 
@@ -157,12 +181,12 @@ def vcs(*args):
     must never read as `ready` (pr-is-draft exit 1) or `ci` (exit 1)."""
     left = _deadline - time.monotonic()
     if left <= 0:
-        die('the GitHub read phase passed its %ds deadline' % _read_deadline())
+        die('the GitHub read phase passed its %ds deadline' % _read_deadline(), '%s:deadline' % args[0])
     try:
         p = subprocess.Popen(['bash', opts['vcs']] + list(args), stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     except OSError:
-        die('could not run the read verb %s' % args[0])
+        die('could not run the read verb %s' % args[0], '%s:failed' % args[0])
     global _running
     _running = p
     try:
@@ -173,7 +197,7 @@ def vcs(*args):
         except OSError:
             pass
         p.communicate()
-        die('the read verb %s timed out (read deadline %ds)' % (args[0], _read_deadline()))
+        die('the read verb %s timed out (read deadline %ds)' % (args[0], _read_deadline()), '%s:deadline' % args[0])
     finally:
         _running = None
     if p.returncode == RATE_LIMITED:
@@ -185,9 +209,9 @@ def parse_array(text, what):
     try:
         d = json.loads(text)
     except ValueError:
-        die('%s did not return JSON' % what)
+        die('%s did not return JSON' % what, '%s:invalid' % what.split()[0])
     if not isinstance(d, list):
-        die('%s did not return a JSON array' % what)
+        die('%s did not return a JSON array' % what, '%s:invalid' % what.split()[0])
     return d
 
 
@@ -212,23 +236,28 @@ def next_stage(n, labels, issue_labels, enabled):
     """First match wins: blocked, then the draft or default order, counting only
     enabled roles; an approval label that is stale, or missing and not just
     lost (#521), means that role.
+    A draft state the list-prs payload gave (`listed_draft`, #1038) is a boolean:
+    no pr-is-draft read is made for it.
     Fails closed (die) on a failed check-approval-sha read."""
     if BLOCKED_LABEL in labels or BLOCKED_LABEL in issue_labels:
         return 'blocked'
     draft = False
     if opts.get('pr-draft') == 'true':
-        rc, _, _ = vcs('pr-is-draft', str(n))
-        if rc == 0:
-            draft = True
-        elif rc != 1:
-            return 'unverified'
+        if isinstance(listed_draft.get(n), bool):
+            draft = listed_draft[n]
+        else:
+            rc, _, _ = vcs('pr-is-draft', str(n))
+            if rc == 0:
+                draft = True
+            elif rc != 1:
+                return 'unverified'
     stale = set()
     if any(label in labels for _, label in APPROVALS):
-        rc, out, _ = vcs('check-approval-sha', str(n), '--stale-list')
+        rc, out, err = vcs('check-approval-sha', str(n), '--stale-list')
         stale = set(m.group(1) for m in map(STALE_RE.match, out.splitlines()) if m)
         # exit 1 is both "stale approvals" (stale lines on stdout) and a failed read.
         if rc not in (0, 1) or (rc == 1 and not stale):
-            die('check-approval-sha failed for PR #%d (rc=%d)' % (n, rc))
+            read_failed('check-approval-sha', err, 'check-approval-sha failed for PR #%d (rc=%d)' % (n, rc))
     # #521: a missing label whose marker still pins the current head is a lost
     # stamp, not unfinished work: the gate re-applies it (post-approval
     # --recover-only), so it is not this PR's stage. One evidence read for a
@@ -237,9 +266,9 @@ def next_stage(n, labels, issue_labels, enabled):
     # approval role. A failed read dies.
     lost = set()
     if any(role in enabled and label not in labels for role, label in APPROVALS):
-        rc, out, _ = vcs('check-approval-sha', str(n), '--evidence-list')
+        rc, out, err = vcs('check-approval-sha', str(n), '--evidence-list')
         if rc != 0:
-            die('check-approval-sha --evidence-list failed for PR #%d (rc=%d)' % (n, rc))
+            read_failed('check-approval-sha', err, 'check-approval-sha --evidence-list failed for PR #%d (rc=%d)' % (n, rc))
         lost = set(m.group(1) for m in map(EVIDENCE_LOST_RE.match, out.splitlines()) if m)
     # #833: with roles.fix_on_first_findings qa is walked after the review roles
     # on a ready PR as it is on a draft one (below), so a review finding runs its
@@ -362,12 +391,12 @@ def read_lists(talos_labels):
     """(raw PRs, raw issues, the verbs whose result was capped): the two list reads."""
     rc, out, err = vcs('list-prs')
     if rc != 0:
-        die('list-prs failed (rc=%d)' % rc)
+        read_failed('list-prs', err, 'list-prs failed (rc=%d)' % rc)
     raw_prs = parse_array(out, 'list-prs')
     capped = ['list-prs'] if CAP_RE.search(err) else []
     rc, out, err = vcs('list-issues')
     if rc != 0:
-        die('list-issues failed (rc=%d)' % rc)
+        read_failed('list-issues', err, 'list-issues failed (rc=%d)' % rc)
     raw_issues = parse_array(out, 'list-issues')
     if CAP_RE.search(err):
         capped.append('list-issues')
@@ -398,13 +427,13 @@ class Claims:
             self.me = ''
             return None
         if rc != 0:
-            die('list-assignees failed (rc=%d)' % rc)
+            read_failed('list-assignees', err, 'list-assignees failed (rc=%d)' % rc)
         try:
             raw_amap = json.loads(out)
         except ValueError:
-            die('list-assignees did not return JSON')
+            die('list-assignees did not return JSON', 'list-assignees:invalid')
         if not isinstance(raw_amap, dict):
-            die('list-assignees did not return a JSON object')
+            die('list-assignees did not return a JSON object', 'list-assignees:invalid')
         amap = {}
         for k, v in raw_amap.items():
             if re.fullmatch(r'[0-9]{1,9}', k) and isinstance(v, list):
@@ -438,13 +467,13 @@ def read_owners():
     if rc == 2:
         return None
     if rc != 0:
-        die('list-needs-owner failed (rc=%d)' % rc)
+        read_failed('list-needs-owner', err, 'list-needs-owner failed (rc=%d)' % rc)
     owners = []
     # The trust set was not resolved: every `answered` value is unverified.
     unverified = 'talos:marker-authors-unverified' in err
     for r in parse_array(out, 'list-needs-owner --json'):
         if not _num(r, 'n') or not isinstance(r.get('question', ''), str):
-            die('list-needs-owner --json returned an item that is not {n, question, ...}')
+            die('list-needs-owner --json returned an item that is not {n, question, ...}', 'list-needs-owner:invalid')
         # The status goes in a fixed field before the untrusted question.
         status = 'unverified' if unverified else ('answered' if r.get('answered') == 'yes' else 'unanswered')
         owners.append({'n': r['n'], 'status': status, 'question': r.get('question', '')})
@@ -525,10 +554,35 @@ def pr_lookups(eligible, issues, shown, enabled, by_diff):
     return eligible[:shown] + pending
 
 
-def read_prs(eligible, issues, ignored, capped, blocked, owners, queued):
+def scope_issue():
+    """The issue `collect --issue <N>` is scoped to (#1038), else None."""
+    v = opts.get('issue', '')
+    return int(v) if re.fullmatch(r'[0-9]{1,9}', v) else None
+
+
+def pr_head(n, listed):
+    """The head sha of PR `n`: the one the list-prs payload carried (#1038), else
+    one pr-head read. A listing sha that is not a sha is no answer: read it."""
+    head = listed.get('headRefOid') if isinstance(listed.get('headRefOid'), str) else ''
+    if SHA_RE.match(head):
+        return head
+    rc, out, err = vcs('pr-head', str(n))
+    head = out.strip()
+    if rc != 0 or not SHA_RE.match(head):
+        read_failed('pr-head', err, 'pr-head failed for PR #%d' % n)
+    return head
+
+
+def read_prs(eligible, issues, ignored, capped, blocked, owners, queued, listing=None):
     """The state of each PR the block will show (lowest numbers): the line cap
     decides this BEFORE the per-PR reads, so 300 PRs cost the same as 40.
-    The rest are counted by the `- +<K> more` line. Next sees rendered PRs only."""
+    The rest are counted by the `- +<K> more` line. Next sees rendered PRs only.
+    With --issue <N> (#1038) only the PRs of issue N are looked up: the answer
+    for N depends on N's own PR and on nothing the other PRs hold.
+    `listing` is the list-prs items by number: their head and draft state stand
+    in for the pr-head and pr-is-draft reads."""
+    listing = listing or {}
+    listed_draft.update((n, i['isDraft']) for n, i in listing.items() if isinstance(i.get('isDraft'), bool))
     budget = max(MAX_PR_LINES - (1 if ignored else 0) - (1 if capped else 0), MIN_BLOCK_LINES)
     others = len(blocked) + len(owners or []) + (1 if queued else 0)
     shown = len(eligible) if 2 + len(eligible) + others <= budget else budget - 3
@@ -536,12 +590,13 @@ def read_prs(eligible, issues, ignored, capped, blocked, owners, queued):
     # The per-PR reads are a second read phase with its own deadline.
     _start_read_phase()
     by_diff = opts.get('required-when') == 'yes'
+    scope = scope_issue()
+    lookups = [e for e in eligible if e[2] == scope] if scope is not None \
+        else pr_lookups(eligible, issues, shown, enabled, by_diff)
     prs = []
-    for n, labels, issue in pr_lookups(eligible, issues, shown, enabled, by_diff):
-        rc, out, _ = vcs('pr-head', str(n))
-        head = out.strip()
-        if rc != 0 or not SHA_RE.match(head):
-            die('pr-head failed for PR #%d' % n)
+    for n, labels, issue in lookups:
+        listed = listing.get(n, {})
+        head = pr_head(n, listed)
         issue_labels = issues.get(issue, set())
         pr_enabled = enabled
         if by_diff and enabled & REVIEW_ROLES and not ({BLOCKED_LABEL} & (labels | issue_labels)):
@@ -573,7 +628,8 @@ def collect():
     blocked += [('issue', n) for n in issues if BLOCKED_LABEL in issues[n]]
     blocked.sort(key=lambda b: (b[1], b[0]))
     queued, held, inflight = issue_lists(issues, eligible)
-    prs = read_prs(eligible, issues, ignored, capped, blocked, owners, queued)
+    prs = read_prs(eligible, issues, ignored, capped, blocked, owners, queued,
+                   dict((_num(i), i) for i in raw_prs if _num(i)))
     # The priority of each queued or in-flight issue that carries a p-label
     # (#601): what `next` and `where` need to put both lists in one order.
     priority = dict((str(n), min(PRIORITY[l] for l in issues[n] if l in PRIORITY))
@@ -582,6 +638,10 @@ def collect():
              'blocked': blocked, 'queued': queued, 'held': held,
              'inflight': inflight, 'owners': owners, 'capped': capped,
              'priority': priority}
+    if scope_issue() is not None:
+        # Only the named issue's own PR was looked up: a reader that wants every
+        # PR's stage must not take this state for the whole (#1038).
+        state['scope'] = scope_issue()
     if claims.me:
         # Added only while claiming is on, so the unfiltered state is
         # byte-for-byte today's. `unassigned` (#949): open issues Talos would act
