@@ -958,18 +958,59 @@ AZURE_ORG="$(cfg vcs.azure.org_url)"
 AZURE_PROJECT="$(cfg vcs.azure.project)"
 FILE_PATH="$(cfg vcs.file.source.path)"
 
-# Auto-detect repo for github/gitlab if not set.
-# github-api uses only git remote (no gh call) to avoid CLI dependency.
+# _repo_from_remote: print owner/repo (gitlab: group[/sub]/project) parsed from
+# the origin remote, exit 0; exit 1 when the remote is not a github.com or
+# gitlab.com URL (an SSH alias host, a self-hosted instance, a port-and-path
+# form that does not split). No API call (#1037).
+_repo_from_remote() {
+  local _u _h _p
+  _u="$(git remote get-url origin 2>/dev/null)" || return 1
+  if [[ "$_u" =~ ^[A-Za-z][A-Za-z0-9+.-]*://([^@/]*@)?(github\.com|gitlab\.com)(:[0-9]+)?/(.+)$ ]]; then
+    _h="${BASH_REMATCH[2]}" _p="${BASH_REMATCH[4]}"
+  elif [[ "$_u" =~ ^([^@/:]+@)?(github\.com|gitlab\.com):(.+)$ ]]; then
+    _h="${BASH_REMATCH[2]}" _p="${BASH_REMATCH[3]}"
+  else
+    return 1
+  fi
+  _p="${_p%/}"
+  _p="${_p%.git}"
+  if [ "$_h" = "github.com" ]; then
+    [[ "$_p" =~ ^[^/]+/[^/]+$ ]] || return 1
+  else
+    [[ "$_p" =~ ^[^/]+(/[^/]+)+$ ]] || return 1
+  fi
+  printf '%s\n' "$_p"
+}
+
+# Auto-detect repo for github/gitlab if not set: the origin remote first (no
+# call), `gh api` only when the remote does not parse (#1037). github-api uses
+# only the git remote (no gh call) to avoid CLI dependency. A repo resolved
+# cleanly is exported as PIPELINE_REPO (the vcs.repo env layer), so every verb
+# process this one starts inherits it and never looks it up again.
 if [ -z "$REPO" ] && [ "$PROVIDER" != "file" ]; then
   if [ "$PROVIDER" = "github-api" ]; then
     REPO="$(git remote get-url origin 2>/dev/null \
       | sed 's|.*github\.com[:/]||; s|\.git$||' || echo "")"
   else
-    REPO="$(gh api 'repos/{owner}/{repo}' --jq .full_name 2>/dev/null \
-      || git remote get-url origin 2>/dev/null \
-      | sed 's|.*github.com[:/]||; s|.*gitlab.com[:/]||; s|\.git$||' \
-      || echo "")"
+    REPO="$(_repo_from_remote)" || REPO=""
+    [ -n "$REPO" ] || REPO="$(gh api 'repos/{owner}/{repo}' --jq .full_name 2>/dev/null)" || REPO=""
+    if [ -n "$REPO" ]; then
+      export PIPELINE_REPO="$REPO"
+    else
+      _REPO_UNPARSED=1   # the remote as it is (self-hosted, Azure): not worth exporting
+      REPO="$(git remote get-url origin 2>/dev/null \
+        | sed 's|.*github.com[:/]||; s|.*gitlab.com[:/]||; s|\.git$||' \
+        || echo "")"
+    fi
   fi
+fi
+# resolve-repo: print the repo the auto-detect settled on and nothing else, for a
+# caller that starts many verb processes (the collect pass) to resolve it once and
+# export it. Exit 1 when nothing resolved or only the unparsed remote was left.
+if [ "$VERB" = "resolve-repo" ]; then
+  { [ -n "$REPO" ] && [ -z "${_REPO_UNPARSED:-}" ]; } || exit 1
+  printf '%s\n' "$REPO"
+  exit 0
 fi
 # ADO wants the repository name alone: vcs.repo "project/name" (the shape the
 # git remote gives) is reduced to its last path segment. Empty stays empty (#705).
@@ -4030,7 +4071,7 @@ _vcs_shared_check_attempt() {
 #   a missing number, a missing stage, <id-check-fn> record-attempt <issue-n>
 #   (the provider's numeric-id check, when it has one), then a stage outside
 #   [A-Za-z0-9._-] (it would corrupt the marker line). Returns 1 with the
-#   message on stderr.
+#   message on stderr; 2 (a usage error) for a stage outside the known roles.
 _vcs_shared_validate_stage() {
   local n="$1" stage="$2" id_check_fn="${3:-}"
   [ -n "$n" ]     || { echo "pipeline-vcs: record-attempt: missing issue number" >&2; return 1; }
@@ -4038,6 +4079,14 @@ _vcs_shared_validate_stage() {
   [ -z "$id_check_fn" ] || "$id_check_fn" record-attempt "$n" || return 1
   case "$stage" in
     *[!A-Za-z0-9._-]*) echo "pipeline-vcs: record-attempt: stage may only use letters, digits, '.', '_' and '-', got '$stage'" >&2; return 1 ;;
+  esac
+  # A stage read-attempt would refuse (KNOWN_STAGES, from TALOS_ROLES) must not
+  # be recorded: the marker would make every later record-attempt fail on its
+  # read (#1046). A usage error, exit 2, before anything is read or posted.
+  _vcs_shared_contract_env
+  case " $TALOS_CONTRACT_ROLES_ENV " in
+    *" $stage "*) ;;
+    *) echo "pipeline-vcs: record-attempt: unknown stage \"$stage\" (known: $TALOS_CONTRACT_ROLES_ENV)" >&2; return 2 ;;
   esac
 }
 
@@ -6661,7 +6710,7 @@ json.dump([dict(p, headRefName=(p.get('head') or {}).get('ref', '')) for p in pr
       # record-attempt <issue-n> <stage> [--pr <pr-n> | --idempotency-key <token>]:
       # see _vcs_shared_record_attempt.
       local n="${1:-}" stage="${2:-}"
-      _vcs_shared_validate_stage "$n" "$stage" || exit 1
+      _vcs_shared_validate_stage "$n" "$stage" || exit $?
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] record-attempt $n $stage: read prior state, post <!-- talos:attempt stage=$stage ... --> marker"; return 0; }
       # The write: POST the marker comment and print its URL (it may
       # legitimately be empty); non-zero only when the write itself failed.
@@ -7511,7 +7560,7 @@ print((d.get('sha') or (d.get('diff_refs') or {}).get('head_sha') or '').lower()
       # record-attempt <issue> <stage> [--pr <mr> | --idempotency-key <token>]
       # (#736): see _vcs_shared_record_attempt; the write is an issue note.
       local n="${1:-}" stage="${2:-}"
-      _vcs_shared_validate_stage "$n" "$stage" _gl_require_iid || exit 1
+      _vcs_shared_validate_stage "$n" "$stage" _gl_require_iid || exit $?
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] record-attempt $n $stage: read prior state, post <!-- talos:attempt stage=$stage ... --> marker"; return 0; }
       # Notes keep their markdown as typed, so the marker needs no conversion.
       _gl_post_attempt_marker() { glab issue note "$1" --message "$2" $RARG; }
@@ -9589,7 +9638,7 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
       # record-attempt <work-item-id> <stage> [--pr <pr-n> | --idempotency-key <token>]
       # (#685): see _vcs_shared_record_attempt; the write is a work-item comment.
       local n="${1:-}" stage="${2:-}"
-      _vcs_shared_validate_stage "$n" "$stage" _az_require_id || exit 1
+      _vcs_shared_validate_stage "$n" "$stage" _az_require_id || exit $?
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] record-attempt $n $stage: read prior state, post <!-- talos:attempt stage=$stage ... --> marker"; return 0; }
       # Work-item comments render HTML and _md_to_html would escape the marker
       # line, so post the body as HTML already: the text line in <p>, then the
