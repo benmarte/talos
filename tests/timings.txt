@@ -243,6 +243,7 @@
 17 test-qa-skip-targeted-859.sh
 46 test-qa-spec-fault-678.sh
 5 test-qa-targeted-budget.sh
+5 test-rate-limit-raw-sites.sh
 3 test-ready-gate.sh
 60 test-red-check-747.sh
 24 test-red-check-drop-773.sh
