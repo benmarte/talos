@@ -158,6 +158,17 @@ trap 'exit 130' INT
 trap 'exit 131' QUIT
 trap 'exit 143' TERM
 
+# The repo, resolved once per pass (#1037), before the first verb below: with
+# vcs.repo and PIPELINE_REPO unset, every verb process would derive it again. One
+# resolve-repo (the origin remote, the API only for a remote that does not parse)
+# is exported as PIPELINE_REPO and the verbs this pass starts inherit it. A failed
+# resolve leaves them to derive it themselves, as before.
+sf_repo="$(cfg vcs.repo)"
+if [ -z "$sf_repo" ]; then
+  sf_repo="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" resolve-repo 2>/dev/null </dev/null)" || sf_repo=""
+  [ -z "$sf_repo" ] || export PIPELINE_REPO="$sf_repo"
+fi
+
 # The operator (#560): with claiming on, collect keeps to the operator's issues.
 # Empty when issues.claim is false, issues.assignee is none or no identity
 # resolves, and collect then reads no assignee at all.
@@ -169,4 +180,4 @@ python3 -I "$SCRIPT_DIR/pipeline-next.py" collect \
   --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --roles "$roles" --me "$me" \
   --merge-auto "$auto" --required-checks "$checks" --pr-draft "$draft" --ready-gate "$ready_gate" --fix-on-first-findings "$fix_first" --required-when "$required_when" \
   --talos-labels "$talos_labels" --base-branch "$BASE_BRANCH" \
-  --meta "$SCRIPT_DIR/pipeline-meta.sh" --repo "$(cfg vcs.repo)" </dev/null
+  --meta "$SCRIPT_DIR/pipeline-meta.sh" --repo "$sf_repo" </dev/null
