@@ -51,8 +51,8 @@ fi
 if [ -f "$SCRIPT_DIR/pipeline-lock.sh" ]; then
   . "$SCRIPT_DIR/pipeline-lock.sh"
 else
-  with_lock() { shift 2; [ "${1:-}" = "--" ] && shift; "$@"; }
-  echo "pipeline-mergebase: lock helper missing, worktree operations are unsynchronized" >&2
+  echo "talos: pipeline-lock.sh missing; reinstall Talos" >&2
+  exit 1
 fi
 
 # ── Args ─────────────────────────────────────────────────────────────────────
@@ -119,15 +119,11 @@ import fnmatch, json, os, sys
 HARDCODED_NONUNIONABLE_PREFIXES = ('scripts/', 'tests/')
 HARDCODED_NONUNIONABLE_EXACT = (
     'talos.pipeline.yml', 'talos.pipeline.yaml', 'talos.pipeline.json',
-    '.claude-pipeline.yaml', '.claude-pipeline.json',
-    'pipeline.yaml', 'pipeline.json',
 )
 VALIDATION_CANARIES = [
     'scripts/core.sh', 'scripts/pipeline-vcs.sh', 'sub/dir/scripts/x.sh',
     'tests/test-vcs.sh', 'tests/run-tests.sh', 'sub/dir/tests/y.sh',
     'talos.pipeline.yml', 'talos.pipeline.yaml', 'talos.pipeline.json',
-    '.claude-pipeline.yaml', '.claude-pipeline.json',
-    'pipeline.yaml', 'pipeline.json',
 ]
 
 def is_hardcoded_nonunionable(path):
@@ -174,7 +170,7 @@ if raw:
             raise ValueError('not a list')
         entries = [str(e).strip() for e in parsed if str(e).strip()]
     except Exception:
-        # comma-separated CLI override, or a newline-delimited YAML scalar
+        # comma-separated CLI override, or a newline-delimited list
         sep = ',' if ',' in raw else '\n'
         entries = [e.strip() for e in raw.split(sep) if e.strip()]
 else:

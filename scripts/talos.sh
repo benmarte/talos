@@ -4292,13 +4292,6 @@ _talos_lease_scan() {
   done < "$_f" 2>/dev/null || return 2
 }
 
-# _talos_lease_held_line <file> <issue> <now>: print the effective lease line
-# (nothing when free); rc 2 when the ledger cannot be read.
-_talos_lease_held_line() {
-  _talos_lease_scan "$@" || return 2
-  printf '%s' "$_LS_BEST"
-}
-
 # _talos_lease_read <issue>: 0 free (no lease, or nothing the reader counts as
 # one), 1 held by another run (prints the effective holder line), 2 the ledger
 # is unavailable. The best-effort prune of an expired line runs only when the
@@ -5455,7 +5448,7 @@ for i in items if isinstance(items, list) else []:
 _talos_map_forget() {
   local _l _rc=0
   [[ "$1" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+$ ]] || _talos_stop usage 2
-  [ -f "$SCRIPT_DIR/talos-map.py" ] || _talos_stop scripts-missing
+  [ -f "$SCRIPT_DIR/talos-map.py" ] && [ -f "$SCRIPT_DIR/talos_events.py" ] || _talos_stop scripts-missing
   command -v python3 >/dev/null 2>&1 || _talos_stop python-missing
   _l="$(python3 -I "$SCRIPT_DIR/talos-map.py" --home "${TALOS_HOME:-$HOME/.talos}" --forget "$1" 2>/dev/null < /dev/null)" || _rc=$?
   case "$_rc" in
@@ -5480,7 +5473,7 @@ _talos_map() {
     2:--forget) _talos_map_forget "$2"; return ;;
     *) _talos_stop usage 2 ;;
   esac
-  _talos_prepare map pipeline-config.sh pipeline-cfg-cache.sh pipeline-next.py talos-map.py \
+  _talos_prepare map pipeline-config.sh pipeline-cfg-cache.sh pipeline-next.py talos-map.py talos_events.py \
                      ${_refresh:+pipeline-status-file.sh pipeline-vcs.sh pipeline-meta.sh}
   [ -z "$_refresh" ] || _talos_map_refresh
   local _l
