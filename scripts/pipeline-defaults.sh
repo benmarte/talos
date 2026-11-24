@@ -149,6 +149,7 @@ merge.forbidden_files_allow	list		-	-	repo
 merge.approval_waiver_paths	list		derived	-	repo
 merge.union_paths	list		derived	-	repo
 merge.auto_sync	bool	true	-	-	any
+merge.require_current_base	bool	true	-	-	any
 merge.queue	enum	off	-	-	any
 merge.queue_batch	int	3	-	-	any
 merge.queue_branch_prefix	str	talos/queue/	-	-	any

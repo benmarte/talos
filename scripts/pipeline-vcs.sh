@@ -428,6 +428,17 @@
 #                                             before QA's CI wait, since GitHub
 #                                             schedules no `pull_request` run for a
 #                                             CONFLICTING PR.
+#   pr-behind <n>                             Is PR <n> behind its base (#1060)? Exit 0
+#                                             (prints `current`): the base head is an
+#                                             ancestor of the PR head, read from git
+#                                             after a fetch of the base and of
+#                                             refs/pull/<n>/head, else from the compare
+#                                             API's behind_by. Exit 1 (prints
+#                                             `behind`): it is not. Exit 2: cannot be
+#                                             read. Conflicts are not looked at (see
+#                                             conflict-files). github and github-api
+#                                             only; the merge gate's stale-base step
+#                                             reads it under merge.require_current_base.
 #   conflict-files <n>                        Print the paths that conflict between
 #                                             PR <n>'s head and origin/<base_branch>,
 #                                             one per line (#256). Resolved with a
@@ -6706,6 +6717,41 @@ json.dump([dict(p, headRefName=(p.get('head') or {}).get('ref', '')) for p in pr
       ref="$(_gh_pull_cached "$n" | _gh_field head.ref)"
       [ -z "$ref" ] && { echo "pipeline-vcs: pr-head-ref: could not resolve the head branch of PR #$n" >&2; exit 1; }
       printf '%s\n' "$ref"
+      ;;
+    pr-behind)
+      # pr-behind <n> (#1060): is the PR behind its base? Exit 0: the PR head contains
+      # the base head (prints `current`). Exit 1: it does not (prints `behind`; the PR
+      # may or may not conflict, conflict-files answers that). Exit 2: cannot be read.
+      # Read from git after a fetch of the base and of refs/pull/<n>/head (the base
+      # head must be an ancestor of the PR head); when git cannot answer, from the
+      # compare API's behind_by. Nothing is trusted on a failure: never exit 0 then.
+      local n="${1:-}" _pb_base _pb_base_sha _pb_head _pb_rc _pb_by
+      _gh_num "$verb" PR "$n"
+      _pb_base="$BASE_BRANCH"
+      [ -z "$_pb_base" ] && _pb_base="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
+      [ -z "$_pb_base" ] && _pb_base="main"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] git fetch origin $_pb_base refs/pull/$n/head; git merge-base --is-ancestor <base> <head> (fallback GET $_GH_API/compare/$_pb_base...<head>)"; return 0; }
+      if git fetch -q origin "$_pb_base" 2>/dev/null \
+         && _pb_base_sha="$(git rev-parse -q --verify FETCH_HEAD 2>/dev/null)" && [ -n "$_pb_base_sha" ] \
+         && git fetch -q origin "refs/pull/$n/head" 2>/dev/null \
+         && _pb_head="$(git rev-parse -q --verify FETCH_HEAD 2>/dev/null)" && [ -n "$_pb_head" ]; then
+        _pb_rc=0
+        git merge-base --is-ancestor "$_pb_base_sha" "$_pb_head" 2>/dev/null || _pb_rc=$?
+        case "$_pb_rc" in
+          0) echo current; return 0 ;;
+          1) echo behind; exit 1 ;;
+        esac
+      fi
+      # git could not answer (fetch failure, a shallow clone without the history):
+      # the provider's compare of the base with the PR's current head.
+      _pb_head="$(_gh_try GET "$_GH_API/pulls/$n" | _gh_field head.sha)"
+      _pb_by=""
+      [ -n "$_pb_head" ] && _pb_by="$(_gh_try GET "$_GH_API/compare/$(_gh_urlenc "$_pb_base" /)...$_pb_head" | _gh_field behind_by)"
+      case "$_pb_by" in
+        ''|*[!0-9]*) echo "pipeline-vcs: pr-behind: could not determine whether PR #$n is behind $_pb_base" >&2; exit 2 ;;
+        0) echo current; return 0 ;;
+        *) echo behind; exit 1 ;;
+      esac
       ;;
     pr-state)
       # pr-state <n> (#1057): open, closed or merged, from the one pulls/<n> read.

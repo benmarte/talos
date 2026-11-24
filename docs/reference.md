@@ -508,6 +508,7 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `merge.approval_waiver_paths` | list | derived | - | repo |
 | `merge.union_paths` | list | derived | - | repo |
 | `merge.auto_sync` | bool | `true` | - | any |
+| `merge.require_current_base` | bool | `true` | - | any |
 | `merge.queue` | enum | `off` | - | any |
 | `merge.queue_batch` | int | `3` | - | any |
 | `merge.queue_branch_prefix` | str | `talos/queue/` | - | any |
@@ -977,6 +978,7 @@ Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azu
 | `check-pr-body` | yes | yes (the MR description) | yes (the PR description) | exception: no PRs |
 | `pr-closes-issue` | yes (closing keyword in the PR body) | yes (closing keyword in the MR description) | yes (the PR is linked to the work item) | exception: no PRs (always exits 2) |
 | `conflict-files` | yes | yes (fetches `refs/merge-requests/<iid>/head`) | yes (fetches the source branch) | exception: no PRs |
+| `pr-behind` | yes (exit 0 `current`, 1 `behind`, 2 unreadable; git first, then the compare API) | exception: GitHub only (the merge gate calls it on `github` and `github-api`) | exception: GitHub only | exception: no PRs |
 | `upsert-pr-comment` | yes | yes (merge requests) | yes | exception: no PRs |
 | `attach-files` | yes (commits to the `talos-evidence` branch) | yes (commits to the `talos-evidence` branch) | yes (pushes to the `talos-evidence` branch) | exception: no PRs |
 | `evidence-prune` | yes (one Git Data API commit) | yes (one commits call) | yes (one push) | exception: no PRs |
@@ -1231,7 +1233,7 @@ Identity, resolved once per run: `issues.assignee` when it names a login, else `
 | 4b | `check-pr-body`, only when `developer.checklist` is set: the PR body has a `Positive controls:` section and an `AC to test map:` section, each with text; the missing sections are the block comment (reason `pr-body-checklist`) and a failed fetch stops the gate | `block` |
 | 5 | Not a draft (only when `pr.draft` resolves true) | `redispatch` |
 | 6 | `pr-checks-required`; a red check is re-run at most twice per head SHA (`talos:ci-rerun` markers) | `wait` / `redispatch` |
-| 7 | Stale base: `pipeline-mergebase.sh`, then `update-branch` (`merge.auto_sync`), then a developer merge-base task (`talos.sh run` dispatches it in the same run, through `gate fix-round`; a round that pushes nothing blocks) | `wait` / `redispatch` |
+| 7 | Stale base: `pipeline-mergebase.sh`, then `update-branch` (`merge.auto_sync`), then a developer merge-base task (`talos.sh run` dispatches it in the same run, through `gate fix-round`; a round that pushes nothing blocks). A PR that is merely behind its base, with no conflict, is also synced under `merge.queue: off` and `merge.require_current_base` (default `true`): `pr-behind` (the base head is not an ancestor of the PR head, read from git after a fetch, else from the provider's compare API) then `pipeline-mergebase.sh`, else `update-branch`, whatever `merge.auto_sync` says, and the gate answers `wait reason=base-synced`; the next run merges only once `pr-checks-required` is green at the new head. A behind-check that cannot be read, or a sync that cannot run, is `wait reason=base-check-unverified`. github and github-api only | `wait` / `redispatch` |
 | 8 | `merge.auto` | `merge` / `handoff` |
 
 `next` routes a ready PR with every approval on the CI state: `pr-checks-required` exit 0 goes to `merge` (or `human-merge`), exit 2 (pending or missing) answers `wait reason=ci`, and exit 1 with the `failed:` line (a red check) also goes to `merge`, so gate 6 re-runs CI or answers `ci-failed` instead of the PR waiting on `ci` forever. Any other answer stays on the `ci` wait.
@@ -1445,6 +1447,7 @@ Docs is decided by `talos.sh docs-gate <pr> --issue <N>`. With `docs:done` on th
 | `merge.auto` | `true` | `false`: human merge |
 | `merge.method` | `squash` | `squash`, `merge` or `rebase` |
 | `merge.auto_sync` | `true` | `update-branch` on a stale base; sync sibling PRs after a merge (never under `merge.queue` `talos` or `github`) |
+| `merge.require_current_base` | `true` | merge gate 7 also brings a PR that is behind its base, with no conflict, up to date before a `merge` verdict (`wait reason=base-synced`; the next run merges on green CI at the new head), whatever `merge.auto_sync` says. Ignored under `merge.queue` `talos` or `github`, whose queue tests the combination. `false`: merge a behind, clean PR as before. Without a merge queue, a repo that merges many PRs in parallel is better served by `merge.queue: github`, whose queue tests the combination of PRs |
 | `merge.union_paths` | `["CHANGELOG.md"]` | paths `pipeline-mergebase.sh` may union-merge |
 | `merge.queue` | `off` | `off`, `talos` or `github`. `talos`: a PR that passes every merge gate is queued, not merged, and `talos.sh queue run` merges it ([Merge queue](#merge-queue)); `github`: the PR is enqueued in GitHub's merge queue instead of merged ([`merge.queue: github`](#mergequeue-github)) |
 | `merge.queue_batch` | `3` | the most queued PRs one `queue run` candidate holds; one invocation drains at most four times that many |

@@ -73,7 +73,7 @@
 #            verdict=wait       reason=blocked-label | approvals-missing missing=<labels>
 #                                 [never_approved=<roles>]
 #                                 | ci-pending | ci-rerun attempt=<k> | rerun-unsupported
-#                                 | ci-failed | base-synced | conflict-check-unverified
+#                                 | ci-failed | base-synced | conflict-check-unverified | base-check-unverified
 #                                 | awaiting-human-merge | closing-keyword-unverified
 #                                 | queued | queue-state-unverified
 #                                 | provider-queued | enqueue-failed
@@ -92,7 +92,7 @@
 #            queue is block reason=merge-queue-disabled, a provider other than
 #            GitHub block reason=merge-queue-unsupported, a failed enqueue wait
 #            reason=enqueue-failed. Unset and off: merged as before.
-# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict queue-ejected blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge closing-keyword-unverified forbidden-files closing-keyword pr-body-checklist siblings-capped roles-decision-mismatch queued queue-state-unverified provider-queued enqueue-failed merge-queue-disabled merge-queue-unsupported
+# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict queue-ejected blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified base-check-unverified awaiting-human-merge closing-keyword-unverified forbidden-files closing-keyword pr-body-checklist siblings-capped roles-decision-mismatch queued queue-state-unverified provider-queued enqueue-failed merge-queue-disabled merge-queue-unsupported
 #   stop: usage unknown-verb scripts-missing python-missing scratch-unavailable config-unreadable
 #         draft-resolve-failed view-failed labels-unreadable approval-sha-failed
 #         unsupported-verb:<verb> draft-unverified ci-unverified head-unresolved
@@ -2575,6 +2575,31 @@ _talos_gate_merge() {
         if [ "$_RC" -eq 1 ]; then
           _talos_emit reason base-synced
           _talos_verdict wait
+        fi
+        # #1060: a PR that is merely BEHIND its base passed gate 6 on CI that ran
+        # against an older base. Under merge.queue off (the queues test the
+        # combination themselves) it is brought up to date first, whatever
+        # merge.auto_sync says: this is the PR being merged, not a sibling sync. The
+        # pushed head is CI-verified by the next run, which merges only on green.
+        # An unreadable check, or a sync that cannot run, never ends in a merge.
+        if [ "$(cfg merge.require_current_base)" = "true" ] && [ "$(cfg merge.queue)" = "off" ]; then
+          _talos_cap _vcs pr-behind "$_pr"
+          case "$_RC" in
+            0) : ;;
+            1)
+              if bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_pr" > /dev/null; then
+                _talos_emit reason base-synced
+                _talos_verdict wait
+              fi
+              _talos_cap _vcs update-branch "$_pr"
+              if [ "$_RC" -eq 0 ]; then
+                _talos_emit reason base-synced
+                _talos_verdict wait
+              fi
+              _talos_emit reason base-check-unverified
+              _talos_verdict wait ;;
+            *) _talos_emit reason base-check-unverified; _talos_verdict wait ;;
+          esac
         fi
       else
         if bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_pr" > /dev/null; then

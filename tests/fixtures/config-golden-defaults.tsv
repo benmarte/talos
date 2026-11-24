@@ -94,6 +94,7 @@ merge.queue_batch	3	table	docs (#928, new)
 merge.queue_branch_prefix	talos/queue/	table	docs (#928, new)
 merge.queue_retry	1	table	docs (#950, new)
 merge.queue_timeout_s	3600	table	docs (#946, new)
+merge.require_current_base	true	table	talos.sh (#1060, new)
 merge.required_checks		empty	pipeline-status-file.sh,pipeline-vcs.sh
 merge.union_paths		empty	pipeline-mergebase.sh
 notifications.buzz_channel		empty	pipeline-notify.sh

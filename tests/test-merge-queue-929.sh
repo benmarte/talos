@@ -241,7 +241,8 @@ done
 
 # ── AC6 (same): merge.auto false hands off before the queue step ─────────────
 reset_stubs; cfg_queue off false; gm
-handoff_j="$(journal_norm)"
+# The one call the queue does not make: merge.queue off also reads pr-behind (#1060).
+handoff_j="$(journal_norm | grep -v '^vcs pr-behind ')"
 reset_stubs; cfg_queue talos false; gm
 assert_eq "verdict=handoff" "$OUT" "AC6 merge.queue: talos with merge.auto: false still hands off"
 assert_eq "$handoff_j" "$(journal_norm)" "AC6 the same calls as the hand-off without the queue"
