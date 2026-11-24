@@ -777,7 +777,11 @@
 #                                             at the PR head, posts it, then adds
 #                                             pipeline:blocked and removes pipeline:review
 #                                             on the PR (and adds pipeline:blocked on
-#                                             --issue). The body is the DETAILS; SUMMARY is
+#                                             --issue), with a talos:blocked-by=qa line
+#                                             that lets QA's later PASS clear that block
+#                                             (post-approval qa, #1063). A `FAIL: ci-pending`
+#                                             summary or first line is a wait: the comment
+#                                             is posted, nothing is blocked. The body is the DETAILS; SUMMARY is
 #                                             --summary or its first non-blank line. One
 #                                             comment per head: a repeat posts nothing and
 #                                             still ensures the labels. Any other role, no
@@ -11914,6 +11918,66 @@ print(sum(1 for c in data.get('comments', []) if body_last_line(c.get('body', ''
   return 1
 }
 
+# _pa_clear_qa_block <comments-json> <sha> <pr> [<issue>] (#1063): a QA PASS
+# removes the pipeline:blocked its own FAIL applied. post-verdict records that
+# with a `<!-- talos:blocked-by=qa -->` line in a blocking FAIL's comment (a
+# ci-pending FAIL is a wait and carries none). The block is QA's while such a
+# comment is newer than every approval marker role=qa of an earlier head; the
+# approval at <sha> (a repeated call) does not end it. A block from any other
+# source (a gate, a human) has no such comment and is never touched. The
+# label calls are idempotent: removing an absent label is no error.
+# The verdict comment must come from a trusted author, as for every marker
+# reader (_vcs_shared_trust_py): anyone who can comment could otherwise forge the
+# pair of lines and have a PASS lift a gate's or a person's block. With
+# markers.verify_authors on and no trust set resolved (no markers.trusted_authors,
+# no identity) nothing is cleared. An approval marker needs no author check:
+# it can only end the clearing, never start it.
+_pa_clear_qa_block() {
+  local _cb_armed _cb_trusted _cb_verify _cb_user="" _cb_refused="" _cb_rc=0
+  _cb_trusted="$(cfg markers.trusted_authors)"
+  _cb_verify="$(cfg markers.verify_authors)"
+  if [ "$_cb_verify" = "true" ]; then
+    _cb_user="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" current-user ${REPO:+--repo "$REPO"} 2>/dev/null)" || _cb_rc=$?
+    [ "$_cb_rc" -eq 0 ] || _cb_user=""
+    [ "$_cb_rc" -ne 3 ] || _cb_refused=1
+  fi
+  _cb_armed="$(printf '%s' "$1" | PA_SHA="$2" TRUSTED_AUTHORS="$_cb_trusted" VERIFY_AUTHORS="$_cb_verify" CURRENT_USER="$_cb_user" CURRENT_USER_REFUSED="$_cb_refused" TALOS_CFG="$_TALOS_CFG" python3 -I -c "$(_vcs_shared_trust_py)
+import json, os, sys
+sha = os.environ.get('PA_SHA', '')
+verify, trusted = load_trust()
+enforced = author_check_enforced(verify, trusted)
+if verify and not enforced:
+    print('no')   # trust unresolved: fail closed, clear nothing
+    sys.exit(0)
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print('no')
+    sys.exit(0)
+armed = False
+for c in data.get('comments', []):
+    last = body_last_line(c.get('body', '') or '')
+    lines = [l.strip() for l in (c.get('body', '') or '').splitlines()]
+    author = c.get('author', {}).get('login', '') if isinstance(c.get('author'), dict) else ''
+    if last.startswith('<!-- talos:qa-verdict ') and '<!-- talos:blocked-by=qa -->' in lines:
+        if enforced and author not in trusted:
+            continue
+        armed = True
+    elif last.startswith('<!-- talos:approval ') and last.endswith(' role=qa -->') and ('sha=' + sha + ' ') not in last:
+        armed = False
+print('yes' if armed else 'no')
+")"
+  [ "$_cb_armed" = yes ] || return 0
+  bash "$SCRIPT_DIR/pipeline-vcs.sh" label-pr "$3" --remove pipeline:blocked >/dev/null || {
+    echo "pipeline-vcs: post-approval: label-pr failed for PR #$3" >&2
+    return 1
+  }
+  [ -z "${4:-}" ] || bash "$SCRIPT_DIR/pipeline-vcs.sh" label-issue "$4" --remove pipeline:blocked >/dev/null || {
+    echo "pipeline-vcs: post-approval: label-issue failed for issue #$4" >&2
+    return 1
+  }
+}
+
 # ── post-approval: atomic marker-post + label (#146) ─────────────────────────
 # github, github-api and azure (and gitlab, #736). For other providers, exit 1.
 #
@@ -12225,6 +12289,7 @@ print('none')
       echo "pipeline-vcs: post-approval: label-pr failed for PR #$_pa_n" >&2
       exit 1
     }
+    [ "$_pa_role" != qa ] || _pa_clear_qa_block "$_pa_comments_json" "$_pa_sha" "$_pa_n" "$_pa_issue" || exit 1
     _pa_result "marker already present at $_pa_sha; $_pa_label label ensured"
     exit $?
   fi
@@ -12278,6 +12343,7 @@ print('none')
     echo "pipeline-vcs: post-approval: label-pr failed for PR #$_pa_n" >&2
     exit 1
   }
+  [ "$_pa_role" != qa ] || _pa_clear_qa_block "$_pa_comments_json" "$_pa_sha" "$_pa_n" "$_pa_issue" || exit 1
 
   _pa_result "marker posted and $_pa_label label applied"
   exit $?
@@ -12294,6 +12360,8 @@ fi
 # and still ensures the labels. The body is the DETAILS text; SUMMARY is
 # --summary or the body's first non-blank line (200 characters at most).
 _pv_labels() {  # block the PR (and the issue): label-pr/label-issue are idempotent
+  # A ci-pending FAIL (#1028, #1063) is a wait, not a defect: nothing is blocked.
+  [ "$_pv_cip" -eq 0 ] || return 0
   bash "$SCRIPT_DIR/pipeline-vcs.sh" label-pr "$_pv_n" --add pipeline:blocked --remove pipeline:review >/dev/null || {
     echo "pipeline-vcs: post-verdict: label-pr failed for PR #$_pv_n" >&2
     return 1
@@ -12348,8 +12416,14 @@ if [ "$VERB" = "post-verdict" ]; then
     echo "pipeline-vcs: post-verdict: the body is empty; the failing criteria are required" >&2
     exit 1
   fi
+  # #1063: the verdict line `FAIL: ci-pending ...` (the driver's marker, #1028),
+  # as the summary or as the body's first non-blank line, makes this FAIL a wait.
+  _pv_cip=0
+  _pv_first="$(printf '%s\n' "$_pv_details" | grep -m 1 -v '^[[:space:]]*$')" || _pv_first=""
+  [[ "$_pv_summary" =~ ^[[:space:]]*FAIL:[[:space:]]+ci-pending([[:space:]]|$) || "$_pv_first" =~ ^[[:space:]]*FAIL:[[:space:]]+ci-pending([[:space:]]|$) ]] && _pv_cip=1
   if [ "$DRY_RUN" = "true" ]; then
-    printf '[dry-run] post-verdict: would post the qa-verdict FAIL comment with a talos:qa-verdict marker on PR #%s, add pipeline:blocked, remove pipeline:review\n' "$_pv_n"
+    printf '[dry-run] post-verdict: would post the qa-verdict FAIL comment with a talos:qa-verdict marker on PR #%s%s\n' "$_pv_n" \
+      "$([ "$_pv_cip" -eq 1 ] && echo ' (ci-pending: no block)' || echo ', add pipeline:blocked, remove pipeline:review')"
     exit 0
   fi
 
@@ -12385,7 +12459,8 @@ print('none')
     found)
       echo "pipeline-vcs: post-verdict: qa verdict already exists at $_pv_sha; not posting again" >&2
       _pv_labels || exit 1
-      printf 'post-verdict: PR #%s qa FAIL verdict already present at %s; blocked labels ensured\n' "$_pv_n" "$_pv_sha"
+      printf 'post-verdict: PR #%s qa FAIL verdict already present at %s; %s\n' "$_pv_n" "$_pv_sha" \
+        "$([ "$_pv_cip" -eq 1 ] && echo 'nothing blocked (ci-pending)' || echo 'blocked labels ensured')"
       exit 0
       ;;
     none) ;;
@@ -12409,6 +12484,9 @@ env = {"HEADER": os.environ["PV_HEADER"], "VERDICT": "FAIL", "SUMMARY": summary,
 with open(sys.argv[1]) as f:
     sys.stdout.write(string.Template(f.read()).substitute(env).strip() + "\n")
 ' "$_pv_tpl" > "$_pv_tmpfile" || { echo "pipeline-vcs: post-verdict: cannot render $_pv_tpl" >&2; exit 1; }
+  # A blocking FAIL records that the block is QA's (#1063), so QA's later PASS
+  # may clear it; the verdict marker stays the comment's last line.
+  [ "$_pv_cip" -eq 1 ] || printf '\n<!-- talos:blocked-by=qa -->\n' >> "$_pv_tmpfile"
   printf '\n%s\n' "$_pv_marker" >> "$_pv_tmpfile"
 
   _pv_out="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" comment-pr "$_pv_n" --body-file "$_pv_tmpfile" 2>&1)" || {
@@ -12416,7 +12494,11 @@ with open(sys.argv[1]) as f:
     exit 1
   }
   _pv_labels || exit 1
-  printf 'post-verdict: PR #%s qa FAIL verdict posted at %s; blocked labels applied\n' "$_pv_n" "$_pv_sha"
+  if [ "$_pv_cip" -eq 1 ]; then
+    printf 'post-verdict: PR #%s qa FAIL verdict (ci-pending) posted at %s; nothing blocked\n' "$_pv_n" "$_pv_sha"
+  else
+    printf 'post-verdict: PR #%s qa FAIL verdict posted at %s; blocked labels applied\n' "$_pv_n" "$_pv_sha"
+  fi
   exit 0
 fi
 
