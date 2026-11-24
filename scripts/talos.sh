@@ -133,7 +133,10 @@
 #            merge: a merge commit; rebase: its own commits replayed);
 #         5. a PR that does not apply is left out and goes to
 #            pipeline-mergebase.sh <pr>: `conflict=<pr> action=mergebase|developer|
-#            unverified` (exit 0, 3, other); nothing is resolved in the candidate;
+#            unverified` (exit 0, 3, other); nothing is resolved in the candidate
+#            but a union merge of merge.union_paths (#1042) and the regeneration of
+#            merge.generated_paths with merge.generate_command (#1083: printed
+#            `regenerated=<pr>`; a failed one is `conflict=<pr> action=generate-failed`);
 #            none left is wait reason=no-candidate;
 #         6. the candidate <prefix><base>-<epoch s> is pushed: `candidate=<b>
 #            sha=<40 hex> prs=<a,b,c>`; a failed push or an origin ref that is not
@@ -2012,6 +2015,13 @@ _QR_SOLO_P=""
 _QR_PROT=""
 _QR_ATTRS=""
 _QR_SYNC=" "
+# Generated files (#1083): the attributes file for a PR whose conflicts are in
+# merge.generated_paths too (the union lines, then `merge=talosours` for the generated
+# paths; empty: none), whether the PR just applied was regenerated (0|1), and the PRs
+# (" 12 ") whose regeneration failed in this cut.
+_QR_GATTRS=""
+_QR_REGEN=0
+_QR_GENFAIL=" "
 
 # _talos_queue_wt_drop: remove the throwaway worktree, if any.
 _talos_queue_wt_drop() {
@@ -2115,7 +2125,7 @@ _talos_queue_origin_sha() {
 # _QR_ATTRS (empty when the list cannot be read or holds nothing). A protected base
 # prints one note naming merge.queue: github.
 _talos_queue_prot_read() {
-  local _ents
+  local _ents _gens
   _QR_PROT=protected
   _talos_cap _vcs base-protection "$_QR_BASE"
   if [ "$_RC" -ne 0 ] || [ "$_OUT" != open ]; then
@@ -2124,10 +2134,25 @@ _talos_queue_prot_read() {
   fi
   _QR_PROT=open
   _talos_run_capture mergebase bash "$SCRIPT_DIR/pipeline-mergebase.sh" --union-list
-  [ "$_RC" -eq 0 ] || return 0
-  # One `<glob> merge=union` line per entry; an entry git would read as anything but
-  # a plain pattern is dropped.
-  _ents="$(python3 -I -c '
+  [ "$_RC" -ne 0 ] || _ents="$(_talos_queue_attrs union <<< "$_OUT")"
+  if [ -n "${_ents:-}" ] && printf '%s\n' "$_ents" > "$_CFG_CACHE_DIR/queue-attrs"; then
+    _QR_ATTRS="$_CFG_CACHE_DIR/queue-attrs"
+  fi
+  # merge.generated_paths (#1083), with the union lines: a path git keeps the
+  # candidate's side of, to be regenerated (_talos_queue_regen).
+  _talos_run_capture mergebase bash "$SCRIPT_DIR/pipeline-mergebase.sh" --generated-list
+  [ "$_RC" -ne 0 ] || _gens="$(_talos_queue_attrs talosours <<< "$_OUT")"
+  if [ -n "${_gens:-}" ] && printf '%s\n' "${_ents:+$_ents$'\n'}$_gens" > "$_CFG_CACHE_DIR/queue-attrs-gen"; then
+    _QR_GATTRS="$_CFG_CACHE_DIR/queue-attrs-gen"
+  fi
+  return 0
+}
+
+# _talos_queue_attrs <merge driver> (stdin: a JSON array of globs): one `<glob>
+# merge=<driver>` line per entry; an entry git would read as anything but a plain
+# pattern is dropped.
+_talos_queue_attrs() {
+  python3 -I -c '
 import json, re, sys
 try:
     ents = json.loads(sys.stdin.read())
@@ -2135,10 +2160,7 @@ except ValueError:
     ents = []
 for e in ents if isinstance(ents, list) else []:
     if isinstance(e, str) and re.fullmatch(r"[A-Za-z0-9._*?@+][A-Za-z0-9._*?/@+-]*", e):
-        print(e + " merge=union")' <<< "$_OUT" 2>/dev/null)" || return 0
-  [ -n "$_ents" ] || return 0
-  printf '%s\n' "$_ents" > "$_CFG_CACHE_DIR/queue-attrs" || return 0
-  _QR_ATTRS="$_CFG_CACHE_DIR/queue-attrs"
+        print(e + " merge=" + sys.argv[1])' "$1" 2>/dev/null
 }
 
 # _talos_queue_union (#1042): 0 when a PR that does not apply plainly may be applied
@@ -2148,6 +2170,14 @@ _talos_queue_union() {
   [ "$_QR_PROT" = open ] && [ -n "$_QR_ATTRS" ]
 }
 
+# _talos_queue_gen (#1083): 0 when a PR that does not apply may be applied with the
+# generated files regenerated: an open base (the union sync's rule) and both
+# merge.generated_paths and merge.generate_command set.
+_talos_queue_gen() {
+  [ -n "$_QR_PROT" ] || _talos_queue_prot_read
+  [ "$_QR_PROT" = open ] && [ -n "$_QR_GATTRS" ]
+}
+
 # _talos_queue_apply <method> <base sha> <head> <pr>: the PR's queued head on top of
 # the worktree's HEAD (_talos_queue_apply1), plainly; when that does not apply and
 # the base allows it (_talos_queue_union), again with the union attributes: a PR
@@ -2155,10 +2185,44 @@ _talos_queue_union() {
 # candidate, and is remembered in _QR_SYNC: its own branch does not merge into the
 # base once an earlier PR of the candidate has, so it is synced just before it merges.
 _talos_queue_apply() {
+  local _pre
+  _QR_REGEN=0
   _talos_queue_apply1 "$@" && return 0
-  _talos_queue_union || return 1
-  _talos_queue_apply1 "$1" "$2" "$3" "$4" "$_QR_ATTRS" || return 1
-  case "$_QR_SYNC" in *" $4 "*) ;; *) _QR_SYNC="$_QR_SYNC$4 " ;; esac
+  if _talos_queue_union && _talos_queue_apply1 "$1" "$2" "$3" "$4" "$_QR_ATTRS"; then
+    _talos_queue_synced "$4"
+    return 0
+  fi
+  # Generated files (#1083): again with the candidate's side kept for them, then the
+  # generator run on the merged tree. A PR whose regeneration fails is left out.
+  _talos_queue_gen || return 1
+  _pre="$(git -C "$_QR_WT" rev-parse HEAD)" || return 1
+  _talos_queue_apply1 "$1" "$2" "$3" "$4" "$_QR_GATTRS" || return 1
+  _talos_queue_synced "$4"
+  _talos_queue_regen "$4" "$_pre"
+}
+
+# _talos_queue_synced <pr>: remember the PR as one to sync just before its merge.
+_talos_queue_synced() {
+  case "$_QR_SYNC" in *" $1 "*) ;; *) _QR_SYNC="$_QR_SYNC$1 " ;; esac
+}
+
+# _talos_queue_regen <pr> <worktree HEAD before the PR> (#1083): the generator on the
+# worktree and its output committed as the PR's part of the candidate
+# (pipeline-mergebase.sh --regenerate); `regenerated=<pr>` is printed by the caller
+# of the main cut through _QR_REGEN. A failed generator, a conflict marker or a change
+# outside merge.generated_paths puts the worktree back before the PR, remembers it in
+# _QR_GENFAIL and returns 1.
+_talos_queue_regen() {
+  _talos_run_capture mergebase bash "$SCRIPT_DIR/pipeline-mergebase.sh" --regenerate "$_QR_WT" "$1"
+  if [ "$_RC" -eq 0 ]; then
+    _QR_REGEN=1
+    return 0
+  fi
+  git -C "$_QR_WT" reset -q --hard "$2" >/dev/null 2>&1
+  git -C "$_QR_WT" clean -fdxq >/dev/null 2>&1
+  _QR_GENFAIL="$_QR_GENFAIL$1 "
+  _QR_SYNC="${_QR_SYNC/ $1 / }"
+  return 1
 }
 
 # _talos_queue_apply1 <method> <base sha> <head> <pr> [<attributes file>]: apply the
@@ -2168,7 +2232,9 @@ _talos_queue_apply() {
 _talos_queue_apply1() {
   local _m="$1" _b="$2" _h="$3" _p="$4" _pre _c _rc=0
   local _g=(git -C "$_QR_WT" -c user.name=talos-queue -c user.email=talos@local -c commit.gpgsign=false)
-  [ -z "${5:-}" ] || _g+=(-c "core.attributesFile=$5")
+  # merge.talosours.driver=true (#1083): a path marked merge=talosours keeps the side
+  # already in the worktree (the candidate's) when both sides changed it.
+  [ -z "${5:-}" ] || _g+=(-c "core.attributesFile=$5" -c merge.talosours.driver=true)
   _pre="$(git -C "$_QR_WT" rev-parse HEAD)" || return 1
   case "$_m" in
     squash)
@@ -2191,6 +2257,7 @@ _talos_queue_apply1() {
 # base sha in _QR_WT; 1 when it cannot be made.
 _talos_queue_wt_new() {
   _QR_SYNC=" "  # a new cut: which PRs need the sync is found again as they are applied
+  _QR_GENFAIL=" "
   _QR_WT="$(mktemp -d "${TMPDIR:-/tmp}/talos-queue.XXXXXX" 2>/dev/null)" || _QR_WT=""
   [ -n "$_QR_WT" ] && [ -d "$_QR_WT" ] || { _QR_WT=""; return 1; }
   with_lock "$_QR_LOCK" 10 -- git worktree add -q --detach "$_QR_WT" "$1" >/dev/null 2>&1
@@ -2530,9 +2597,15 @@ _talos_queue_run() {
       _csv="$_csv${_csv:+,}$_p"
       _size=$((_size + 1))
       [ -n "$_n1" ] || _n1="$_n"
+      [ "$_QR_REGEN" -eq 0 ] || _talos_emit regenerated "$_p"
       continue
     fi
-    # 5. Left out: the merge-base task, never a resolution inside the candidate.
+    # 5. Left out: the merge-base task, never a resolution inside the candidate other
+    # than a union merge or a regeneration (#1042, #1083). A regeneration that failed
+    # (merge.generate_command) is `generate-failed`: the generator is not run again here.
+    case "$_QR_GENFAIL" in
+      *" $_p "*) _talos_emit conflict "$_p action=generate-failed"; continue ;;
+    esac
     _talos_run_capture mergebase bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_p"
     case "$_RC" in 0) _a=mergebase ;; 3) _a=developer ;; *) _a=unverified ;; esac
     _talos_emit conflict "$_p action=$_a"

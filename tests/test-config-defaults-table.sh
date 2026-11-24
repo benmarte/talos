@@ -32,7 +32,7 @@ board.azure_states.in_review board.azure_states.done verify verify.commands veri
 verify.targeted verify.ci_scope verify.targeted_commands verify.dev_tests verify.e2e verify.guide review.guide developer.checklist verify.e2e_artifacts.dir verify.e2e_artifacts.include verify.e2e_artifacts.max_files verify.e2e_artifacts.max_mb verify.walk.specs verify.walk.max_mb verify.walk.require_video verify.walk.ui_paths verify.ready verify.ci_wait_s verify.ci_requeue_stuck verify.timeout_ms merge.auto merge.method
 merge.required_checks merge.forbidden_files
 merge.forbidden_files_replace merge.forbidden_files_allow merge.approval_waiver_paths
-merge.union_paths merge.auto_sync merge.require_current_base merge.queue merge.queue_ci merge.queue_batch merge.queue_branch_prefix merge.queue_timeout_s merge.queue_retry merge.queue_solo_labels merge.queue_solo_paths issues.label_filter issues.skip_labels
+merge.union_paths merge.generated_paths merge.generate_command merge.auto_sync merge.require_current_base merge.queue merge.queue_ci merge.queue_batch merge.queue_branch_prefix merge.queue_timeout_s merge.queue_retry merge.queue_solo_labels merge.queue_solo_paths issues.label_filter issues.skip_labels
 issues.max_parallel issues.assignee issues.claim pipeline.risk_areas identity.name execution.isolation execution.worktree_warn_threshold execution.orchestrator execution.context_budget_tokens
 roles.validator roles.pm roles.pm_skip_when_spec_present roles.qa roles.reviewer
 roles.security roles.adversarial roles.docs roles.docs_mode roles.planner roles.fix_on_first_findings roles.required_when.* docs.paths
