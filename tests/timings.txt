@@ -334,6 +334,7 @@
 71 test-talos-next.sh
 8 test-talos-post-merge-closing-822.sh
 45 test-talos-postmerge.sh
+20 test-talos-prompt-golden.sh
 68 test-talos-prompt.sh
 160 test-talos-run-drain-docs.sh
 351 test-talos-run-fix-rounds.sh
