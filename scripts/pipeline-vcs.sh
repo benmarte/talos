@@ -439,7 +439,16 @@
 #                                             conflict-files). github and github-api
 #                                             only; the merge gate's stale-base step
 #                                             reads it under merge.require_current_base.
-#   conflict-files <n>                        Print the paths that conflict between
+#   base-protection <branch>                  Does <branch>'s protection or a ruleset
+#                                             require status checks (#1042)? Exit 0
+#                                             (prints `open`): none does, so a head
+#                                             that has no checks of its own can be
+#                                             merged. Exit 1 (prints `checks`): one
+#                                             does. Exit 2: cannot be read (nothing on
+#                                             stdout; treat it as `checks`). github
+#                                             and github-api only; the merge queue
+#                                             reads it once per run.
+#   conflict-files <n>                     Print the paths that conflict between
 #                                             PR <n>'s head and origin/<base_branch>,
 #                                             one per line (#256). Resolved with a
 #                                             throwaway `git merge --no-commit` in a
@@ -6752,6 +6761,56 @@ json.dump([dict(p, headRefName=(p.get('head') or {}).get('ref', '')) for p in pr
         0) echo current; return 0 ;;
         *) echo behind; exit 1 ;;
       esac
+      ;;
+    base-protection)
+      # base-protection <branch> (#1042): do the branch's protection or its rulesets
+      # require status checks? A head that has none of its own (the queue's mechanical
+      # sync) is refused by GitHub's merge then. Exit 0 `open`: neither does. Exit 1
+      # `checks`: one does (strict or not). Exit 2: a read failed or was not what it
+      # should be, nothing on stdout: the caller counts that as `checks`. Reads, in
+      # order, the branch (`protected`), its required-status-checks protection when it
+      # is protected, and the rules in force on it; stops at the first one that requires.
+      local _bp_br="${1:-}" _bp_enc _bp_raw _bp_rc
+      [ -n "$_bp_br" ] || { echo "pipeline-vcs: base-protection: branch name required" >&2; exit 2; }
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/branches/<branch> (+ /protection/required_status_checks, $_GH_API/rules/branches/<branch>)"; return 0; }
+      _bp_enc="$(_gh_urlenc "$_bp_br" /)"
+      _bp_has() {  # <kind> <json on stdin>: 0 requires, 1 does not, 2 unreadable
+        python3 -I -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit(2)
+kind = sys.argv[1]
+if kind == "branch":
+    if not isinstance(d, dict) or not isinstance(d.get("protected"), bool):
+        sys.exit(2)
+    sys.exit(0 if d["protected"] else 1)
+if kind == "classic":
+    if not isinstance(d, dict):
+        sys.exit(2)
+    sys.exit(0 if d.get("contexts") or d.get("checks") else 1)
+if not isinstance(d, list):
+    sys.exit(2)
+for r in d:
+    p = r.get("parameters") if isinstance(r, dict) else None
+    if isinstance(r, dict) and r.get("type") == "required_status_checks" and isinstance(p, dict) and p.get("required_status_checks"):
+        sys.exit(0)
+sys.exit(1)' "$1"
+      }
+      _bp_raw="$(_gh_try GET "$_GH_API/branches/$_bp_enc")" || exit 2
+      _bp_rc=0; printf '%s' "$_bp_raw" | _bp_has branch || _bp_rc=$?
+      case "$_bp_rc" in
+        0)
+          _bp_raw="$(_gh_try GET "$_GH_API/branches/$_bp_enc/protection/required_status_checks")" || exit 2
+          _bp_rc=0; printf '%s' "$_bp_raw" | _bp_has classic || _bp_rc=$?
+          case "$_bp_rc" in 0) echo checks; exit 1 ;; 1) ;; *) exit 2 ;; esac ;;
+        1) ;;
+        *) exit 2 ;;
+      esac
+      _bp_raw="$(_gh_try GET "$_GH_API/rules/branches/$_bp_enc")" || exit 2
+      _bp_rc=0; printf '%s' "$_bp_raw" | _bp_has rules || _bp_rc=$?
+      case "$_bp_rc" in 0) echo checks; exit 1 ;; 1) echo open; return 0 ;; *) exit 2 ;; esac
       ;;
     pr-state)
       # pr-state <n> (#1057): open, closed or merged, from the one pulls/<n> read.

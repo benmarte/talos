@@ -18,6 +18,7 @@
 # resolved conflicts.
 #
 # Usage: pipeline-mergebase.sh <PR> [--union-paths <glob,glob,...>]
+#        pipeline-mergebase.sh --union-list   (the validated union paths, as JSON)
 #
 # Exit codes:
 #   0  resolved and pushed -- caller should re-check pr-mergeable.
@@ -58,6 +59,14 @@ fi
 # ── Args ─────────────────────────────────────────────────────────────────────
 PR_N="${1:-}"
 shift || true
+# --union-list (#1042): print the validated merge.union_paths as one JSON array and
+# leave; no PR is read and nothing is touched. The merge queue applies exactly these
+# paths with a union merge inside its candidate.
+UNION_LIST_ONLY=0
+if [ "$PR_N" = "--union-list" ] && [ $# -eq 0 ]; then
+  UNION_LIST_ONLY=1
+  PR_N=0
+fi
 UNION_PATHS_OVERRIDE=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -205,6 +214,10 @@ print(json.dumps(entries))
 _MB_UNION_RC=$?
 if [ "$_MB_UNION_RC" -ne 0 ]; then
   exit "$_MB_UNION_RC"
+fi
+if [ "$UNION_LIST_ONLY" = 1 ]; then
+  printf '%s\n' "$_MB_UNION_PATHS"
+  exit 0
 fi
 
 # ── Resolve base branch (same fallback chain as assert-sync) ────────────────

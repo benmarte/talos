@@ -1765,6 +1765,15 @@ _talos_queue_read() {
   _QS="$(python3 -I -c "$_TALOS_QUEUE_PY" "$_TRUST_ON" "$_TRUST_SET" <<< "$_OUT" 2>/dev/null)" || return 1
 }
 
+# _talos_queue_mark <pr> <base> <head> <eligible>: write the PR's talos:queue marker
+# (the provider's upsert; _RC and _OUT are its answer). The enqueue writes one with
+# eligible = now, the batch runner's sync (#1042) writes one with the old eligible.
+_talos_queue_mark() {
+  printf '**Merge queue:**\n\nqueue: base=%s head=%s eligible=%s\n' \
+    "$2" "$3" "$4" > "$_CFG_CACHE_DIR/queue" || _talos_stop scratch-unavailable
+  _talos_cap _vcs upsert-pr-comment "$1" --marker queue --body-file - < "$_CFG_CACHE_DIR/queue"
+}
+
 # _talos_queue_enqueue <pr> <issue>: gate merge's last step under merge.queue:
 # talos, reached only when every gate passed. No marker, or one for another head
 # or base: one is written (eligible = now) and, on comment=created|updated, a
@@ -1797,9 +1806,7 @@ _talos_queue_enqueue() {
       fi ;;
     *) _talos_emit reason queue-state-unverified; _talos_verdict wait ;;
   esac
-  printf '**Merge queue:**\n\nqueue: base=%s head=%s eligible=%s\n' \
-    "$_base" "$_head" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$_CFG_CACHE_DIR/queue" || _talos_stop scratch-unavailable
-  _talos_cap _vcs upsert-pr-comment "$_pr" --marker queue --body-file - < "$_CFG_CACHE_DIR/queue"
+  _talos_queue_mark "$_pr" "$_base" "$_head" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   case "$_RC" in
     0) : ;;
     2) _talos_stop "unsupported-verb:upsert-pr-comment" ;;
@@ -1909,6 +1916,13 @@ _QR_BAD=""
 _QR_ISO=""
 _QR_POLLS=120
 _QR_BATCH=3
+# Sync then batch (#1042): the base's protection (open or protected, read once per
+# run), the git attributes file that makes merge.union_paths a union merge inside the
+# candidate (empty: none), and the PRs (" 12 ") that only applied that way and are
+# synced just before they merge.
+_QR_PROT=""
+_QR_ATTRS=""
+_QR_SYNC=" "
 
 # _talos_queue_wt_drop: remove the throwaway worktree, if any.
 _talos_queue_wt_drop() {
@@ -2005,13 +2019,67 @@ _talos_queue_origin_sha() {
   git ls-remote origin "refs/heads/$1" 2>/dev/null | awk -v r="refs/heads/$1" '$2 == r { print $1 }'
 }
 
-# _talos_queue_apply <method> <base sha> <head> <pr>: apply the PR's queued head
-# on top of the worktree's HEAD by merge.method: squash (one commit), merge (a
-# merge commit), rebase (its own non-merge commits replayed). 1 when it does not
-# apply; the worktree is then back where it was.
+# _talos_queue_prot_read (#1042): the base's protection, once per run, in _QR_PROT:
+# `open` (no required status checks) or `protected`. An answer that is not exactly
+# `open` with exit 0 (a failed read, a provider without the verb) is protected, the
+# safe side. Only an open base gets the union attributes of merge.union_paths in
+# _QR_ATTRS (empty when the list cannot be read or holds nothing). A protected base
+# prints one note naming merge.queue: github.
+_talos_queue_prot_read() {
+  local _ents
+  _QR_PROT=protected
+  _talos_cap _vcs base-protection "$_QR_BASE"
+  if [ "$_RC" -ne 0 ] || [ "$_OUT" != open ]; then
+    _talos_emit note "$_QR_BASE requires status checks on the PR head, or its protection could not be read: a PR that does not apply is synced and waits for its own CI; merge.queue: github batches it instead"
+    return 0
+  fi
+  _QR_PROT=open
+  _talos_run_capture mergebase bash "$SCRIPT_DIR/pipeline-mergebase.sh" --union-list
+  [ "$_RC" -eq 0 ] || return 0
+  # One `<glob> merge=union` line per entry; an entry git would read as anything but
+  # a plain pattern is dropped.
+  _ents="$(python3 -I -c '
+import json, re, sys
+try:
+    ents = json.loads(sys.stdin.read())
+except ValueError:
+    ents = []
+for e in ents if isinstance(ents, list) else []:
+    if isinstance(e, str) and re.fullmatch(r"[A-Za-z0-9._*?@+][A-Za-z0-9._*?/@+-]*", e):
+        print(e + " merge=union")' <<< "$_OUT" 2>/dev/null)" || return 0
+  [ -n "$_ents" ] || return 0
+  printf '%s\n' "$_ents" > "$_CFG_CACHE_DIR/queue-attrs" || return 0
+  _QR_ATTRS="$_CFG_CACHE_DIR/queue-attrs"
+}
+
+# _talos_queue_union (#1042): 0 when a PR that does not apply plainly may be applied
+# with a union merge of merge.union_paths: the base is open and the list is not empty.
+_talos_queue_union() {
+  [ -n "$_QR_PROT" ] || _talos_queue_prot_read
+  [ "$_QR_PROT" = open ] && [ -n "$_QR_ATTRS" ]
+}
+
+# _talos_queue_apply <method> <base sha> <head> <pr>: the PR's queued head on top of
+# the worktree's HEAD (_talos_queue_apply1), plainly; when that does not apply and
+# the base allows it (_talos_queue_union), again with the union attributes: a PR
+# whose only conflicts are merge.union_paths files (CHANGELOG.md) is then in the
+# candidate, and is remembered in _QR_SYNC: its own branch does not merge into the
+# base once an earlier PR of the candidate has, so it is synced just before it merges.
 _talos_queue_apply() {
+  _talos_queue_apply1 "$@" && return 0
+  _talos_queue_union || return 1
+  _talos_queue_apply1 "$1" "$2" "$3" "$4" "$_QR_ATTRS" || return 1
+  case "$_QR_SYNC" in *" $4 "*) ;; *) _QR_SYNC="$_QR_SYNC$4 " ;; esac
+}
+
+# _talos_queue_apply1 <method> <base sha> <head> <pr> [<attributes file>]: apply the
+# PR's queued head on top of the worktree's HEAD by merge.method: squash (one
+# commit), merge (a merge commit), rebase (its own non-merge commits replayed). 1
+# when it does not apply; the worktree is then back where it was.
+_talos_queue_apply1() {
   local _m="$1" _b="$2" _h="$3" _p="$4" _pre _c _rc=0
   local _g=(git -C "$_QR_WT" -c user.name=talos-queue -c user.email=talos@local -c commit.gpgsign=false)
+  [ -z "${5:-}" ] || _g+=(-c "core.attributesFile=$5")
   _pre="$(git -C "$_QR_WT" rev-parse HEAD)" || return 1
   case "$_m" in
     squash)
@@ -2033,6 +2101,7 @@ _talos_queue_apply() {
 # _talos_queue_wt_new <base sha>: a fresh throwaway detached worktree at the
 # base sha in _QR_WT; 1 when it cannot be made.
 _talos_queue_wt_new() {
+  _QR_SYNC=" "  # a new cut: which PRs need the sync is found again as they are applied
   _QR_WT="$(mktemp -d "${TMPDIR:-/tmp}/talos-queue.XXXXXX" 2>/dev/null)" || _QR_WT=""
   [ -n "$_QR_WT" ] && [ -d "$_QR_WT" ] || { _QR_WT=""; return 1; }
   with_lock "$_QR_LOCK" 10 -- git worktree add -q --detach "$_QR_WT" "$1" >/dev/null 2>&1
@@ -2203,6 +2272,35 @@ _talos_queue_eject() {
     --batch-size "$2" < /dev/null
 }
 
+# _talos_queue_sync <pr> <cut head> <eligible> (#1042), step 9 for a PR that only
+# applied to the candidate by a union merge: the earlier PRs of the batch are
+# merged, so its own branch no longer merges into the base. The mechanical sync
+# (pipeline-mergebase.sh, exit 0: only merge.union_paths conflicts) brings it
+# up to date; its new head is in _QH. Approvals are judged as ever: a head
+# check-approval-sha calls stale is not merged and its marker is left on the old
+# head, so the PR leaves the queue until it is re-stamped. Else the marker is
+# bound to the synced head with its original eligible time (its place in the
+# queue), and the caller merges at that head: the candidate's CI tested the
+# combination, so the synced head needs none of its own. Every failure is
+# `wait` (the PR stays as it was, or leaves the queue for its own CI), with
+# `pr=<pr>`; nothing is merged for it.
+_talos_queue_sync() {
+  local _p="$1" _qh="$2" _qe="$3"
+  _talos_run_capture mergebase bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_p"
+  if [ "$_RC" -ne 0 ] || ! { _talos_queue_head "$_p" && [ "$_QH" != "$_qh" ]; }; then
+    _talos_emit pr "$_p"
+    _talos_queue_end wait sync-failed
+  fi
+  _talos_cap _vcs check-approval-sha "$_p"
+  case "$_RC" in
+    0 | 3) : ;;  # current, or no approval label at all (skip-qa)
+    1) _talos_emit pr "$_p"; _talos_queue_end wait approvals-stale ;;
+    *) _talos_emit pr "$_p"; _talos_queue_end wait approvals-unverified ;;
+  esac
+  _talos_queue_mark "$_p" "$_QR_BASE" "$_QH" "$_qe"
+  [ "$_RC" -eq 0 ] || { _talos_emit pr "$_p"; _talos_queue_end wait queue-state-unverified; }
+}
+
 _talos_queue_run() {
   local _base _prefix _batch _method _tmo _rows _p _qh _qe _br _n _rx _b _t0=""
   local _picked="" _csv="" _size=0 _n1="" _branches=() _a _recuts=0 _stale=0 _prc=0 _retry _rt=0
@@ -2363,6 +2461,14 @@ _talos_queue_run() {
       _talos_emit pr "$_p"
       _talos_queue_end wait head-moved
     fi
+    # #1042: a PR that applied to the candidate only by a union merge is synced
+    # first and merges at its synced head, its eligible time kept.
+    case "$_QR_SYNC" in
+      *" $_p "*)
+        _qe="$(awk -v p="$_p" '$1 == p { print $3 }' <<< "$_rows")"
+        _talos_queue_sync "$_p" "$_qh" "$_qe"
+        _qh="$_QH" ;;
+    esac
     _talos_cap _vcs merge-pr "$_p" --sha "$_qh"
     if [ "$_RC" -ne 0 ]; then
       _talos_emit pr "$_p"
