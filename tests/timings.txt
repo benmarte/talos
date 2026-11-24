@@ -51,6 +51,7 @@
 0 test-callsite-guard.sh
 1 test-callsite-literal-defaults.sh
 44 test-canary.sh
+8 test-check-table-fd3-isolation.sh
 8 test-checks-newer-run-pending.sh
 1 test-ci-concurrency-draft-race.sh
 2 test-ci-count-merge-base.sh

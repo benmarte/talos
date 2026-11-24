@@ -5440,7 +5440,7 @@ _gh_check_table() {
 _gh_sha_check_table() {
   local _sha="$1" _runs _stat='{"statuses":[]}' _tbl _name
   _runs="$(_gh_pages "$_GH_API/commits/$_sha/check-runs?per_page=100" "" "check runs" check_runs)" || return 1
-  _tbl="$(printf '%s\n%s' "$_runs" "$_stat" | _gh_check_table_py)"
+  _tbl="$(printf '%s\n%s' "$_runs" "$_stat" | _gh_check_table_py 3</dev/null)"
   local _need=0
   if [ -z "${2:-}" ]; then
     _need=1
@@ -5452,7 +5452,7 @@ _gh_sha_check_table() {
   fi
   if [ "$_need" = 1 ]; then
     _stat="$(_gh_try GET "$_GH_API/commits/$_sha/status")" || return 1
-    _tbl="$(printf '%s\n%s' "$_runs" "$_stat" | _gh_check_table_py)"
+    _tbl="$(printf '%s\n%s' "$_runs" "$_stat" | _gh_check_table_py 3</dev/null)"
   fi
   # (#1054) A required check whose newest run is cancelled or skipped is pending
   # while a newer run of its workflow for this sha is queued or in progress: a
@@ -5473,7 +5473,8 @@ _gh_sha_check_table() {
 }
 # _gh_check_table_py reads the check runs and statuses on stdin; when fd 3 holds
 # the sha's workflow runs (#1054), a cancelled or skipped check with a newer live
-# run of its workflow reads as pending.
+# run of its workflow reads as pending. Every call gives it an explicit fd 3
+# (3<<<"$_wf", else 3</dev/null): it never reads the caller's fd 3 (#1065).
 _gh_check_table_py() {
   python3 -I -c '
 import json, os, re, sys
