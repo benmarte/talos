@@ -54,6 +54,7 @@ fresh() {
   printf '%s' "$1" > "$STUB_DIR/list-issues.out"
   printf '%s' "${2:-[]}" > "$STUB_DIR/list-prs.out"
   printf '%s' "bot" > "$STUB_DIR/current-user.out"
+  printf '%s' 2 > "$STUB_DIR/list-assignees.rc"   # no assignees: sweep stays unfiltered (#1075)
 }
 sw() { OUT="$(bash "$PM" sweep 2>"$ERR")"; RC=$?; }
 readied() { grep -c "^vcs label-issue $1 --add pipeline:ready" "$STUB_DIR/journal" 2>/dev/null; }

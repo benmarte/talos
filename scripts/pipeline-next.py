@@ -25,6 +25,11 @@ caller's cwd and environment off sys.path). The callers are thin wrappers:
     issue-side  talos.sh next: the issue-side answer (queue walk, routing,
                 adoption of a queued issue's PR) from a state file plus options.
     where       talos.sh state --summary: the three `where` lines.
+    sweep-scope talos.sh sweep (#1075): list-issues JSON on stdin, options `vcs`
+                and `me`; prints the issues the operator acts on, as `,<n>,<m>,`
+                (`,` for none), or `-` when the provider has no assignees
+                (exit 2 of list-assignees). Any failed read exits 1: sweep then
+                acts on nothing. The same `Claims.split` rule as collect.
 
 Reads go through the pipeline-vcs.sh path in opts['vcs'] (read verbs only, one
 verb per call, never a write). The stage of a PR (next_stage) and the action a
@@ -1248,6 +1253,17 @@ def where(data):
         print('unassigned: ' + ', '.join(some(free, '#%d', 5)))
 
 
+def sweep_scope(raw_issues):
+    """The issues sweep acts on, as `,<n>,<m>,`; `-` when the provider has no
+    assignees (nothing is scoped)."""
+    claims = Claims(opts.get('me', ''))
+    amap = claims.read_assignees()
+    if not claims.me:
+        return '-'
+    kept = claims.split(dict((_num(i), set()) for i in raw_issues if _num(i)), amap, frozenset())
+    return ',' + ''.join('%d,' % n for n in sorted(kept))
+
+
 # ── entry point ──────────────────────────────────────────────────────────────
 
 def main(argv):
@@ -1256,6 +1272,11 @@ def main(argv):
     if mode == 'collect':
         opts = opts_from(argv[1:])
         collect()
+        return 0
+    if mode == 'sweep-scope':
+        opts = opts_from(argv[1:])
+        _start_read_phase()
+        print(sweep_scope(parse_array(sys.stdin.read(), 'list-issues')))
         return 0
     if mode in ('pr-side', 'issue-side', 'where') and len(argv) >= 2:
         with open(argv[1]) as f:
@@ -1271,7 +1292,7 @@ def main(argv):
             print('stop reason=' + str(e))
             return 1
         return 0
-    sys.stderr.write('usage: pipeline-next.py collect|pr-side|issue-side|where ...\n')
+    sys.stderr.write('usage: pipeline-next.py collect|pr-side|issue-side|where|sweep-scope ...\n')
     return 2
 
 

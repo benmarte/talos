@@ -212,7 +212,7 @@
 # post-merge-reasons: branch-left comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified closing-unverified board-failed checkout-return-failed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted lease-release-failed value-truncated
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #   warn: all the others
-# sweep-reasons: issues-unlisted prs-unlisted find-pr-unverified find-pr-failed worktree-sweep-failed epic-close-failed epic-label-failed epic-comment-failed epic-acceptance-unsupported unblock-failed notify-failed
+# sweep-reasons: issues-unlisted assignees-unlisted prs-unlisted find-pr-unverified find-pr-failed worktree-sweep-failed epic-close-failed epic-label-failed epic-comment-failed epic-acceptance-unsupported unblock-failed notify-failed
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #   warn: all the others, and the post-merge warns of a heal
 # summary-reasons: prs-unlisted worktree-sweep-failed notify-failed
@@ -2861,13 +2861,20 @@ for r in sorted(rows):
 # healed, so closed), the issues with an open pipeline PR (`,<n>,<m>,`; `?` when
 # the PR list was unreadable), then 1 or 0 for "only trusted authors count" and
 # the trusted logins one per line: an issue whose author is not trusted is never
-# unblocked (anyone can open an issue and write a `Depends on:` line).
+# unblocked (anyone can open an issue and write a `Depends on:` line); then the
+# scope (#1075): `-` for every issue, else `,<n>,<m>,` the only ones acted on.
 _TALOS_SWEEP_PY='
 import json, re, sys
 mode, skip = sys.argv[1], set(sys.argv[2].split(","))
 prs = sys.argv[3] if len(sys.argv) > 3 else "?"
 enforce = len(sys.argv) > 4 and sys.argv[4] == "1"
 trusted = set(sys.argv[5].splitlines()) if len(sys.argv) > 5 else set()
+# argv 6 (#1075): - acts on every issue; ,<n>,<m>, only on those (the operator
+# own issues, with claiming on). The open set stays the whole list: an issue of
+# another operator still blocks a dependent, an epic or a batch lead.
+scope = sys.argv[6] if len(sys.argv) > 6 else "-"
+def mine(n):
+    return scope == "-" or ",%d," % n in scope
 authors = {}
 items = []
 for i in json.load(sys.stdin):
@@ -2882,6 +2889,8 @@ items.sort(key=lambda t: t[0])
 if mode == "heal":
     opened = set(n for n, _, _ in items)
     for n, names, b in items:
+        if not mine(n):
+            continue
         # A batch member (#834) whose lead is closed rides the merged PR of that lead.
         # Only one carrying an epic:<n> label (the planner sets it; a stranger cannot).
         m = re.search(r"^[ \t]*Batched into:[ \t]*#([0-9]+)(?![0-9])", b, re.M)
@@ -2892,10 +2901,10 @@ if mode == "heal":
     sys.exit(0)
 opened = set(n for n, _, _ in items)
 for n, names, _ in items:
-    if "pipeline:blocked" in names:
+    if "pipeline:blocked" in names and mine(n):
         print("blocked", n)
 for n, names, _ in items:
-    if "pipeline:epic-decomposed" in names:
+    if "pipeline:epic-decomposed" in names and mine(n):
         part = re.compile(r"Part of #%d(?!\d)" % n)
         if not any(m != n and part.search(b) for m, _, b in items):
             print("epic", n, 1 if "pipeline:epic-children-done" in names else 0)
@@ -2904,7 +2913,7 @@ for n, names, b in items:
     # (argv 3: ",<issue>,...,"; "?" is an unreadable PR list: nothing is unblocked).
     if any(isinstance(x, str) and x.startswith("pipeline:") for x in names) or prs == "?" or ",%d," % n in prs:
         continue
-    if enforce and authors.get(n) not in trusted:
+    if (enforce and authors.get(n) not in trusted) or not mine(n):
         continue
     deps = [int(d) for ln in b.splitlines() if re.match(r"\s*Depends on:", ln) for d in re.findall(r"#([0-9]+)", ln)]
     if deps and not any(d in opened for d in deps):
@@ -3289,12 +3298,30 @@ _talos_ids() {
   done
 }
 
+# _talos_sweep_scope: sets _SCOPE from $_issues, the issues sweep acts on (#1075).
+# `-` is all of them (claiming off, or a provider with no assignees); with claiming
+# on it is `,<n>,<m>,`, the operator's own (the rule of collect: pipeline-next.py
+# sweep-scope). A failed assignee read is `,` (none) and `assignees-unlisted`.
+_talos_sweep_scope() {
+  _SCOPE="-"
+  talos_claim_resolve
+  case "${TALOS_CLAIM_STATE:-}" in on:?*) : ;; *) return 0 ;; esac
+  _talos_run_capture scope python3 -I "$SCRIPT_DIR/pipeline-next.py" sweep-scope \
+    --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --me "${TALOS_CLAIM_STATE#on:}" <<< "$_issues"
+  if [ "$_RC" -eq 0 ] && [[ "$_OUT" =~ ^(-|,([0-9]+,)*)$ ]]; then
+    _SCOPE="$_OUT"
+  else
+    _SCOPE=","
+    _talos_warn assignees-unlisted
+  fi
+}
+
 # sweep [<issue-id>...]: Step 1 items 2 and 4-8, the ids being this run's queue.
 _talos_sweep() {
-  local _issues="" _pr_issues _k _n _lead _pr _prs="" _list="" _healed="" _bi="" _bp="" _ki=0 _kp=0 _plan _s _i _b _e _carried _was
+  local _SCOPE="-" _issues="" _pr_issues _k _n _lead _pr _prs="" _list="" _healed="" _bi="" _bp="" _ki=0 _kp=0 _plan _s _i _b _e _carried _was
   _talos_ids "$@"
   _talos_prepare sweep pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
-                       pipeline-status.sh \
+                       pipeline-status.sh pipeline-next.py \
                        pipeline-worktree.sh pipeline-notify.sh pipeline-hooks.sh pipeline-events.sh \
                        pipeline-mergebase.sh
   _TALOS_RL_MODE=wait
@@ -3302,10 +3329,17 @@ _talos_sweep() {
   _TALOS_NOTE_KEY=sweep
   _talos_emit sweep done
 
+  # The scope "," acts on nothing: it only proves the list is a JSON array.
   _talos_cap _vcs list-issues
-  if [ "$_RC" -eq 0 ] && _list="$(python3 -I -c "$_TALOS_SWEEP_PY" heal "" <<< "$_OUT")"; then
+  if [ "$_RC" -eq 0 ] && _list="$(python3 -I -c "$_TALOS_SWEEP_PY" heal "" "?" 0 "" "," <<< "$_OUT")"; then
     _issues="$_OUT"
     _TALOS_ISSUE_LIST="$_OUT"
+    _talos_sweep_scope
+    if [ "$_SCOPE" = "," ]; then
+      _list=""
+    else
+      _list="$(python3 -I -c "$_TALOS_SWEEP_PY" heal "" "?" 0 "" "$_SCOPE" <<< "$_issues")"
+    fi
   else
     _talos_warn issues-unlisted
     _list=""
@@ -3364,7 +3398,7 @@ _talos_sweep() {
     # looked up trusts nobody: the soft mode counts none).
     _was="${_TALOS_TRUST_SOFT:-}"
     _TALOS_TRUST_SOFT=1; _talos_trust; _TALOS_TRUST_SOFT="$_was"
-    _plan="$(python3 -I -c "$_TALOS_SWEEP_PY" rest "$_healed" "$_pr_issues" "$_TRUST_ON" "$_TRUST_SET" <<< "$_issues")" || _plan=""
+    _plan="$(python3 -I -c "$_TALOS_SWEEP_PY" rest "$_healed" "$_pr_issues" "$_TRUST_ON" "$_TRUST_SET" "$_SCOPE" <<< "$_issues")" || _plan=""
   else
     _plan=""
   fi

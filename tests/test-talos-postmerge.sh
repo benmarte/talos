@@ -84,6 +84,8 @@ reset_stubs() {
   rm -rf "${STUB_DIR:?}"; mkdir -p "$STUB_DIR"
   cfg_json '{"vcs": {"provider": "github"}}'
   set_stub current-user 0 "bot"
+  # A provider with no assignees: claiming is on but sweep is unfiltered (#1075).
+  set_stub list-assignees 2 "" "not implemented"
   set_stub list-prs 0 "[]"
   set_stub read-comments 0 '{"comments":[]}'
   set_stub list-issues 0 "[$(issue_json 42 "")]"
