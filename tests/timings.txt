@@ -253,6 +253,7 @@
 17 test-qa-skip-targeted-859.sh
 46 test-qa-spec-fault-678.sh
 5 test-qa-targeted-budget.sh
+40 test-queue-sync-then-batch.sh
 5 test-rate-limit-raw-sites.sh
 3 test-ready-gate.sh
 5 test-record-attempt-stage-check.sh
