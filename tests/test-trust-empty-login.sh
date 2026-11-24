@@ -49,6 +49,7 @@ fresh() {
   printf '%s' "$3" > "$SANDBOX/talos.pipeline.json"
   printf '[{"number":30,"title":"t","labels":[{"name":"bug"}],"author":{"login":"%s"},"body":"Depends on: #29"}]' "$1" > "$STUB_DIR/list-issues.out"
   printf '%s' '[]' > "$STUB_DIR/list-prs.out"
+  printf '%s' 2 > "$STUB_DIR/list-assignees.rc"   # no assignees: sweep stays unfiltered (#1075)
   printf '%s' "$2" > "$STUB_DIR/current-user.out"
 }
 sw() { OUT="$(bash "$PM" sweep 2>"$ERR")"; RC=$?; }

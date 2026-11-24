@@ -329,6 +329,7 @@
 5 test-sweep-branch-safety.sh
 7 test-sweep-squash-head.sh
 7 test-sweep-unblock-code-driver.sh
+6 test-sweep-operator-scope.sh
 9 test-talos-docs-gate.sh
 111 test-talos-done.sh
 98 test-talos-env.sh
