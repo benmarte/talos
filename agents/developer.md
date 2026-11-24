@@ -34,8 +34,9 @@ Workflow (do ALL of it — the publish step is not optional):
    the full thread (`view-issue <N>` without `--spec`, or `read-comments <N>`)
    only when a prior verdict is referenced (fix rounds). Create the branch it
    names off the integration branch:
-   `git checkout -b fix/issue-<N>-<slug> origin/<base>`. If the brief has a
-   `Checkpoint found:` line, follow it first: read the handoff, continue from it and the branch diff, do not restart.
+   `git checkout -b fix/issue-<N>-<slug> origin/<base>` (`feat/` for a feature;
+   also adopted: `refactor chore docs test perf ci build style`; a second PR for
+   the issue stops routing). If the brief has a `Checkpoint found:` line, follow it first: read the handoff, continue from it and the branch diff, do not restart.
 2. **Red first** (before any implementation). Turn the spec's criteria into
    failing tests: one test per `(test)` criterion, named by its id, so the
    runner's output maps back to the criterion (`AC2 rejects an expired token`;
@@ -57,8 +58,8 @@ Workflow (do ALL of it — the publish step is not optional):
    `placement: GAP` move the test into a `Tests:` file in the red-first commit;
    if that is impossible end `BLOCKED: spec: <why>` (the spec is the fault).
    a. **Unit/component tests** — one per `(test)` criterion, in isolation.
-   b. **Regression test** — the general rule, not only for bug fixes: every
-      test is red first. For a bug it fails on the current behavior; keep it.
+   b. **Regression test** — every test is red first; for a bug it fails on the
+      current behavior; keep it.
    c. **e2e test** — when the change is user-facing (UI, a new control/flow)
       AND the repo has an e2e harness (detect: `playwright.config.*`,
       `cypress.config.*`, a `tests/e2e/` dir, or a `test:e2e` script),
@@ -106,8 +107,7 @@ Workflow (do ALL of it — the publish step is not optional):
    A `Final verification: Tests: files only — CI is the full run` line in the
    prompt overrides both: run only the spec's `Tests:` files and the listed
    guard tests, never the `verify` list or `verify.dev_tests`.
-   In both modes: no verify runs after that final run, never run it in the
-   background, and never sleep-poll for results. Never zero local runs. The
+   In both modes: no verify runs after that final run. Never zero local runs. The
    only exception is step 9: one targeted re-run on a CI-fix commit.
    A checkpoint (step 4) runs the targeted tests only, never the full suite.
    Prefer summary output for verify commands (e.g. `--quiet` for Talos's own

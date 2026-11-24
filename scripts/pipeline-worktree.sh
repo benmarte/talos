@@ -11,7 +11,7 @@
 # disk between runs.
 #
 # `sweep` reclaims two categories of worktree:
-#   - issue-pattern:   (fix|feat)/issue-<N>-... — created by the developer/QA
+#   - issue-pattern:   <prefix>/issue-<N>-... — created by the developer/QA
 #                       stages for one issue.
 #   - harness worktrees: branches named worktree-agent-<hash>, created by the
 #                       Claude Code harness itself (not by Talos) for agent
@@ -46,7 +46,7 @@
 #                           Preserves ONLY worktrees tagged/identified with an
 #                           open id (plus lane homes and the current
 #                           checkout, as always). Also deletes merged local
-#                           pipeline branches (#677): name `fix|feat/issue-<N>-*`,
+#                           pipeline branches (#677): name `<prefix>/issue-<N>-*`,
 #                           not main/master/the configured base, not the head
 #                           of an open PR (`pipeline-vcs.sh list-prs` once; on
 #                           failure, branch cleanup is skipped -- fail safe),
@@ -112,7 +112,7 @@
 #   checkpoint <issue-number> [--local] [--runner R] [--model M]
 #                           WIP-commit and push the issue branch, then refresh
 #                           the handoff file (#419). The current branch must
-#                           match (fix|feat)/issue-<N>- (exit 1 otherwise), so
+#                           match <prefix>/issue-<N>- (exit 1 otherwise), so
 #                           it works in a worktree and in the orchestrator's own
 #                           checkout, and can never commit on main. Stages with
 #                           `git add -A` (never .talos/ or .claude/worktrees/)
@@ -135,7 +135,7 @@
 #                           checkout back on the base branch (`base_branch`,
 #                           else the default branch). One line on stdout,
 #                           `talos:checkout state=<state>`, exit 0:
-#                             returned  it was on (fix|feat)/issue-<N>-... with
+#                             returned  it was on <prefix>/issue-<N>-... with
 #                                       no staged or unstaged change to a
 #                                       tracked file: switched to the base,
 #                                       `git pull --ff-only`, the issue branch
@@ -216,6 +216,19 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# The branch prefixes of `<prefix>/issue-<N>-...` (#1073): the one shared list,
+# TALOS_BRANCH_PREFIX_ALT of pipeline-contract.sh (a regex alternation), exported for
+# the embedded Python. Fatal when missing: a guessed list would adopt or leave
+# the wrong branches.
+if [ -f "$SCRIPT_DIR/pipeline-contract.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$SCRIPT_DIR/pipeline-contract.sh"
+fi
+if [ -z "${TALOS_BRANCH_PREFIX_ALT:-}" ]; then
+  echo "pipeline-worktree: pipeline-contract.sh is missing or lists no branch prefixes; reinstall Talos" >&2
+  exit 1
+fi
+export TALOS_BRANCH_PREFIX_ALT
 # cfg() (#169): dumps the config once per invocation and answers lookups
 # from that cache instead of re-parsing on every call. Guarded (#169 review):
 # a partial install/sync may not yet ship pipeline-cfg-cache.sh: that is fatal
@@ -260,15 +273,15 @@ _WT_LOCK_RESOURCE="$_WT_GIT_COMMON_DIR/talos-worktree"
 verb="${1:-}"; shift || true
 
 # Emit "path<TAB>branch<TAB>id" for every worktree whose checked-out branch is
-# (fix|feat)/issue-<id>-...  Parses `git worktree list --porcelain`.
+# <prefix>/issue-<id>-...  Parses `git worktree list --porcelain`.
 _issue_worktrees() {
   git worktree list --porcelain 2>/dev/null | python3 -I -c '
-import re, sys
+import os, re, sys
 
 def emit(path, branch):
     if not (path and branch):
         return
-    m = re.search(r"refs/heads/(?:fix|feat)/issue-(\d+)-", branch)
+    m = re.search(r"refs/heads/(?:" + os.environ["TALOS_BRANCH_PREFIX_ALT"] + r")/issue-(\d+)-", branch)
     if m:
         short = branch[len("refs/heads/"):]
         print("\t".join([path, short, m.group(1)]))
@@ -321,7 +334,7 @@ emit(path, branch)
 # propagates into worktrees created from a branch.
 #
 # Why: all lanes share ONE git repo, so `sweep` is repo-wide. An inline runner
-# (agents.runner: pi) checks out fix|feat/issue-<N>-* directly in its lane home,
+# (agents.runner: pi) checks out <prefix>/issue-<N>-* directly in its lane home,
 # which makes that home match _issue_worktrees. Sweeping from another lane would
 # delete a live lane's working directory mid-run.
 _is_lane_home() {
@@ -437,7 +450,7 @@ _preserve_reason() {
 # ── #240: unified worktree identification, used by remove/sweep/tag/status ──
 #
 # Prior to #240, `remove`/`sweep` only ever recognized two hard-coded
-# patterns: developer worktrees (fix|feat/issue-<N>-...) and the Claude Code
+# patterns: developer worktrees (<prefix>/issue-<N>-...) and the Claude Code
 # harness's own worktree-agent-<hash> branches. Neither pattern covers a
 # harness worktree the ORCHESTRATOR spawned for QA/reviewer/security/docs
 # (branch/dir named "agent-*" by the harness, no issue number anywhere in
@@ -513,7 +526,7 @@ _wt_tag_issue() {
 # can't be identified. Checked in order: (1) the worktree directory's own
 # basename contains "issue-<N>" (what `create` and QA's convention both
 # produce), (2) the checked-out branch matches
-# (fix|feat|refactor|docs|ci)/issue-<N>-..., (3) the #186/#240 tag file.
+# <prefix>/issue-<N>-..., (3) the #186/#240 tag file.
 _wt_issue_of() {
   local path="$1" base branch id
   base="${path##*/}"
@@ -522,7 +535,7 @@ _wt_issue_of() {
     return 0
   fi
   branch="$(git -C "$path" symbolic-ref -q --short HEAD 2>/dev/null)"
-  if [[ "$branch" =~ ^(fix|feat|refactor|docs|ci)/issue-([0-9]+)- ]]; then
+  if [[ "$branch" =~ ^($TALOS_BRANCH_PREFIX_ALT)/issue-([0-9]+)- ]]; then
     printf '%s' "${BASH_REMATCH[2]}"
     return 0
   fi
@@ -561,7 +574,7 @@ _stale_worktree_count() {
 #
 # #240: matches EVERY worktree whose issue (per _wt_issue_of) is <N> -- the
 # developer worktree AND any harness (agent-*) worktree QA/reviewer/security/
-# docs tagged to <N> -- not just the fix|feat/issue-<N>-... pattern.
+# docs tagged to <N> -- not just the <prefix>/issue-<N>-... pattern.
 _wt_remove_body() {
   n="${1:-}"
   removed=0
@@ -686,7 +699,7 @@ _wt_sweep_body() {
 }
 
 # Delete merged Talos pipeline branches (#677). A local branch goes only if ALL
-# hold: its name is `fix|feat/issue-<N>-...`; it is not main/master/the
+# hold: its name is `<prefix>/issue-<N>-...`; it is not main/master/the
 # configured base and heads no open PR (`pipeline-vcs.sh list-prs` queried once
 # via _wt_open_pr_heads); and it is merged -- its tip is an ancestor of some
 # refs/remotes/* ref, or `pipeline-vcs.sh find-pr <N> merged` returns a PR whose
@@ -717,7 +730,7 @@ _wt_sweep_branches() {
     [ -z "$br" ] && continue
     case "$br" in main|master) continue ;; esac
     [ -n "$base_branch" ] && [ "$br" = "$base_branch" ] && continue
-    n="$(printf '%s' "$br" | sed -n -E 's#^(fix|feat)/issue-([0-9]+)-.*#\2#p')"
+    n="$(printf '%s' "$br" | sed -n -E "s#^($TALOS_BRANCH_PREFIX_ALT)/issue-([0-9]+)-.*#\\2#p")"
     [ -z "$n" ] && continue
     case "$open_heads" in *" $br "*) continue ;; esac
     if ! _wt_branch_on_remote "$br"; then
@@ -1052,7 +1065,7 @@ def whole(d):
         raise Bad("keys")
     if type(d["v"]) is not int or d["v"] != 1 or type(d["issue"]) is not int or d["issue"] != issue:
         raise Bad("v/issue")
-    text("branch", d["branch"], 200, r"(fix|feat)/issue-%d-[A-Za-z0-9._/-]*" % issue, False)
+    text("branch", d["branch"], 200, r"(%s)/issue-%d-[A-Za-z0-9._/-]*" % (os.environ["TALOS_BRANCH_PREFIX_ALT"], issue), False)
     text("head", d["head"], 64, r"[0-9a-f]{40}|[0-9a-f]{64}", False)
     text("ts", d["ts"], 20, r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", False)
     for k in ("runner", "model"):
@@ -1216,8 +1229,8 @@ _wt_checkpoint_body() {
     shift
   done
   branch="$(git symbolic-ref -q --short HEAD 2>/dev/null)" || branch=""
-  if ! [[ "$branch" =~ ^(fix|feat)/issue-${n}- ]]; then
-    echo "pipeline-worktree: checkpoint: current branch '${branch:-<detached>}' is not (fix|feat)/issue-$n-... -- nothing staged" >&2
+  if ! [[ "$branch" =~ ^($TALOS_BRANCH_PREFIX_ALT)/issue-${n}- ]]; then
+    echo "pipeline-worktree: checkpoint: current branch '${branch:-<detached>}' is not <prefix>/issue-$n-... -- nothing staged" >&2
     exit 1
   fi
   top="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "pipeline-worktree: checkpoint: not inside a git worktree" >&2; exit 1; }
@@ -1299,7 +1312,7 @@ _wt_to_base_body() {
   # A detached HEAD (a stage's fallback left it, #644) is returned like the
   # issue's branch; any other branch is left alone.
   local from="${branch:-the detached HEAD}"
-  if [ -n "$branch" ] && ! [[ "$branch" =~ ^(fix|feat)/issue-${n}- ]]; then
+  if [ -n "$branch" ] && ! [[ "$branch" =~ ^($TALOS_BRANCH_PREFIX_ALT)/issue-${n}- ]]; then
     echo "talos:checkout state=kept"
     exit 0
   fi

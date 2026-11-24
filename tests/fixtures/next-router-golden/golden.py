@@ -314,7 +314,7 @@ def collect_case(name, prs, issues, me='', roles='qa,reviewer', files=None, argv
     for k, v in (files or {}).items():
         write(os.path.join(d, k), v)
     a = ['collect', '--vcs', os.path.join(d, 'vcs.sh'), '--roles', roles, '--me', me, '--merge-auto', 'true',
-         '--talos-labels', LABELS, '--base-branch', 'main'] + list(argv)
+         '--talos-labels', LABELS, '--branch-prefixes', 'fix,feat', '--base-branch', 'main'] + list(argv)
     a = [os.path.join(d, 'meta.sh') if x == '@meta' else x for x in a]
     return block(name, d, a)
 

@@ -147,6 +147,22 @@ TALOS_MARKERS=(
   talos:queue
 )
 
+# ── Branch prefixes ────────────────────────────────────────────────────────
+# The conventional prefixes of a pipeline branch `<prefix>/issue-<N>-<slug>`: the
+# one list every parser of such a branch reads (the PR-to-issue mapping of
+# pipeline-next.py, the queue, the sweep, the worktree and status scripts). A
+# developer is told to use `fix/` unless the change is a feature (`feat/`); the
+# rest are accepted so a PR on any conventional prefix is still adopted.
+# TALOS_BRANCH_PREFIX_ALT is the regex alternation (`fix|feat|...`) and
+# TALOS_BRANCH_PREFIX_CSV the comma-joined list, both derived here.
+TALOS_BRANCH_PREFIXES=(fix feat refactor chore docs test perf ci build style)
+TALOS_BRANCH_PREFIX_ALT="" TALOS_BRANCH_PREFIX_CSV=""
+for _talos_bp in "${TALOS_BRANCH_PREFIXES[@]}"; do
+  TALOS_BRANCH_PREFIX_ALT="${TALOS_BRANCH_PREFIX_ALT:+$TALOS_BRANCH_PREFIX_ALT|}$_talos_bp"
+  TALOS_BRANCH_PREFIX_CSV="${TALOS_BRANCH_PREFIX_CSV:+$TALOS_BRANCH_PREFIX_CSV,}$_talos_bp"
+done
+unset _talos_bp
+
 # ── talos_contract_check_label_length ────────────────────────────────────
 # GitHub rejects label names > 50 chars and descriptions > 100 chars on
 # both create and edit (422 "description is too long" / "name is too

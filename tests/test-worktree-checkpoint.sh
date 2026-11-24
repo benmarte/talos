@@ -450,7 +450,7 @@ with tempfile.TemporaryDirectory() as d:
         rc, err = verdict(value, d)
         print(("caught " if rc == 4 and "looks like a credential" in err else "MISSED ") + name)
 TALOS_q7v2m9xk4hpd
-DRIFT="$(WT_FILE="$WT" SHAPES_FILE="$TALOS_ROOT/scripts/pipeline-secret-shapes.py" \
+DRIFT="$(TALOS_BRANCH_PREFIX_ALT=fix WT_FILE="$WT" SHAPES_FILE="$TALOS_ROOT/scripts/pipeline-secret-shapes.py" \
   FIXTURES="$(bash "$TALOS_ROOT/tests/test-config-secret-shapes.sh" --print-fixtures)" python3 -I "$SANDBOX/drift.py")"
 assert_contains "$DRIFT" "control-ok" "drift: the validator accepts an ordinary next_step (so a rejection below is the shape)"
 assert_contains "$DRIFT" "shapes-covered" "drift: the fixtures cover exactly the shapes in pipeline-secret-shapes.py"
