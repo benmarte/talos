@@ -131,7 +131,7 @@ json.dump({'prs': prs, 'list': prs, 'issues': issues, 'comments': comments}, ope
 TALOS_fxbuildBn5Rw2Kd
 
 TALOS="$SCR/talos.sh"
-reset_calls() { : > "$GH_CALLS"; : > "$VERB_LOG"; rm -f "$SANDBOX"/.git/talos/lease* 2>/dev/null; }
+reset_calls() { : > "$GH_CALLS"; : > "$VERB_LOG"; reset_leases; }
 # dup_max <regex>: the most times one REST path matching <regex> was read in a pass.
 dup_max() { grep -E "$1" "$GH_CALLS" | sort | uniq -c | sort -rn | awk 'NR==1 { print $1 }' | grep . || echo 0; }
 
