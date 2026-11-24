@@ -124,6 +124,7 @@
       "CHANGELOG.md"
     ],
     "auto_sync": true,
+    "require_current_base": true,
     "queue": "off",
     "queue_batch": 3,
     "queue_branch_prefix": "talos/queue/",
