@@ -1,2 +1,2 @@
 stop action=wait reason=none
-exit=0
+rc=0

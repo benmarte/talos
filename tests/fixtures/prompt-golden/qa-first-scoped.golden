@@ -1,4 +1,3 @@
-exit=0
 You are QA. A developer opened a PR for issue #468.
 
 PR: 77
@@ -14,15 +13,17 @@ QA mode: ci (ci | local)
 Required checks: ci / test
 CI wait budget: 570 seconds
 Verify timeout: 600000 ms
-Prior stage summary: none
+Prior stage summary: QA FAIL: criterion 2 ($(touch ./pwned) `id`)
+second line
 
 CI is the one full-suite run and it is running now, in parallel with you. Never run the full suite: not locally, not through `pipeline-verify.sh --all`. Do not wait on CI before your local checks: those are `qa-run` below, then lint, the secret scan and the generate gate, the touched packages and the PR's own e2e (targeted tests only, `--for <path> --strict` through `pipeline-verify.sh`, which exports the identity itself; never export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand), and the live walk. With `tests/run-tests.sh` add `--budget-s <budget-s>`: exit 6 is over budget, not run, not a block (qa.md step 2). The CI wait comes last. Step 1:
   bash <TALOS_ROOT>/scripts/pipeline-criteria.sh qa-run 468 77
-Targeted run skipped: `merge.required_checks` is set, so CI is the full run at the head. Run no `tests/run-tests.sh` command of any form (not the step 2 `run-tests.sh --changed`, not `--for`, no pattern, no full suite, not through `pipeline-verify.sh`); write `targeted run skipped: CI is the full run (merge.required_checks)` in the verdict. `qa-run` still checks every criterion red/green, and the required-checks gate is unchanged.
+Targeted run skipped: `merge.required_checks` is set and `verify.ci_scope` is `changed`, so CI ran the tests this change selects and the merge queue runs the full suite. Run no `tests/run-tests.sh` command of any form (not the step 2 `run-tests.sh --changed`, not `--for`, no pattern, no full suite, not through `pipeline-verify.sh`); write `targeted run skipped: CI ran the tests this change selects (merge.required_checks)` in the verdict. `qa-run` still checks every criterion red/green, and the required-checks gate is unchanged.
+Work video: `qa-run` attaches only the recordings of the e2e specs this PR touches. Put its `qa-run: work video ...` line in the verdict, attached or not attached with its reason. Write a Results table in the verdict: per-suite pass/fail counts, known flakes, and the lint, gitleaks and generate-gate results.
 CI wait, after every local check above is done (CI has been running the full suite since the PR was marked ready): one bounded foreground command, run once.
   bash <TALOS_ROOT>/scripts/pipeline-vcs.sh pr-checks-required 77 --wait 570
 Exit 0: every required check is green. Any other exit is a FAIL (a red job: name it; still pending at the budget: fail closed). Do not wait on CI earlier.
-Put a `CI per-job results` table in the verdict, read from `bash <TALOS_ROOT>/scripts/pipeline-vcs.sh pr-checks 77`: job, result, and a known flake named as one (known flakes: flaky one).
+Put a `CI per-job results` table in the verdict, read from `bash <TALOS_ROOT>/scripts/pipeline-vcs.sh pr-checks 77`: job, result, and a known flake named as one.
 Then post the verdict. The approval verb refuses unless the required CI is green at the head, and re-runs a listed known flake once.
 A criterion `qa-run` reports `red@<sha8> green@head` has its proof, as does a `guard green@head` line: do not re-run or hand-exercise it. Exercise real behaviour for every other criterion (`green@head (red: missing)`, `prose hand-checked`, any `qa-run` did not run).
 post-approval verifies its own stamp: do not re-read your comment or re-check labels.

@@ -1,41 +1,37 @@
 #!/usr/bin/env bash
-# test-talos-prompt-golden.sh -- the characterisation tests of the talos.sh
-# simplification (#1020): table-driven `_talos_prompt`, generated `help`, shared
-# run-loop tail helpers. The refactor changes no behaviour, so every criterion
-# here is a "same as before" one, pinned against golden output captured from the
-# code before the refactor (tests/fixtures/prompt-golden/).
+# test-talos-prompt-golden.sh -- the talos.sh simplification pins (#1020).
 #
-#   AC1  `talos.sh prompt` renders the same bytes for each role and shape
-#   AC2  `talos.sh help` prints the same text
-#   AC3  the run loop's stop and exit lines (a pr-head failure, a clean wait)
-#   (AC4, the line count and the helper use, is prose: no test)
+# The refactor of scripts/talos.sh (table-driven `_talos_prompt`, a help text
+# generated from the verb router, shared run-loop tails) changes no behaviour.
+# The goldens under tests/fixtures/prompt-golden/ were captured from the code
+# before the refactor; this file pins, by criterion id:
+#   AC1  every rendered stage prompt is byte-identical: each role in each shape
+#        it supports (first, fix-round, restamp, pre-ci), under a default
+#        config and a rich one
+#   AC2  `talos.sh help` is unchanged
+#   AC3  the run loop's stop and exit lines are unchanged: a pr-head that cannot
+#        be read before the merge, and a clean wait
+# AC4 (complexity reduced) is prose: no test.
+# Everything runs on stubs under make_sandbox: no GitHub write, no LLM call.
 #
-# Regenerate the fixtures after an INTENDED change, and review the diff:
+# Regenerate the goldens after an INTENDED output change, and review the diff:
 #   bash tests/test-talos-prompt-golden.sh --regen-fixtures
-# Everything runs on stubs under the sandbox: no GitHub write, no LLM call.
 set -u
 . "$(dirname "$0")/helpers.sh"
-TALOS_RUN_PART=0 TALOS_RUN_EMBED=1 . "$(dirname "$0")/talos-run-sections.sh"
+TALOS_RUN_PART=1020 TALOS_RUN_EMBED=1 . "$(dirname "$0")/talos-run-sections.sh"
 
-FIXDIR="$TALOS_ROOT/tests/fixtures/prompt-golden"
-TALOS="$TALOS_ROOT/scripts/talos.sh"
-ARGV_ERR="$SANDBOX/golden.stderr"
-ARGV_OUT="$SANDBOX/golden.stdout"
 export TMPDIR="$SANDBOX/tmp"
 mkdir -p "$TMPDIR"
-export CLAUDE_CONFIG_DIR="$SANDBOX/cc"
 export TALOS_RETRY_SLEEP_SCALE=0
-# Hermetic: an operator env such as PIPELINE_REPO maps onto vcs.repo and leaks into
-# rendered prompts (a stub PR URL), so the goldens must never see it.
-unset PIPELINE_REPO
-# The sandbox repo has Talos's runner, so the qa prompt is the one the goldens pin.
+FIXDIR="$TALOS_ROOT/tests/fixtures/prompt-golden"
+POUT="$SANDBOX/prompt.stdout"
+
+# ── the prompt fixture ────────────────────────────────────────────────────────
+# The sandbox repo has Talos's runner, so the qa prompt is the full one (#824).
 mkdir -p "$SANDBOX/tests"
 : > "$SANDBOX/tests/run-tests.sh"
 
-# The prompt cases work on the run fixture's sandbox; its talos.pipeline.json is ours to set.
-reset_cfg() { rm -rf "${SANDBOX:?}"/talos.pipeline.*; unset PIPELINE_CONFIG; }
-proj_json() { printf '%s' "$1" > "$SANDBOX/talos.pipeline.json"; }
-
+reset_cfg() { rm -rf "${SANDBOX:?}"/talos.pipeline.*; }
 RICH='{
   "vcs": {"provider": "github"},
   "base_branch": "develop",
@@ -44,13 +40,6 @@ RICH='{
   "verify": {"commands": ["bash tests/run-tests.sh --quiet", "bash lint.sh"], "targeted": false, "ci_wait_s": 600, "timeout_ms": 300000, "qa_mode": "ci"},
   "comments": {"templates_dir": "tpl/comments"}
 }'
-# CI scope changed, and the developer verification set with no required checks.
-SCOPE='{"vcs": {"provider": "github"}, "merge": {"required_checks": ["ci / test"]}, "verify": {"ci_scope": "changed", "qa_mode": "ci"}}'
-LOCAL='{"vcs": {"provider": "github"}, "execution": {"isolation": "branch"}, "verify": {"qa_mode": "local", "commands": ["bash lint.sh"], "dev_tests": ["bash tests/unit.sh"], "walk": {"specs": ["e2e/a.spec.ts"]}}, "ci": {"known_flakes": ["flaky one", "flaky two"]}}'
-PARALLEL='{"vcs": {"provider": "github"}, "pr": {"draft": true}, "ci": {"parallel_with_qa": true, "known_flakes": ["flaky one"]}, "merge": {"required_checks": ["ci / test"]}, "verify": {"qa_mode": "ci"}}'
-GATE='{"vcs": {"provider": "github"}, "base_branch": "develop", "verify": {"commands": ["bash tests/run-tests.sh --quiet", "bash lint.sh"], "qa_mode": "ci"}, "pr": {"draft": true, "ready_gate": "qa-local"}}'
-
-# Input files for the free-text options (data: they hold shell metacharacters).
 F_PRIOR="$SANDBOX/prior.txt"
 F_CI="$SANDBOX/ci.txt"
 F_DOCS="$SANDBOX/docs-paths.txt"
@@ -60,66 +49,53 @@ printf 'QA FAIL: criterion 2 ($(touch ./pwned) `id`)\nsecond line\n' > "$F_PRIOR
 printf 'check: ci / test\nurl: https://github.com/acme/widget/actions/runs/123\n' > "$F_CI"
 printf 'README.md\ndocs/guide.md\n' > "$F_DOCS"
 printf 'approved sha: aaa111\nstale files: scripts/a.sh\nhead sha: bbb222\n' > "$F_RS"
-printf 'approved_sha=aaa111\nhead_sha=bbb222\ndocs/guide.md\n----- BEGIN DIFF tok590 -----\ndiff --git a/docs/guide.md b/docs/guide.md\n+a new line\n----- END DIFF tok590 -----\n' > "$F_DELTA"
+printf 'approved_sha=aaa111\nhead_sha=bbb222\ndocs/guide.md\n----- BEGIN DIFF tok1020 -----\ndiff --git a/docs/guide.md b/docs/guide.md\n+a new line\n----- END DIFF tok1020 -----\n' > "$F_DELTA"
 
-# A private tree whose pipeline-vcs.sh answers pr-is-draft from the environment:
-# the one way to reach the pre-CI shape of the qa prompt (talos.sh asks the PR).
-GATE_TREE="$SANDBOX/t-gate"
-rm -rf "${GATE_TREE:?}"
-mkdir -p "$GATE_TREE"
-cp -R "$TALOS_ROOT/scripts" "$GATE_TREE/scripts"
-cp -R "$TALOS_ROOT/templates" "$GATE_TREE/templates"
-printf '#!/usr/bin/env bash\n[ "${1:-}" = pr-is-draft ] || exit 0\nprintf "%%s" "${GATE_PRD_OUT:-}"\nexit "${GATE_PRD_RC:-2}"\n' > "$GATE_TREE/scripts/pipeline-vcs.sh"
+# A copy of the install whose pipeline-vcs.sh answers pr-is-draft, for the pre-CI shape.
+GATE_ROOT="$SANDBOX/t-gate"
+mkdir -p "$GATE_ROOT"
+cp -R "$TALOS_ROOT/scripts" "$GATE_ROOT/scripts"
+cp -R "$TALOS_ROOT/templates" "$GATE_ROOT/templates"
+printf '#!/usr/bin/env bash\n[ "${1:-}" = pr-is-draft ] || exit 0\nprintf "%%s" "${GATE_PRD_OUT:-}"\nexit "${GATE_PRD_RC:-2}"\n' > "$GATE_ROOT/scripts/pipeline-vcs.sh"
 
-# The golden prompt cases: NAME | config | args. Every role in every shape it
-# supports (first, fix-round, restamp, pre-ci), under the configs that change its text.
-CASES='validator-first|default|validator --issue 468
-pm-first|default|pm --issue 468
-developer-first|default|developer --issue 468 --prior-file F_PRIOR
-developer-first-draft|rich|developer --issue 468 --draft --prior-file F_PRIOR --spec-source issue-body
-developer-first-rich|rich|developer --issue 468 --prior-file F_PRIOR
-developer-first-local|local|developer --issue 468 --prior-file F_PRIOR
-developer-fix-round|default|developer --issue 468 --pr 77 --shape fix-round --prior-file F_PRIOR
-developer-fix-round-ci|rich|developer --issue 468 --pr 77 --shape fix-round --draft --prior-file F_PRIOR --ci-failure-file F_CI
-qa-first|default|qa --issue 468 --pr 77 --prior-file F_PRIOR
-qa-first-rich|rich|qa --issue 468 --pr 77 --prior-file F_PRIOR
-qa-first-scope|scope|qa --issue 468 --pr 77
-qa-first-local|local|qa --issue 468 --pr 77
-qa-first-parallel|parallel|qa --issue 468 --pr 77
-qa-pre-ci|gate|qa --issue 468 --pr 77 --prior-file F_PRIOR
-qa-restamp|default|qa --issue 468 --pr 77 --shape restamp --restamp-file F_RS
-reviewer-first|default|reviewer --issue 468 --pr 77
-reviewer-first-draft|default|reviewer --issue 468 --pr 77 --draft
-reviewer-first-embed|default|reviewer --issue 468 --pr 77 --embed-change
-reviewer-restamp|default|reviewer --issue 468 --pr 77 --shape restamp --restamp-file F_RS
-security-first|default|security --issue 468 --pr 77 --prior-file F_PRIOR
-security-first-embed|default|security --issue 468 --pr 77 --embed-change
-security-restamp|default|security --issue 468 --pr 77 --shape restamp --restamp-file F_RS
-adversarial-first|default|adversarial --issue 468 --pr 77
-adversarial-restamp|default|adversarial --issue 468 --pr 77 --shape restamp --restamp-file F_RS
-docs-first|default|docs --issue 468 --pr 77
-docs-first-filtered|default|docs --issue 468 --pr 77 --docs-paths-file F_DOCS
-docs-first-embed|default|docs --issue 468 --pr 77 --docs-paths-file F_DOCS --embed-change
-docs-restamp|default|docs --issue 468 --pr 77 --shape restamp --restamp-file F_DELTA
-validator-fix-round|default|validator --issue 468 --shape fix-round
-qa-fix-round|default|qa --issue 468 --pr 77 --shape fix-round
-developer-restamp|default|developer --issue 468 --pr 77 --shape restamp
-pm-restamp|default|pm --issue 468 --shape restamp
-developer-bad-shape|default|developer --issue 468 --shape nonsense'
+# CASES: name | config | install (main|gate) | args. F_* names stand for the input files.
+CASES='validator-first|default|main|validator --issue 468
+pm-first|default|main|pm --issue 468
+developer-first|default|main|developer --issue 468 --prior-file F_PRIOR
+developer-first-rich|rich|main|developer --issue 468 --prior-file F_PRIOR --spec-source issue-body
+developer-first-rich-draft|rich|main|developer --issue 468 --draft
+developer-fix-round|default|main|developer --issue 468 --pr 77 --shape fix-round --prior-file F_PRIOR
+developer-fix-round-rich-draft|rich|main|developer --issue 468 --pr 77 --shape fix-round --draft --prior-file F_PRIOR --ci-failure-file F_CI
+qa-first|default|main|qa --issue 468 --pr 77 --prior-file F_PRIOR
+qa-first-rich|rich|main|qa --issue 468 --pr 77 --prior-file F_PRIOR
+qa-first-scoped|scoped|main|qa --issue 468 --pr 77 --prior-file F_PRIOR
+qa-first-local|local|main|qa --issue 468 --pr 77
+developer-first-local|local|main|developer --issue 468
+developer-first-devtests|devtests|main|developer --issue 468
+qa-restamp|default|main|qa --issue 468 --pr 77 --shape restamp --restamp-file F_RS
+qa-pre-ci|gate|gate|qa --issue 468 --pr 77 --prior-file F_PRIOR
+reviewer-first|default|main|reviewer --issue 468 --pr 77
+reviewer-first-draft|default|main|reviewer --issue 468 --pr 77 --draft
+reviewer-restamp|default|main|reviewer --issue 468 --pr 77 --shape restamp --restamp-file F_RS
+security-first|default|main|security --issue 468 --pr 77 --prior-file F_PRIOR
+security-restamp|default|main|security --issue 468 --pr 77 --shape restamp --restamp-file F_RS
+docs-first|default|main|docs --issue 468 --pr 77 --docs-paths-file F_DOCS
+docs-first-nopaths|default|main|docs --issue 468 --pr 77
+docs-restamp|default|main|docs --issue 468 --pr 77 --shape restamp --restamp-file F_DELTA'
 
-# case_output CFG ARGS...: the rendered prompt (or the stop line and exit code) of
-# one case on stdout. Paths of the checkout and the sandbox are made symbolic.
+# case_output CFG INSTALL ARGS...: the rendered prompt of one case on stdout.
 case_output() {
-  local cfg="$1" a args=() talos="$TALOS"
-  shift
+  local cfg="$1" inst="$2" a args=() root="$TALOS_ROOT"
+  shift 2
   reset_cfg
   case "$cfg" in
-    rich) proj_json "$RICH" ;;
-    scope) proj_json "$SCOPE" ;;
-    local) proj_json "$LOCAL" ;;
-    parallel) proj_json "$PARALLEL" ;;
-    gate) proj_json "$GATE"; talos="$GATE_TREE/scripts/talos.sh"; export GATE_PRD_RC=0 GATE_PRD_OUT=draft ;;
+    scoped) printf '%s' '{"merge": {"required_checks": ["ci / test"]}, "verify": {"commands": ["bash lint.sh"], "ci_scope": "changed", "qa_mode": "ci", "walk": {"specs": ["e2e/a.spec.ts"]}}}' > "$SANDBOX/talos.pipeline.json" ;;
+    local) printf '%s' '{"execution": {"isolation": "branch"}, "verify": {"qa_mode": "local", "timeout_ms": 120000}}' > "$SANDBOX/talos.pipeline.json" ;;
+    devtests) printf '%s' '{"verify": {"dev_tests": ["bash tests/run-tests.sh --for a"], "commands": ["bash lint.sh"]}}' > "$SANDBOX/talos.pipeline.json" ;;
+    rich) printf '%s' "$RICH" > "$SANDBOX/talos.pipeline.json" ;;
+    gate) printf '%s' "${RICH%\}}, \"pr\": {\"draft\": true, \"ready_gate\": \"qa-local\"}}" > "$SANDBOX/talos.pipeline.json" ;;
   esac
+  if [ "$inst" = gate ]; then root="$GATE_ROOT"; export GATE_PRD_RC=0 GATE_PRD_OUT=draft; fi
   for a in "$@"; do
     case "$a" in
       F_PRIOR) args+=("$F_PRIOR") ;; F_CI) args+=("$F_CI") ;; F_DOCS) args+=("$F_DOCS") ;;
@@ -127,104 +103,80 @@ case_output() {
       *) args+=("$a") ;;
     esac
   done
-  bash "$talos" prompt "${args[@]}" > "$ARGV_OUT" 2> "$ARGV_ERR"
+  env -u PIPELINE_CONFIG bash "$root/scripts/talos.sh" prompt "${args[@]}" > "$POUT" 2> "$SANDBOX/prompt.stderr"
   local rc=$? pf
-  unset GATE_PRD_RC GATE_PRD_OUT
-  pf="$(sed -n 's/^prompt_file=//p' "$ARGV_OUT")"
-  if [ -n "$pf" ]; then
-    printf 'exit=%s\n' "$rc"
-    # The sandbox path is spelled with `//` (TMPDIR ends in /) and, on macOS, with
-    # or without /private: Talos prints the pwd form, so normalise that one.
-    sed -E -e "s|$TALOS_ROOT|<TALOS_ROOT>|g" -e "s|$(cd "$SANDBOX" && pwd)|<SANDBOX>|g" \
-      -e 's/^----- (BEGIN|END) (SPEC|DIFF) [A-Za-z0-9]{20,} -----$/----- \1 \2 <TOKEN> -----/' "$pf"
-    rm -f "${pf:?}"
-  else
-    printf 'exit=%s\n' "$rc"
-    cat "$ARGV_OUT"
-  fi
+  pf="$(sed -n 's/^prompt_file=//p' "$POUT")"
+  if [ "$rc" -ne 0 ] || [ -z "$pf" ]; then printf 'render failed rc=%s: %s\n' "$rc" "$(cat "$POUT")"; return 1; fi
+  # The install's absolute paths are the checkout's: the goldens say <TALOS_ROOT>.
+  # The sandbox is named by mktemp (and may be spelled through a symlink): match its shape.
+  sed -e 's|[^ ]*/talos-test\.[A-Za-z0-9]*/t-gate|<TALOS_ROOT>|g' -e "s|$TALOS_ROOT|<TALOS_ROOT>|g" \
+    -e 's|[^ ]*/talos-test\.[A-Za-z0-9]*|<SANDBOX>|g' "$pf"
+  rm -f "${pf:?}"
 }
 
-# help_output: `talos.sh help` and its exit code.
-help_output() {
-  bash "$TALOS" help 2> "$ARGV_ERR"
-  printf 'exit=%s\n' "$?"
-}
-
-# run_output NAME: the stdout and exit code of one run-loop fixture (the fixtures
-# of tests/talos-run-sections.sh and tests/test-merge-pr-sha-941.sh).
-HEAD_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-run_fixture() {
-  export PIPELINE_CONFIG="$SANDBOX/talos.pipeline.json"
+# run_tail_output NAME: stdout then the exit code of the two run-loop fixtures.
+# pr-head: the head cannot be read before the merge gate; wait: an empty queue.
+run_tail_output() {
   case "$1" in
+    pr-head-unreadable)
+      merge_fixture "$ALL_APPROVALS"
+      draft_ready
+      printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' > "$STUB_DIR/pr-head.12"
+      printf 1 > "$STUB_DIR/pr-head.12.rc"
+      TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --issue 9 --max-iterations 1 ;;
     clean-wait)
       reset_stubs
       LEASE_RESET
       printf '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [], "held": [], "inflight": [], "owners": [], "capped": []}' \
         > "$STUB_DIR/collect.json"
       TALOS_NOW=9000 rn --max-iterations 3 ;;
-    head-fail | head-short)
-      merge_fixture "$ALL_APPROVALS"
-      draft_ready
-      printf '%s' "$HEAD_A" > "$STUB_DIR/pr-head.12"
-      [ "$1" = head-fail ] && printf 1 > "$STUB_DIR/pr-head.12.rc"
-      [ "$1" = head-fail ] || printf 'a4f9' > "$STUB_DIR/pr-head.12"
-      TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --issue 9 --max-iterations 1 ;;
   esac
-  printf '%s\nexit=%s\n' "$OUT" "$RC"
+  printf '%s\nrc=%s\n' "$OUT" "$RC"
 }
-RUN_CASES="clean-wait head-fail head-short"
 
 if [ "${1:-}" = "--regen-fixtures" ]; then
   mkdir -p "$FIXDIR"
-  while IFS='|' read -r name cfg args; do
+  while IFS='|' read -r name cfg inst args; do
     # shellcheck disable=SC2086
-    case_output "$cfg" $args > "$FIXDIR/$name.golden" || exit 1
+    case_output "$cfg" "$inst" $args > "$FIXDIR/$name.golden" || exit 1
   done <<EOF
 $CASES
 EOF
-  help_output > "$FIXDIR/help.golden"
-  for name in $RUN_CASES; do run_fixture "$name" > "$FIXDIR/run-$name.golden"; done
+  bash "$TALOS_ROOT/scripts/talos.sh" help > "$FIXDIR/help.golden"
+  run_tail_output pr-head-unreadable > "$FIXDIR/run-pr-head-unreadable.golden"
+  run_tail_output clean-wait > "$FIXDIR/run-clean-wait.golden"
   printf 'regenerated tests/fixtures/prompt-golden/*.golden\n'
   exit 0
 fi
 
-# ── AC1: every rendered prompt is byte-identical ─────────────────────────────
-while IFS='|' read -r name cfg args; do
-  # shellcheck disable=SC2086
-  case_output "$cfg" $args > "$SANDBOX/actual.golden"
-  if cmp -s "$FIXDIR/$name.golden" "$SANDBOX/actual.golden"; then
-    pass "AC1 prompt $name is byte-identical to the golden"
+# check LABEL NAME ACTUAL-FILE: the actual output against the named golden.
+check() {
+  if cmp -s "$FIXDIR/$2.golden" "$3"; then
+    pass "$1"
   else
-    fail "AC1 prompt $name is byte-identical to the golden" "differs from tests/fixtures/prompt-golden/$name.golden"
-    diff -u --label "golden $name" --label "talos.sh prompt" "$FIXDIR/$name.golden" "$SANDBOX/actual.golden" | head -40 >&2
+    fail "$1" "differs from tests/fixtures/prompt-golden/$2.golden"
+    diff -u --label "golden $2" --label "actual" "$FIXDIR/$2.golden" "$3" | head -40 >&2
   fi
+}
+
+# ── AC1: every rendered prompt is byte-identical ──────────────────────────────
+while IFS='|' read -r name cfg inst args; do
+  # shellcheck disable=SC2086
+  case_output "$cfg" "$inst" $args > "$SANDBOX/actual.golden"
+  check "AC1 the $name prompt is byte-identical" "$name" "$SANDBOX/actual.golden"
 done <<EOF
 $CASES
 EOF
+unset GATE_PRD_RC GATE_PRD_OUT
 
-# ── AC2: talos.sh help is unchanged ──────────────────────────────────────────
-help_output > "$SANDBOX/actual.golden"
-if cmp -s "$FIXDIR/help.golden" "$SANDBOX/actual.golden"; then
-  pass "AC2 talos.sh help is byte-identical to the golden"
-else
-  fail "AC2 talos.sh help is byte-identical to the golden" "differs from tests/fixtures/prompt-golden/help.golden"
-  diff -u --label "golden help" --label "talos.sh help" "$FIXDIR/help.golden" "$SANDBOX/actual.golden" | head -40 >&2
-fi
+# ── AC2: talos.sh help is unchanged ───────────────────────────────────────────
+bash "$TALOS_ROOT/scripts/talos.sh" help > "$SANDBOX/actual.help"
+check "AC2 talos.sh help is byte-identical" help "$SANDBOX/actual.help"
 
-# ── AC3: the run loop's stop and exit lines are unchanged ────────────────────
-for name in $RUN_CASES; do
-  run_fixture "$name" > "$SANDBOX/actual.golden"
-  if cmp -s "$FIXDIR/run-$name.golden" "$SANDBOX/actual.golden"; then
-    pass "AC3 run fixture $name: stdout and exit code are unchanged"
-  else
-    fail "AC3 run fixture $name: stdout and exit code are unchanged" "differs from tests/fixtures/prompt-golden/run-$name.golden"
-    diff -u --label "golden $name" --label "talos.sh run" "$FIXDIR/run-$name.golden" "$SANDBOX/actual.golden" | head -40 >&2
-  fi
-done
-
-# The goldens above must hold the shapes they claim (a golden of a stop line
-# would pin nothing): a clean wait and the head-unresolved stop.
-assert_contains "$(cat "$FIXDIR/run-clean-wait.golden")" "stop action=wait reason=none" "AC3 the clean-wait golden holds the wait stop line"
-assert_contains "$(cat "$FIXDIR/run-head-fail.golden")" "stop reason=head-unresolved" "AC3 the pr-head failure golden holds stop reason=head-unresolved"
+# ── AC3: the run loop's stop and exit lines are unchanged ─────────────────────
+run_tail_output pr-head-unreadable > "$SANDBOX/actual.run"
+check "AC3 a pr-head that cannot be read stops the run with the same line and exit code" run-pr-head-unreadable "$SANDBOX/actual.run"
+run_tail_output clean-wait > "$SANDBOX/actual.run"
+check "AC3 a clean wait ends the run with the same line and exit code" run-clean-wait "$SANDBOX/actual.run"
 
 finish

@@ -1,2 +1,2 @@
 stop reason=head-unresolved
-exit=1
+rc=1

@@ -1,17 +1,16 @@
-exit=0
 You are QA. A developer opened a PR for issue #468.
 
 PR: 77
 VCS provider: github
-Talos scripts: <SANDBOX>/t-gate/scripts
-Talos templates: <SANDBOX>/templates/comments
+Talos scripts: <TALOS_ROOT>/scripts
+Talos templates: <TALOS_ROOT>/templates/comments
 Issue number: 468
 Worktree path: your working directory (git rev-parse --show-toplevel)
 Comment header: **Agent:** qa (talos)
-Comment templates dir: templates/comments
+Comment templates dir: tpl/comments
 Comments enabled: true
-QA mode: local (ci | local)
-Verify timeout: 600000 ms
+QA mode: ci (ci | local)
+Verify timeout: 300000 ms
 Prior stage summary: QA FAIL: criterion 2 ($(touch ./pwned) `id`)
 second line
 
@@ -19,7 +18,7 @@ Pre-CI gate (pr.ready_gate): the PR is still a draft, so no CI has run and none 
 until you pass. Do not wait for CI and never call `pr-checks-required`. Run every
 test through `pipeline-verify.sh` (it exports the identity itself; never export
 TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand). Step 1:
-  bash <SANDBOX>/t-gate/scripts/pipeline-criteria.sh qa-run 468 77
+  bash <TALOS_ROOT>/scripts/pipeline-criteria.sh qa-run 468 77
 Step 2, in the PR checkout: the full `verify:` list once (the suite CI would run), through `pipeline-verify.sh --all`; quote failures only:
 bash tests/run-tests.sh --quiet
 bash lint.sh

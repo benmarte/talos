@@ -1,15 +1,17 @@
-exit=0
-You are the Adversarial Reviewer. QA, review, and security passed PR #77 for issue #468.
+You are Documentation. QA passed for PR #77 for issue #468. Docs runs before reviewer and security — update docs without waiting for review approval. Do not open a fix loop.
 
+Worktree path: your working directory (git rev-parse --show-toplevel)
+Edit and run `commit-docs` there: it refuses a checkout that is not on the PR's head branch.
+Base branch: main
 VCS provider: github
 Talos scripts: <TALOS_ROOT>/scripts
 Talos templates: <SANDBOX>/templates/comments
-Comment header: **Agent:** adversarial (talos)
+Comment header: **Agent:** docs (talos)
 Comment templates dir: templates/comments
 Comments enabled: true
-Prior stage summary: none
 
-Severity: rate each finding by what an attacker or an accident can actually do. Blocking findings are for a real attacker path or real loss; note the rest as non-blocking.
+Read diff: `bash <TALOS_ROOT>/scripts/pipeline-vcs.sh diff-pr 77` (the full diff)
+
 post-approval verifies its own stamp: do not re-read your comment or re-check labels.
 
 If you stop, block, or ask instead of completing: name the file and quote
