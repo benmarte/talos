@@ -1,0 +1,135 @@
+usage: talos.sh <verb>
+verbs:
+  env                                print every Step 0 setting, PR_DRAFT,
+                                     ORCHESTRATOR (code|llm) and the
+                                     per-role runner/model/effort as sanitised KEY=value lines,
+                                     then, under ORCHESTRATOR=llm only, ref=<topic>
+                                     for each playbook ref that applies to the run
+  gate fix-round <N> <stage> [--pr M]  the checks before a developer fix round:
+                                     verdict=redispatch, verdict=block or
+                                     verdict=ask-owner
+  gate merge <pr> <issue>            every Step 4 merge gate, one verdict:
+                                     merge|handoff|redispatch|wait|block
+  docs-gate <pr> --issue <N>         does the docs stage need an LLM: docs=dispatch
+                                     reason=<docs-paths|always|fetch-failed>
+                                     [paths-file=<f>] | docs=skip
+                                     reason=<role-off|no-docs-paths> (on
+                                     no-docs-paths the verb stamped docs:done);
+                                     with a stale docs:done on the PR, only the
+                                     delta since its SHA: docs=dispatch
+                                     reason=docs-delta shape=restamp
+                                     restamp-file=<f> | docs=skip
+                                     reason=no-docs-delta (stamped)
+  post-merge <pr> <issue> [--ci-runs <n>] [--heal]
+                                     what follows a merge, in order, once
+  post-merge <pr> <issue> --handoff [--details-file F]
+                                     the human-merge hand-off comment and relay
+  sweep [<issue-id>...]              Step 1: heal merged-but-open issues,
+                                     sweep worktrees, report blocked work,
+                                     epics, dependencies
+  summary [<issue-id>...]            Step 5: worktree sweep and warning, cost
+                                     table
+  prompt <role> --issue <N> [--pr <M>] [--shape first|fix-round|restamp] [--draft]
+                                     [--preamble-file F] [--worktree DIR]
+                                     [--embed-change]
+                                     render a stage prompt from
+                                     templates/prompts/<role>.md to a file:
+                                     prompt_file=<path>; --shape restamp (qa,
+                                     reviewer, security, adversarial, docs)
+                                     takes --restamp-file F; --embed-change
+                                     (reviewer, security, docs with --pr) puts
+                                     the spec and the PR diff in it, up to
+                                     TALOS_PROMPT_CHANGE_MAX_BYTES (60000)
+  done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft] [--ci-pending]
+                                     end-of-stage bookkeeping: board, role relay,
+                                     post_stage, spend block, lifecycle event
+  map [--refresh|--forget <slug>]    the project map: map=<html> index=<html> (local
+                                     records only; --refresh first reads the provider:
+                                     one collect, the merged PRs of the last 7 days;
+                                     --forget drops <slug> from the index, forgot=<slug>)
+  state [--summary]                  the normalised run state as one state=<JSON>
+                                     line (pipeline-status-file.sh collect:
+                                     same reads, same shape, no writes);
+                                     --summary: three where= lines instead
+                                     (in flight, waiting, next)
+  next [--issue <N>]                 exactly one action for the orchestrator:
+                                     PR-side first (action=dispatch
+                                     stage=<role> pr=<M> issue=<N> |
+                                     action=merge pr=<M> issue=<N>), then the
+                                     issue queue: action=dispatch
+                                     stage=<validator|planner|pm|developer>
+                                     issue=<N> | action=ask-owner issue=<N>
+                                     question=<sanitised> | action=wait
+                                     reason=<draft|ci|human-merge|blocked|
+                                     owner|lease|dependency|cap|none>
+                                     [retry_after_s=<s>]; a planner or
+                                     adversarial dispatch and the draft wait end
+                                     in ref=<topic> (a playbook ref to read); a developer fix
+                                     round past a ceiling is stop
+                                     reason=max-fix-attempts|
+                                     max-total-dispatches|budget-exceeded,
+                                     a missing provider verb stop
+                                     reason=unsupported-verb:<verb>
+  claim <N>                          multi-user claiming (#560): assign issue N to
+                                     this operator unless another holds it, read
+                                     the assignees back, and give it up if a lower
+                                     login also claimed it: claim=taken|owned
+                                     owner=<me> | claim=lost owner=<login> |
+                                     claim=unclaimed reason=not-assignable |
+                                     claim=off reason=<disabled|assignee-none|
+                                     identity-unresolved>
+  run [--issue <N>] [--max-iterations <n>]
+                                     the deterministic orchestrator (the default:
+                                     the playbook starts it once): loops `next`, dispatches
+                                     the stage through pipeline-agent.sh with the
+                                     rendered prompt on stdin, reads the verdict
+                                     from the final-message convention and calls
+                                     `done`; a merge action runs `gate merge`, then
+                                     `merge-pr` and `post-merge`; stops on
+                                     ask-owner, wait and every gate verdict that
+                                     is not merge. Without --issue it drains the
+                                     queue: after a merge the checkout is back on
+                                     the base branch and the next pass runs (the
+                                     passes of the whole command are capped by
+                                     --max-iterations, default 20; a long drain
+                                     passes a larger number). With --issue it ends
+                                     after that issue's merge
+  run --stop                         ask a running `run` to stop after the stage
+                                     it is on: stop=requested; that run ends with
+                                     stop reason=stop-requested
+  lease prune                        the maintenance verb for the lease ledger:
+                                     removes every line no reader counts as a
+                                     lease (expired, a dead holder past the
+                                     reclaim guard, a duplicate shadowed by a
+                                     later-expiring line) under
+                                     pipeline-lock.sh; one `pruned issue=<N>`
+                                     line per removed line, nothing when there
+                                     is nothing to remove (a silent no-op)
+  queue list                         the merge queue (merge.queue: talos): one
+                                     `queued pr=<n> head=<sha> eligible=<ts>`
+                                     line per queued PR at its current head,
+                                     oldest first; a failed read or a corrupt
+                                     marker is `stop reason=queue-state-unverified`
+  queue run                          one pass of the batch runner (merge.queue:
+                                     talos): cut a candidate branch from the base
+                                     and the next merge.queue_batch queued PRs,
+                                     wait on its required checks, merge the PRs in
+                                     queue order when green and nothing moved;
+                                     verdict=off|empty|merged|wait|block, then
+                                     key=value lines (see the header)
+  evidence prune [--merged] [--older-than <days>] [--dry-run]
+                                     removes the pr-<n>/ folders of finished PRs
+                                     from the talos-evidence branch in one commit
+                                     on github, gitlab and azure: --merged picks
+                                     the folders of merged or closed PRs,
+                                     --older-than <days> those whose newest commit is
+                                     older (both: either); an open PR is never
+                                     pruned. --dry-run prints one `would-prune
+                                     pr=<n> reason=...` line per folder and writes
+                                     nothing. Prints `pruned pr=<n> reason=...`
+                                     per folder, then `pruned folders=<k>
+                                     files=<m>`; no branch or nothing to remove
+                                     exits 0 with a message; a refused read or
+                                     write exits 1 with the provider's status
+  help                              this text
+exit=0
