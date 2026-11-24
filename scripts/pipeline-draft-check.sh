@@ -6,6 +6,7 @@
 #        pipeline-draft-check.sh resolve
 #        pipeline-draft-check.sh ready-gate
 #        pipeline-draft-check.sh ci-parallel
+#        pipeline-draft-check.sh queue-ci
 #        pipeline-draft-check.sh edit <workflow-file> [--write]
 #
 #   check     Scan <workflows-dir> (default .github/workflows) for *.yml and
@@ -63,6 +64,14 @@
 #             `ready-gate` answers off; otherwise `false`, with one stderr line
 #             saying why when the key is set to true explicitly (silent when it
 #             is only the default). The one resolver, as above.
+#   queue-ci  (#1081) The effective `merge.queue_ci` on stdout, `pr` or
+#             `candidate`: a reviewed PR joins a merge-queue batch with no CI run
+#             of its own, the candidate's CI is the gate. `candidate` only when it
+#             is set, `merge.queue` is `talos`, `resolve` answers true, `roles.qa` is
+#             on and the base's required checks do not apply to the PR head
+#             (`base-protection` answers `open` or `checks-bypass`); otherwise `pr`,
+#             with one stderr line saying why (`note reason=queue-ci-protected
+#             base=<base>` for a protected base). Unset or `pr` is silent.
 #   edit      The minimal workflow change /talos:setup offers. Without
 #             --write it prints the unified diff and writes nothing; with
 #             --write it applies exactly that diff. Only two kinds of change:
@@ -388,7 +397,58 @@ _dc_ci_parallel() {
     [ "$asked" -eq 0 ] || echo "pipeline: ci.parallel_with_qa ignored: pr.ready_gate is qa-local, which runs QA before CI" >&2
     echo false; return
   fi
+  # #1081: under merge.queue_ci candidate the PR stays a draft until the queue
+  # merges it, so no CI runs in parallel with QA; the candidate is the gate.
+  if [ "$(_dc_queue_ci 2>/dev/null)" = candidate ]; then
+    [ "$asked" -eq 0 ] || echo "pipeline: ci.parallel_with_qa ignored: merge.queue_ci is candidate, the merge-queue candidate is the CI gate" >&2
+    echo false; return
+  fi
   echo true
+}
+
+# ── queue-ci (#1081) ──────────────────────────────────────────────────────────
+# The effective `merge.queue_ci`: `candidate` only when it is asked for AND
+# merge.queue is talos AND the draft window exists (`resolve` answers true) AND
+# there is a QA stage (roles.qa on) AND the base needs no check of the PR head's
+# own: `base-protection` answers `open`, or `checks-bypass` (the user may merge past
+# them). A protected base, or one whose protection cannot be read, reads `pr` with
+# `note reason=queue-ci-protected base=<base>`. Every other reason is one stderr
+# line, as ci-parallel does; unset or `pr` is silent. The one resolver: talos.sh,
+# pipeline-vcs.sh and pipeline-status-file.sh read it, none re-derives it.
+_dc_queue_ci() {
+  local key q qa base out rc=0
+  key="$(_dc_cfg merge.queue_ci)"
+  case "$key" in
+    candidate) ;;
+    '' | pr) echo pr; return ;;
+    *) echo "pipeline: merge.queue_ci: unknown value, reading it as pr (use pr or candidate)" >&2; echo pr; return ;;
+  esac
+  q="$(_dc_cfg merge.queue)"
+  if [ "$q" != talos ]; then
+    echo "pipeline: merge.queue_ci ignored: merge.queue is not talos, so there is no merge queue" >&2
+    echo pr; return
+  fi
+  if [ "$(_dc_resolve 2>/dev/null)" != true ]; then
+    echo "pipeline: merge.queue_ci ignored: pr.draft is off, so there is no draft window" >&2
+    echo pr; return
+  fi
+  qa="$(bash "$SCRIPT_DIR/pipeline-config.sh" roles.qa)" || {
+    echo "pipeline: merge.queue_ci ignored: roles.qa could not be read" >&2
+    echo pr; return
+  }
+  if [ "$(printf '%s' "$qa" | tr '[:upper:]' '[:lower:]')" = false ]; then
+    echo "pipeline: merge.queue_ci ignored: roles.qa is off, so there is no QA stage" >&2
+    echo pr; return
+  fi
+  base="$(bash "$SCRIPT_DIR/pipeline-config.sh" base_branch 2>/dev/null)"
+  [ -n "$base" ] || base="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
+  [ -n "$base" ] || base=main
+  out="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" base-protection "$base" 2>/dev/null </dev/null)" || rc=$?
+  if { [ "$rc" -eq 0 ] && [ "$out" = open ]; } || [ "$out" = checks-bypass ]; then
+    echo candidate; return
+  fi
+  echo "note reason=queue-ci-protected base=$base" >&2
+  echo pr
 }
 
 # ── edit ──────────────────────────────────────────────────────────────────────
@@ -606,6 +666,7 @@ case "${1:-check}" in
   resolve) _dc_resolve; exit 0 ;;
   ready-gate) _dc_ready_gate; exit 0 ;;
   ci-parallel) _dc_ci_parallel; exit 0 ;;
+  queue-ci) _dc_queue_ci; exit 0 ;;
   edit)    shift; _dc_edit "$@"; exit $? ;;
-  *) echo "usage: pipeline-draft-check.sh [check [<workflows-dir>] | resolve | ready-gate | ci-parallel | edit <file> [--write]]" >&2; echo unknown; exit 0 ;;
+  *) echo "usage: pipeline-draft-check.sh [check [<workflows-dir>] | resolve | ready-gate | ci-parallel | queue-ci | edit <file> [--write]]" >&2; echo unknown; exit 0 ;;
 esac

@@ -92,6 +92,7 @@ merge.method	squash	table	pipeline-vcs.sh
 merge.queue	off	table	docs (#928, new: nothing reads it yet)
 merge.queue_batch	3	table	docs (#928, new)
 merge.queue_branch_prefix	talos/queue/	table	docs (#928, new)
+merge.queue_ci	pr	table	docs (#1081, new)
 merge.queue_retry	1	table	docs (#950, new)
 merge.queue_timeout_s	3600	table	docs (#946, new)
 merge.require_current_base	true	table	talos.sh (#1060, new)

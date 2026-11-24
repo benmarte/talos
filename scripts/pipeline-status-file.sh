@@ -137,7 +137,7 @@ if [ -z "$BASE_BRANCH" ]; then
 fi
 [ -z "$BASE_BRANCH" ] && BASE_BRANCH="main"
 
-roles="" auto="true" checks="no" draft="false" ready_gate="off" fix_first="false" talos_labels=""
+roles="" auto="true" checks="no" draft="false" ready_gate="off" queue_ci="pr" fix_first="false" talos_labels=""
 # Names only (entries are name|color|description), comma-joined; no name has a comma.
 for e in ${TALOS_STAGE_LABELS[@]+"${TALOS_STAGE_LABELS[@]}"} ${TALOS_APPROVAL_LABELS[@]+"${TALOS_APPROVAL_LABELS[@]}"}; do
   talos_labels="${talos_labels}${e%%|*},"
@@ -157,6 +157,9 @@ _sf_role_on roles.adversarial && roles="${roles}adversarial,"
 [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" resolve 2>/dev/null)" = "true" ] && draft="true"
 # The QA pre-CI gate (#535), from its one resolver; anything but qa-local is off.
 [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ready-gate 2>/dev/null)" = "qa-local" ] && ready_gate="qa-local"
+# The queue's candidate CI mode (#1081): `candidate` routes a draft PR with every approval current to
+# the merge gate (the queue merges it) instead of the ready-pr wait.
+[ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" queue-ci 2>/dev/null)" = "candidate" ] && queue_ci="candidate"
 # roles.fix_on_first_findings (#833, default false): qa is routed after the review roles.
 _sf_role_on roles.fix_on_first_findings && fix_first="true"
 # roles.required_when (#835): only whether the key is set; next asks the one
@@ -205,6 +208,6 @@ case "${TALOS_CLAIM_STATE:-}" in on:?*) me="${TALOS_CLAIM_STATE#on:}" ;; esac
 python3 -I "$SCRIPT_DIR/pipeline-next.py" collect \
   ${_sf_scope:+--issue "$_sf_scope"} \
   --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --roles "$roles" --me "$me" \
-  --merge-auto "$auto" --required-checks "$checks" --pr-draft "$draft" --ready-gate "$ready_gate" --fix-on-first-findings "$fix_first" --required-when "$required_when" \
+  --merge-auto "$auto" --required-checks "$checks" --pr-draft "$draft" --ready-gate "$ready_gate" --queue-ci "$queue_ci" --fix-on-first-findings "$fix_first" --required-when "$required_when" \
   --talos-labels "$talos_labels" --branch-prefixes "${TALOS_BRANCH_PREFIX_CSV:-}" --base-branch "$BASE_BRANCH" \
   --meta "$SCRIPT_DIR/pipeline-meta.sh" --repo "$sf_repo" </dev/null

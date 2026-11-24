@@ -31,7 +31,8 @@
 #
 # env     Step 0 in one call: every resolved config value, the isolation gate,
 #         PR_DRAFT (pipeline-draft-check.sh resolve), READY_GATE (its ready-gate:
-#         qa-local or off, #535), ORCHESTRATOR (the effective
+#         qa-local or off, #535), QUEUE_CI (its queue-ci: the effective
+#         merge.queue_ci, pr or candidate, #1081), ORCHESTRATOR (the effective
 #         execution.orchestrator, #602: code, or llm when the key says so or the
 #         run has vcs.provider file or roles.planner true, which the driver
 #         cannot run; one stderr line says why), SCRIPTS_DIR and AGENT_SOURCE,
@@ -173,6 +174,11 @@
 #            `talos.sh post-merge <pr> <issue>`, `merged=<pr> issue=<n>`; a failed merge-pr is block
 #            reason=merge-failed with `pr=<pr>` and stops the merges; a failed
 #            post-merge is `warn reason=post-merge-failed pr=<pr>`. verdict=merged.
+#            Under merge.queue_ci candidate (#1081, the members are drafts) each
+#            member gets `ready-pr` before its merge-pr (a failed one is block
+#            reason=ready-pr-failed with `pr=<pr>`) and `cancel-pr-runs <pr>` after
+#            it (a failed one is `warn reason=pr-run-cancel-failed pr=<pr>`);
+#            under `pr` neither verb is called.
 #         The drain (#981): the runner holds the lock for the whole invocation. After
 #         a pass that merged or ejected it reads the queue again; with PRs that no
 #         batch of this invocation held it runs the next pass (steps 1-9, each
@@ -185,11 +191,11 @@
 #         (--pr, --sha the PR head), each with --duration-s (since the first
 #         push) and --batch-size; queue_eject per ejected PR (its issue, --pr,
 #         --sha its cut head, --batch-size the red set it was isolated from).
-# queue-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable trust-unverified queue-state-unverified no-candidate candidate-unverified candidate-timeout checks-unverified base-moved head-moved merge-failed cleanup-failed post-merge-failed checks-read-failed queue-busy
+# queue-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable trust-unverified queue-state-unverified no-candidate candidate-unverified candidate-timeout checks-unverified base-moved head-moved merge-failed cleanup-failed post-merge-failed checks-read-failed queue-busy ready-pr-failed pr-run-cancel-failed
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         trust-unverified (exit 2 for usage; else 1), and queue list's
 #         queue-state-unverified
-#   warn: cleanup-failed post-merge-failed checks-read-failed (queue run)
+#   warn: cleanup-failed post-merge-failed checks-read-failed pr-run-cancel-failed (queue run)
 #
 # post-merge, sweep, summary   Bookkeeping; each item is non-fatal (a `warn` line,
 #         the next item still runs). First line `post_merge=done|handoff`,
@@ -1038,6 +1044,15 @@ EOF
   esac
   _talos_emit CI_PARALLEL "$_val"
 
+  # QUEUE_CI (#1081): the effective merge.queue_ci (pr or candidate), from the same
+  # resolver; its one stderr line (asked for but cannot apply) passes through.
+  _val="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" queue-ci)" || _talos_stop draft-resolve-failed
+  case "$_val" in
+    pr | candidate) : ;;
+    *) _talos_stop draft-resolve-failed ;;
+  esac
+  _talos_emit QUEUE_CI "$_val"
+
   # ORCHESTRATOR (#602): the effective execution.orchestrator. `code` is the
   # default: the playbook starts `talos.sh run` once and acts on its end line.
   # `llm` is the per-stage loop, asked for by the key or forced by what the
@@ -1827,6 +1842,20 @@ _talos_queue_mark() {
   _talos_cap _vcs upsert-pr-comment "$1" --marker queue --body-file - < "$_CFG_CACHE_DIR/queue"
 }
 
+# _talos_queue_ci (#1081): the effective merge.queue_ci in _QCI, `pr` or `candidate`,
+# asked of its one resolver (pipeline-draft-check.sh queue-ci) once per process. A
+# resolver that fails reads `pr`, today's flow. Its one `note reason=queue-ci-protected
+# base=<base>` line (a base whose required checks apply to the PR head) is relayed.
+_talos_queue_ci() {
+  local _e="$_CFG_CACHE_DIR/queue-ci.err" _b
+  [ -z "${_QCI:-}" ] || return 0
+  _QCI="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" queue-ci 2>"$_e")" || _QCI=pr
+  case "$_QCI" in candidate) ;; *) _QCI=pr ;; esac
+  _b="$(sed -n 's/^note reason=queue-ci-protected base=\([A-Za-z0-9._\/-]*\)$/\1/p' "$_e" 2>/dev/null | head -n 1)"
+  [ -z "$_b" ] || _talos_emit note "reason=queue-ci-protected base=$_b"
+  return 0
+}
+
 # _talos_queue_enqueue <pr> <issue>: gate merge's last step under merge.queue:
 # talos, reached only when every gate passed. No marker, or one for another head
 # or base: one is written (eligible = now) and, on comment=created|updated, a
@@ -1867,7 +1896,8 @@ _talos_queue_enqueue() {
   esac
   case "$_OUT" in
     *"comment=created"* | *"comment=updated"*)
-      _talos_post_stage queue_enqueue orchestrator "$_n" --pr "$_pr" --sha "$_head" < /dev/null ;;
+      _talos_queue_ci
+      _talos_post_stage queue_enqueue orchestrator "$_n" --pr "$_pr" --sha "$_head" --ci "$_QCI" < /dev/null ;;
   esac
   _talos_emit reason queued
   _talos_verdict wait
@@ -2356,10 +2386,12 @@ _talos_queue_run() {
   local _base _prefix _batch _method _tmo _rows _p _qh _qe _br _n _rx _b _t0=""
   local _picked="" _csv="" _size=0 _n1="" _branches=() _a _recuts=0 _stale=0 _prc=0 _retry _rt=0
   _talos_prepare queue pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-hooks.sh \
-                       pipeline-mergebase.sh pipeline-lock.sh pipeline-contract.sh
+                       pipeline-mergebase.sh pipeline-lock.sh pipeline-contract.sh pipeline-draft-check.sh
   . "$SCRIPT_DIR/pipeline-contract.sh"
   _TALOS_RL_MODE=queue
   [ "$(cfg merge.queue)" = "talos" ] || _talos_verdict off
+  # merge.queue_ci (#1081), once, before anything is cut: AC6's flow (pr) calls neither verb.
+  _talos_queue_ci
   _base="$(_talos_base_branch)"
   _prefix="$(cfg merge.queue_branch_prefix)"
   _batch="$(cfg merge.queue_batch)"
@@ -2522,10 +2554,25 @@ _talos_queue_run() {
         _talos_queue_sync "$_p" "$_qh" "$_qe"
         _qh="$_QH" ;;
     esac
+    # merge.queue_ci candidate (#1081): the member is still a draft, which the
+    # provider refuses to merge: it is marked ready first, and the runs that
+    # event starts on its head (the candidate already tested it) are cancelled
+    # once it has merged. A failed cancel is a warning, the merges go on.
+    if [ "$_QCI" = candidate ]; then
+      _talos_cap _vcs ready-pr "$_p"
+      if [ "$_RC" -ne 0 ]; then
+        _talos_emit pr "$_p"
+        _talos_queue_end block ready-pr-failed
+      fi
+    fi
     _talos_cap _vcs merge-pr "$_p" --sha "$_qh"
     if [ "$_RC" -ne 0 ]; then
       _talos_emit pr "$_p"
       _talos_queue_end block merge-failed
+    fi
+    if [ "$_QCI" = candidate ]; then
+      _talos_cap _vcs cancel-pr-runs "$_p"
+      [ "$_RC" -eq 0 ] || _talos_warn pr-run-cancel-failed "pr=$_p"
     fi
     _talos_post_stage queue_merge orchestrator "$_n" --pr "$_p" --sha "$_qh" --duration-s "$((SECONDS - _t0))" \
       --batch-size "$_size" < /dev/null
@@ -2648,22 +2695,29 @@ _talos_gate_merge() {
   # 5. Draft state, only with PR_DRAFT = true: a draft was never CI-verified.
   _draft="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" resolve)" || _talos_stop draft-resolve-failed
   case "$_draft" in true | false) : ;; *) _talos_stop draft-resolve-failed ;; esac
+  # merge.queue_ci candidate (#1081): a draft whose approvals are all current (step 2
+  # passed) is what the queue merges, so it is not redispatched.
+  _talos_queue_ci
   if [ "$_draft" = "true" ]; then
     _talos_cap _vcs pr-is-draft "$_pr"
     if [ "$_RC" -eq 0 ] && [ "$_OUT" = "draft" ]; then
-      _talos_emit reason draft-pr
-      _talos_verdict redispatch
+      if [ "$_QCI" != candidate ]; then
+        _talos_emit reason draft-pr
+        _talos_verdict redispatch
+      fi
     elif ! { [ "$_RC" -eq 1 ] && [ "$_OUT" = "ready" ]; }; then
       _talos_stop draft-unverified
     fi
   fi
 
-  # 6. Required CI. Exit 2 is pending or missing. Exit 1 with the `failed:` line is
-  # a red check: re-run it, at most twice per head SHA (the talos:ci-rerun markers).
+  # 6. Required CI. Exit 2 is pending or missing (under merge.queue_ci candidate the
+  # candidate's CI is the gate: no CI run of the PR's own is waited for). Exit 1 with
+  # the `failed:` line is a red check: re-run it, at most twice per head SHA (the
+  # talos:ci-rerun markers).
   _talos_cap _vcs pr-checks-required "$_pr"
   case "$_RC" in
     0) : ;;
-    2) _talos_emit reason ci-pending; _talos_verdict wait ;;
+    2) [ "$_QCI" = candidate ] || { _talos_emit reason ci-pending; _talos_verdict wait; } ;;
     *)
       case "$_ERR" in *"pr-checks-required: failed:"*) : ;; *) _talos_stop ci-unverified ;; esac
       _cierr="$_ERR"
@@ -4141,13 +4195,18 @@ _talos_prompt_role() {
         if [ "$_v" = ci ] && [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ci-parallel 2>/dev/null)" = true ]; then
           _v=parallel
         fi
+        # #1081: under merge.queue_ci candidate no CI runs on the PR before it
+        # merges: QA runs on the draft, never waits for CI and runs no full verify.
+        if [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" queue-ci 2>/dev/null)" = candidate ]; then
+          _v=candidate
+        fi
       fi
       _talos_pv QA_CI_STEP ""
       # #1010: verify.ci_scope changed = this repo's PR CI runs only the tests a
       # change selects and the merge queue runs the full suite; default full.
-      if [ "$_skip" = 1 ] && [ "$_v" != pre-ci ] && [ "$(cfg verify.ci_scope)" = changed ]; then
+      if [ "$_skip" = 1 ] && [ "$_v" != pre-ci ] && [ "$_v" != candidate ] && [ "$(cfg verify.ci_scope)" = changed ]; then
         _talos_pv QA_TARGETED_LINE "Targeted run skipped: \`merge.required_checks\` is set and \`verify.ci_scope\` is \`changed\`, so CI ran the tests this change selects and the merge queue runs the full suite. Run no \`tests/run-tests.sh\` command of any form (not the step 2 \`run-tests.sh --changed\`, not \`--for\`, no pattern, no full suite, not through \`pipeline-verify.sh\`); write \`targeted run skipped: CI ran the tests this change selects (merge.required_checks)\` in the verdict. \`qa-run\` still checks every criterion red/green, and the required-checks gate is unchanged."
-      elif [ "$_skip" = 1 ] && [ "$_v" != pre-ci ]; then
+      elif [ "$_skip" = 1 ] && [ "$_v" != pre-ci ] && [ "$_v" != candidate ]; then
         _talos_pv QA_TARGETED_LINE "Targeted run skipped: \`merge.required_checks\` is set, so CI is the full run at the head. Run no \`tests/run-tests.sh\` command of any form (not the step 2 \`run-tests.sh --changed\`, not \`--for\`, no pattern, no full suite, not through \`pipeline-verify.sh\`); write \`targeted run skipped: CI is the full run (merge.required_checks)\` in the verdict. \`qa-run\` still checks every criterion red/green, and the required-checks gate is unchanged."
       fi
       if [ "$_v" = pre-ci ]; then
@@ -4158,6 +4217,12 @@ _talos_prompt_role() {
         _talos_pv QA_GATE_STEP "Step 2, in the PR checkout: the full \`verify:\` list once (the suite CI would run), through \`pipeline-verify.sh --all\`; quote failures only:
 ${_r:-none}
 post-approval stamps the head SHA you verified (the PR head, not a stale checkout)."
+      elif [ "$_v" = candidate ]; then
+        # #1081: no CI line, no CI wait, no full verify; the verdict names the gate.
+        _talos_pv REQUIRED_CHECKS_LINE ""
+        _talos_pv QA_CI_WAIT_LINE ""
+        _talos_pv QA_GATE_STEP ""
+        _talos_pf QA_RULE "$_tpl/_qa-candidate.md"
       else
         _talos_pv REQUIRED_CHECKS_LINE "$(_talos_prompt_checks)"
         _talos_pv QA_CI_WAIT_LINE "CI wait budget: ${_cb:-none (pass no --wait)}${_cb:+ seconds}"
@@ -4188,7 +4253,7 @@ Exit 0: green. Any other exit is a FAIL (a red job: name it; pending: fail close
       # checks read), 0 or none (no wait: qa_mode local, ci.parallel_with_qa) is
       # no excerpt. Unset (a standalone `talos.sh prompt`) reads the checks itself.
       _CI_EXCERPT=""
-      if [ "$_shape" = first ] && [ -n "$_pr" ] && [ "$_v" != pre-ci ]; then
+      if [ "$_shape" = first ] && [ -n "$_pr" ] && [ "$_v" != pre-ci ] && [ "$_v" != candidate ]; then
         case "${TALOS_QA_CI_RC-unset}" in
           1) _talos_ci_excerpt "$_pr" --red ;;
           unset) _talos_ci_excerpt "$_pr" ;;
@@ -4889,7 +4954,9 @@ _talos_done() {
     # a draft PR has nothing to convert back. Only a PR that is positively a
     # draft skips the conversion; ready or unreadable keeps today's draft-pr.
     _convert=1
-    if [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ready-gate 2>/dev/null)" = qa-local ]; then
+    # merge.queue_ci candidate (#1081) is the same case: QA ran on the draft.
+    if [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ready-gate 2>/dev/null)" = qa-local ] \
+      || [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" queue-ci 2>/dev/null)" = candidate ]; then
       _talos_cap _vcs pr-is-draft "$_pr"
       if [ "$_RC" -eq 0 ] && [ "$_OUT" = draft ]; then _convert=0; fi
     fi
@@ -6105,6 +6172,11 @@ _talos_run_loop() {
   # The QA pre-CI gate (#535), once, from its one resolver.
   _r="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ready-gate 2>/dev/null)"
   [ "$_r" = "qa-local" ] && _RUN_GATE=1 || _RUN_GATE=0
+  # merge.queue_ci candidate (#1081), once: QA runs on the draft like the pre-CI
+  # gate, and the PR stays a draft until the queue merges it (_RUN_QCI).
+  _r="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" queue-ci 2>/dev/null)"
+  [ "$_r" = "candidate" ] && _RUN_QCI=1 || _RUN_QCI=0
+  [ "$_RUN_QCI" -eq 0 ] || _RUN_GATE=1
 
   # The in-flight issues (mid-flight label states), from the collect's
   # `inflight`: read once, straight from `collect`'s stdout the way `next`
@@ -7213,6 +7285,8 @@ _talos_run_ci_wait() {
   # second checks read; none means no wait ran here.
   export TALOS_QA_CI_RC=none
   [ "$(cfg verify.qa_mode)" = ci ] || return 0
+  # merge.queue_ci candidate (#1081): the PR has no CI of its own; QA never waits.
+  [ "${_RUN_QCI:-0}" -eq 0 ] || return 0
   _par="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ci-parallel 2>/dev/null)" || _par=false
   [ "$_par" != true ] || return 0
   # #1007: under the QA pre-CI gate (pr.ready_gate qa-local) QA runs on the draft
@@ -7342,6 +7416,9 @@ for p in json.loads(sys.stdin.read()).get("prs") or []:
 # write that deletes the head branch).
 _talos_run_draft_complete() {
   local _pr="$1" _n="$2" _r _l _fresh
+  # merge.queue_ci candidate (#1081): no stage marks the PR ready before the queue
+  # merges it (routing never answers `ready` here; this is the second guard).
+  [ "${_RUN_QCI:-0}" -eq 0 ] || return 0
   # The write is leased first: a held lease or an unavailable ledger/lock ends
   # the run with the lease wait, zero ready-pr.
   _talos_run_lease "$_n"

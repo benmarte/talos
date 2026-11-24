@@ -151,6 +151,7 @@ merge.union_paths	list		derived	-	repo
 merge.auto_sync	bool	true	-	-	any
 merge.require_current_base	bool	true	-	-	any
 merge.queue	enum	off	-	-	any
+merge.queue_ci	enum	pr	-	-	any
 merge.queue_batch	int	3	-	-	any
 merge.queue_branch_prefix	str	talos/queue/	-	-	any
 merge.queue_timeout_s	int	3600	-	-	any

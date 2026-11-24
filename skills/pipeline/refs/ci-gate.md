@@ -2,6 +2,8 @@
 
 Read when `talos.sh env` prints `ref=ci-gate`. With `READY_GATE = qa-local` it applies only to QA on a READY PR (a human marked it ready, or a fallback): QA on the draft runs before any CI exists and never waits (`refs/draft-order.md`). On the first QA dispatch or a retry after a fix round (never a Step 4 re-stamp), after the draft guard when `PR_DRAFT` is on, and before spawning QA, ask required CI first so QA is never dispatched on a red build:
 
+With `QUEUE_CI = candidate` (`merge.queue_ci`, from `talos.sh env`) skip it altogether. QA runs last on the draft like `qa-local` but never waits for CI and runs no full `verify:` list; its verdict says `CI: the merge-queue candidate is the gate (merge.queue_ci: candidate)`. No stage calls `ready-pr`: once every approval is fresh `next` answers `merge`, `gate merge` queues the draft (its draft and CI steps stand aside; a red CI that did run still counts), and `queue run` marks each member ready just before its `merge-pr` and cancels the runs that event started. The merge-queue candidate's CI is the gate (`docs/reference.md`, "merge.queue_ci: candidate").
+
 With `CI_PARALLEL = true` (`ci.parallel_with_qa`, from `pipeline-draft-check.sh ci-parallel`, the one resolver) skip the wait below: CI runs the full suite from `ready-pr` while QA works, QA waits once right before `post-approval`, and `post-approval qa` refuses unless the required CI is green at the head. Run `draft-pr` before a fix push when QA or CI finds a real problem.
 
 ```bash

@@ -152,6 +152,9 @@
 # run`; for queue_eject, #931, the red set the ejected PR was isolated from). It
 # follows the ci_runs rule: a "batch_size" key right before ts, only
 # when supplied and a valid integer (one stderr note otherwise).
+# --ci pr|candidate (#1081) is which CI gate a queue_enqueue event's PR waits on
+# (the queue's candidate CI mode): a "ci" key right after batch_size, only when supplied; any
+# other value prints one stderr line and the key is left out.
 # model comes from agents.roles.<role>.model, falling back to agents.model;
 # runner from agents.runner. ts is UTC ISO-8601.
 #
@@ -425,10 +428,10 @@ post_stage() {
 
   local pr="" sha="" verdict="" summary="" details_file="" attempt="" duration_s="" tokens="" tool_uses="" ci_runs="" model_arg="" runner_arg=""
   local summary_file="" summary_stdin=0
-  local input_tokens="" output_tokens="" cache_write_tokens="" cache_read_tokens="" pool="" batch_size=""
+  local input_tokens="" output_tokens="" cache_write_tokens="" cache_read_tokens="" pool="" batch_size="" ci_gate=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --pr|--sha|--verdict|--summary|--summary-file|--details-file|--attempt|--duration-s|--tokens|--tool-uses|--ci-runs|--model|--runner|--input-tokens|--output-tokens|--cache-write-tokens|--cache-read-tokens|--pool|--batch-size)
+      --pr|--sha|--verdict|--summary|--summary-file|--details-file|--attempt|--duration-s|--tokens|--tool-uses|--ci-runs|--model|--runner|--input-tokens|--output-tokens|--cache-write-tokens|--cache-read-tokens|--pool|--batch-size|--ci)
         # A value flag as the last argument used to loop forever (`shift 2`
         # with one argument left shifts nothing): exit 2 with usage instead.
         _hooks_need_value "$1" $#
@@ -459,6 +462,7 @@ post_stage() {
       --cache-read-tokens) cache_read_tokens="$2"; shift 2 ;;
       --pool) pool="$2"; shift 2 ;;
       --batch-size) batch_size="$2"; shift 2 ;;
+      --ci) ci_gate="$2"; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -491,6 +495,11 @@ post_stage() {
   cache_read_tokens="$(_validate_nonneg_int cache-read-tokens "$cache_read_tokens")"
   # #930: the merge-queue batch size; an invalid value drops the key.
   batch_size="$(_validate_nonneg_int batch-size "$batch_size")"
+  # #1081: the CI gate of a queued PR; anything but pr or candidate drops the key.
+  case "$ci_gate" in
+    ''|pr|candidate) ;;
+    *) echo "pipeline-hooks: --ci value is not pr or candidate -- leaving it out" >&2; ci_gate="" ;;
+  esac
   # #616: the pool that paid; anything but api or plan drops the key.
   case "$pool" in
     ''|api|plan) ;;
@@ -561,7 +570,7 @@ post_stage() {
     TALOS_HOOK_CI_RUNS="$ci_runs" TALOS_HOOK_TS="$ts" \
     TALOS_HOOK_INPUT_TOKENS="$input_tokens" TALOS_HOOK_OUTPUT_TOKENS="$output_tokens" \
     TALOS_HOOK_CACHE_WRITE_TOKENS="$cache_write_tokens" TALOS_HOOK_CACHE_READ_TOKENS="$cache_read_tokens" \
-    TALOS_HOOK_POOL="$pool" TALOS_HOOK_BATCH_SIZE="$batch_size" \
+    TALOS_HOOK_POOL="$pool" TALOS_HOOK_BATCH_SIZE="$batch_size" TALOS_HOOK_CI="$ci_gate" \
     python3 -I -c '
 import json
 import os
@@ -620,6 +629,9 @@ if os.environ.get("TALOS_HOOK_POOL"):
 _batch = _int_or_none(os.environ.get("TALOS_HOOK_BATCH_SIZE"))
 if _batch is not None:
     payload["batch_size"] = _batch
+# #1081: which CI gate a queued PR waits on, only when supplied.
+if os.environ.get("TALOS_HOOK_CI"):
+    payload["ci"] = os.environ["TALOS_HOOK_CI"]
 payload["ts"] = os.environ.get("TALOS_HOOK_TS", "")
 json.dump(payload, sys.stdout)
 ')"
