@@ -70,11 +70,14 @@ own_check() {
 }
 line_pid() { sed -n "s/^issue=$N .* pid=\([0-9]*\).*/\1/p" "$LEASE" 2>/dev/null | head -1; }
 
-# A live pid for the whole file; a dead one (spawned, killed, reaped).
+# A live pid for the whole file; a dead one (spawned, exited, reaped). The dead
+# pid is never made by killing a forked bash child: under bash >= 5 that child
+# inherits the EXIT trap below until it execs, and on Linux a kill that lands
+# first makes it run the trap and kill LIVE (the #565 race, tests/helpers.sh).
+# The trap chains helpers.sh's sandbox cleanup rather than replacing it.
 sleep 300 & LIVE=$!
-trap 'kill "$LIVE" 2>/dev/null' EXIT
-( sleep 30 ) & DEAD=$!
-kill "$DEAD" 2>/dev/null
+trap 'kill "$LIVE" 2>/dev/null; _sandbox_cleanup' EXIT
+sh -c ':' & DEAD=$!
 wait "$DEAD" 2>/dev/null
 
 # ── AC1: a live TALOS_LEASE_PID keeps the lease past the reclaim guard ────────
