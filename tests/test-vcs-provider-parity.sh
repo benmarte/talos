@@ -226,6 +226,7 @@ assert_contains "$out" "STALE gitlab never-called" "an exception for a verb nobo
 read -r -d '' PARITY_EXCEPTIONS <<'TABLE' || true
 # provider verb PARITY-EXCEPTION: reason
 azure enqueue-pr PARITY-EXCEPTION: GitHub merge queue only (#932), exits 2 before any call
+azure pr-behind PARITY-EXCEPTION: GitHub only (#1060), the merge gate calls it on github and github-api only
 azure pr-state PARITY-EXCEPTION: GitHub only (#1057), talos.sh run skips the PR read on an unsupported verb
 azure rate-limit PARITY-EXCEPTION: GitHub's quota only (#1004), exits 2 before any call
 file assign-issue PARITY-EXCEPTION: local-only by design
@@ -240,6 +241,7 @@ file evidence-prune PARITY-EXCEPTION: local-only by design (no PRs)
 file list-merged-prs PARITY-EXCEPTION: local-only by design (no PRs)
 file list-needs-owner PARITY-EXCEPTION: local-only by design
 file mark-needs-owner PARITY-EXCEPTION: local-only by design
+file pr-behind PARITY-EXCEPTION: GitHub only (#1060), the merge gate calls it on github and github-api only
 file pr-head PARITY-EXCEPTION: local-only by design (no PRs)
 file pr-head-ref PARITY-EXCEPTION: local-only by design (no PRs)
 file pr-state PARITY-EXCEPTION: local-only by design (no PRs)
@@ -249,6 +251,7 @@ file read-comments PARITY-EXCEPTION: local-only by design (no comments)
 file record-attempt PARITY-EXCEPTION: local-only by design (no comments)
 file upsert-pr-comment PARITY-EXCEPTION: local-only by design (no PRs)
 gitlab enqueue-pr PARITY-EXCEPTION: GitHub merge queue only (#932), exits 2 before any call
+gitlab pr-behind PARITY-EXCEPTION: GitHub only (#1060), the merge gate calls it on github and github-api only
 gitlab pr-state PARITY-EXCEPTION: GitHub only (#1057), talos.sh run skips the PR read on an unsupported verb
 gitlab rate-limit PARITY-EXCEPTION: GitHub's quota only (#1004), exits 2 before any call
 TABLE
