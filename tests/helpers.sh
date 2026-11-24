@@ -256,6 +256,21 @@ use_stubs() {
   : > "$NAK_LOG"; : > "$NAK_QUEUE"; : > "$NAK_ENV_LOG"; : > "$VERIFY_LOG"
 }
 
+# reset_leases [<repo-dir>] — drop every lease for a sandbox repo (#1068). A `next`
+# that dispatches takes a lease (`<git common dir>/talos-lease.ledger`, plus its
+# `.lock.d` and `.tmp.*` files); its pid is dead once it exits, but the line stays
+# until the reclaim guard passes, so a test that calls `next` twice on one issue
+# calls this between the two instead of relying on expiry. The path comes from git,
+# as the code finds it. rc 1 and nothing removed when <repo-dir> is no repo.
+reset_leases() {
+  local _d="${1:-${SANDBOX:-}}" _c
+  [ -n "$_d" ] && [ -d "$_d" ] || return 1
+  _c="$(git -C "$_d" rev-parse --git-common-dir 2>/dev/null)" && [ -n "$_c" ] || return 1
+  case "$_c" in /*) ;; *) _c="$_d/$_c" ;; esac
+  [ -d "$_c" ] || return 1
+  rm -rf "${_c:?}/talos-lease.ledger"*
+}
+
 # github_leg <gh|curl> [<extra config members>] — point the sandbox at ONE of the
 # two GitHub transports (#551). `gh` is vcs.provider github with the gh stub;
 # `curl` is vcs.provider github-api with the curl stub and a token. The queue and

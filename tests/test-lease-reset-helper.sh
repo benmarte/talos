@@ -85,14 +85,25 @@ reset
 
 # ── AC2 ─────────────────────────────────────────────────────────────────────
 # A 60 s lease and a 60 s dead-holder guard: the budget test may not lean on expiry.
+# Each run has its own sandbox, so ten run side by side (two waves of ten: one run
+# alone takes about a minute).
 FAILED=0; RUN=0
+budget_run() {  # $1=run number: the budget test with a long lease; rc 0 on pass
+  TALOS_LEASE_TTL_S=60 TALOS_LEASE_RECLAIM_S=60 bash "$TALOS_ROOT/tests/test-next-collect-call-budget.sh" > "$SANDBOX/budget.$1.out" 2>&1
+}
+for WAVE in 1 2; do
+  for I in 1 2 3 4 5 6 7 8 9 10; do
+    RUN=$(( (WAVE - 1) * 10 + I ))
+    budget_run "$RUN" &
+  done
+  wait
+done
+RUN=0
 while [ "$RUN" -lt 20 ]; do
   RUN=$((RUN + 1))
-  if ! TALOS_LEASE_TTL_S=60 TALOS_LEASE_RECLAIM_S=60 bash "$TALOS_ROOT/tests/test-next-collect-call-budget.sh" > "$SANDBOX/budget.$RUN.out" 2>&1; then
-    FAILED=$((FAILED + 1))
-    grep -v '^  ok' "$SANDBOX/budget.$RUN.out" | head -5 >&2
-    break
-  fi
+  grep -q ': [0-9]* passed, 0 failed$' "$SANDBOX/budget.$RUN.out" && continue
+  FAILED=$((FAILED + 1))
+  [ "$FAILED" -gt 1 ] || grep -v '^  ok' "$SANDBOX/budget.$RUN.out" | head -5 >&2
 done
 assert_eq "0" "$FAILED" "AC2 test-next-collect-call-budget.sh passes 20 runs in a row with a 60 s lease and reclaim guard"
 
