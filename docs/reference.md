@@ -1456,7 +1456,7 @@ Docs is decided by `talos.sh docs-gate <pr> --issue <N>`. With `docs:done` on th
 | `merge.queue_retry` | `1` | how many times `queue run` re-runs the failed required checks of a red candidate, at the same candidate sha, before it bisects and ejects (0-3; `0` ejects at the first red; any other value is `stop reason=config-unreadable`) |
 | `merge.queue_branch_prefix` | `talos/queue/` | the candidate branch name: `<prefix><base>-<epoch seconds>` |
 
-When `conflict-files <pr>` lists only `merge.union_paths` entries, `scripts/pipeline-mergebase.sh <pr>` resolves them with `git merge-file --union` (both sides kept, the PR's first) in a throwaway worktree and pushes, with no developer dispatch. Exit 0 pushed, 3 a path is not unionable (developer merge-base task), 1 setup error. Entries matching `scripts/**`, `tests/**`, pipeline config or forbidden patterns are rejected.
+When `conflict-files <pr>` lists only `merge.union_paths` entries, `scripts/pipeline-mergebase.sh <pr>` resolves them with `git merge-file --union` (both sides kept, the PR's first) in a throwaway worktree and pushes, with no developer dispatch. Exit 0 pushed, 3 a path is not unionable (developer merge-base task), 1 setup error. `pipeline-mergebase.sh --union-list` prints the validated `merge.union_paths` as one JSON array and touches nothing (the merge queue applies exactly those paths with a union merge in its candidate). Entries matching `scripts/**`, `tests/**`, pipeline config or forbidden patterns are rejected.
 
 #### Mechanically resolved conflicts
 
