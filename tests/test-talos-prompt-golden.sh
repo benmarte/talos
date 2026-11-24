@@ -222,6 +222,25 @@ for name in $RUN_CASES; do
   fi
 done
 
+# A scratch write fed through a pipe (the fix-round block) still stops the run
+# with `stop reason=scratch-unavailable` and exit 1, as the old
+# `> "$f" || _talos_stop` did. A `mktemp` shim makes the block's scratch file a
+# directory inside the cache dir, so only that one write fails. Dropping the
+# `|| _talos_stop scratch-unavailable` at that call site turns this red.
+SHIM="$SANDBOX/shim-bin"
+mkdir -p "$SHIM"
+REAL_MKTEMP="$(command -v mktemp)"
+printf '#!/bin/sh\nd="$(%s "$@")" || exit 1\ncase "$d" in *talos-cfg-cache.*) mkdir "$d/pb.FIX_ROUND_LINES" ;; esac\nprintf "%%s\\n" "$d"\n' "$REAL_MKTEMP" > "$SHIM/mktemp"
+chmod +x "$SHIM/mktemp"
+reset_cfg
+env -u PIPELINE_CONFIG PATH="$SHIM:$PATH" bash "$TALOS" prompt developer --issue 468 --pr 77 --shape fix-round > "$SANDBOX/scratch.out" 2> "$SANDBOX/scratch.err"
+scratch_rc=$?
+if [ "$scratch_rc" -eq 1 ] && [ "$(cat "$SANDBOX/scratch.out")" = 'stop reason=scratch-unavailable' ]; then
+  pass "AC3 a failed scratch write behind a pipe stops the run with scratch-unavailable"
+else
+  fail "AC3 a failed scratch write behind a pipe stops the run with scratch-unavailable" "rc=$scratch_rc out=$(cat "$SANDBOX/scratch.out")"
+fi
+
 # The goldens above must hold the shapes they claim (a golden of a stop line
 # would pin nothing): a clean wait and the head-unresolved stop.
 assert_contains "$(cat "$FIXDIR/run-clean-wait.golden")" "stop action=wait reason=none" "AC3 the clean-wait golden holds the wait stop line"
