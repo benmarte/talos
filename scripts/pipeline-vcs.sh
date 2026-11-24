@@ -446,10 +446,23 @@
 #                                             (prints `open`): none does, so a head
 #                                             that has no checks of its own can be
 #                                             merged. Exit 1 (prints `checks`): one
-#                                             does. Exit 2: cannot be read (nothing on
+#                                             does. Exit 1 prints `checks-bypass` (#1081)
+#                                             instead when the authenticated user may
+#                                             merge past those checks: admin on the
+#                                             repository, admins not enforced by the
+#                                             branch protection, and every ruleset that
+#                                             requires checks lists the admin role (or
+#                                             the user) as a bypass actor. Exit 2: cannot be read (nothing on
 #                                             stdout; treat it as `checks`). github
 #                                             and github-api only; the merge queue
 #                                             reads it once per run.
+#   cancel-pr-runs <n>                        Cancel the queued and in-progress workflow
+#                                             runs of PR <n>'s head sha that the PR's own
+#                                             events started (#1081: the merge queue's
+#                                             ready-for-review runs after a merge). Exit 0:
+#                                             none left (or none found); 1: a read or a
+#                                             cancel failed; 2: a provider other than
+#                                             github/github-api (nothing cancelled).
 #   conflict-files <n>                     Print the paths that conflict between
 #                                             PR <n>'s head and origin/<base_branch>,
 #                                             one per line (#256). Resolved with a
@@ -6636,6 +6649,30 @@ if running:
       done <<< "$_rr_ids"
       echo "rerun-ci: re-ran failed runs for $_rr_what ($_rr_sha)"
       ;;
+    cancel-pr-runs)
+      # cancel-pr-runs <n> (#1081): cancel the queued and in-progress `pull_request`
+      # workflow runs at the PR's head sha (what its ready_for_review event started
+      # once the merge queue merged it). Exit 0: every such run was cancelled, or
+      # none was found; 1: a read or a cancel failed. A run of any other event (the
+      # candidate's push, a schedule) is never touched.
+      local _cp_n="${1:-}" _cp_sha _cp_runs _cp_ids _cp_id _cp_cnt=0
+      _gh_num "$verb" PR "$_cp_n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$_cp_n (head SHA); GET $_GH_API/actions/runs?head_sha=<sha>&event=pull_request; POST $_GH_API/actions/runs/<id>/cancel for each queued or in-progress run"; return 0; }
+      _cp_sha="$(_gh_req GET "$_GH_API/pulls/$_cp_n" | _gh_field head.sha)"
+      [ -n "$_cp_sha" ] || { echo "pipeline-vcs: cancel-pr-runs: could not resolve head SHA for PR #$_cp_n" >&2; exit 1; }
+      _cp_runs="$(_gh_pages "$_GH_API/actions/runs?head_sha=$_cp_sha&event=pull_request&per_page=100" "" "workflow runs" workflow_runs)" || exit 1
+      _cp_ids="$(printf '%s' "$_cp_runs" | python3 -I -c "
+import json, sys
+for r in json.load(sys.stdin)['workflow_runs']:
+    if isinstance(r, dict) and r.get('event') == 'pull_request' and r.get('status') in ('queued', 'in_progress', 'waiting', 'pending', 'requested') and isinstance(r.get('id'), int):
+        print(r['id'])")" || exit 1
+      while IFS= read -r _cp_id; do
+        [ -n "$_cp_id" ] || continue
+        _gh_req POST "$_GH_API/actions/runs/$_cp_id/cancel" '{}' >/dev/null || exit 1
+        _cp_cnt=$((_cp_cnt + 1))
+      done <<< "$_cp_ids"
+      echo "cancel-pr-runs: cancelled $_cp_cnt run(s) of PR #$_cp_n ($_cp_sha)"
+      ;;
     update-branch)
       # update-branch <n> (#289): merge the base into the PR's head SERVER-SIDE
       # (PUT pulls/{n}/update-branch with expected_head_sha). Exit 0 on success,
@@ -6819,19 +6856,103 @@ for r in d:
         sys.exit(0)
 sys.exit(1)' "$1"
       }
+      # #1081: a base that requires checks answers `checks-bypass` (still exit 1, so
+      # every caller that reads only `open` stays on the safe side) when the
+      # authenticated user may merge a head without its own passing checks: the
+      # user has admin permission on the repository, the classic protection (if one
+      # requires checks) does not enforce its rules for admins, and every ruleset
+      # that requires checks lists the repository admin role (or the user) as a
+      # bypass actor. Any read of that second look that fails reads `checks`.
+      _bp_py() {  # <kind> [<user id>]; json on stdin. admin|enforce: 0 yes, 1 no. ids: the ruleset ids. bypass: 0 yes, 1 no, 3 a user actor needs the id
+        python3 -I -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit(2)
+kind = sys.argv[1]
+if kind == "admin":
+    p = d.get("permissions") if isinstance(d, dict) else None
+    sys.exit(0 if isinstance(p, dict) and p.get("admin") is True else 1)
+if kind == "enforce":
+    sys.exit(0 if isinstance(d, dict) and d.get("enabled") is False else 1)
+if kind == "uid":
+    i = d.get("id") if isinstance(d, dict) else None
+    if type(i) is not int:
+        sys.exit(1)
+    print(i)
+    sys.exit(0)
+if kind == "ids":
+    ids = set()
+    for r in d if isinstance(d, list) else []:
+        p = r.get("parameters") if isinstance(r, dict) else None
+        if isinstance(r, dict) and r.get("type") == "required_status_checks" and isinstance(p, dict) and p.get("required_status_checks"):
+            if type(r.get("ruleset_id")) is not int:
+                sys.exit(1)
+            ids.add(r["ruleset_id"])
+    print("\n".join(str(i) for i in sorted(ids)))
+    sys.exit(0)
+users = False
+for a in (d.get("bypass_actors") if isinstance(d, dict) else None) or []:
+    if not isinstance(a, dict):
+        continue
+    if a.get("actor_type") == "RepositoryRole" and a.get("actor_id") == 5:
+        sys.exit(0)
+    if a.get("actor_type") == "User":
+        if len(sys.argv) > 2 and a.get("actor_id") == int(sys.argv[2]):
+            sys.exit(0)
+        users = True
+sys.exit(3 if users and len(sys.argv) < 3 else 1)' "$@"
+      }
+      _bp_admin() {  # 0 when the user has admin permission on the repository (read once)
+        [ "${_bp_adm:-}" = 1 ] && return 0
+        _bp_raw="$(_gh_try GET "$_GH_API")" || return 1
+        printf '%s' "$_bp_raw" | _bp_py admin && _bp_adm=1
+      }
+      _bp_ruleset_bypass() {  # <ruleset ids, one per line>: 0 when every one lists the admin role or the user
+        local _id _uid=""
+        while IFS= read -r _id; do
+          [ -n "$_id" ] || continue
+          _bp_raw="$(_gh_try GET "$_GH_API/rulesets/$_id")" || return 1
+          _bp_rc=0; printf '%s' "$_bp_raw" | _bp_py bypass || _bp_rc=$?
+          if [ "$_bp_rc" -eq 3 ]; then
+            if [ -z "$_uid" ]; then
+              _uid="$(_gh_try GET user | _bp_py uid)" || return 1
+            fi
+            _bp_rc=0; printf '%s' "$_bp_raw" | _bp_py bypass "$_uid" || _bp_rc=$?
+          fi
+          [ "$_bp_rc" -eq 0 ] || return 1
+        done <<< "$1"
+      }
+      local _bp_cls=0 _bp_ids
       _bp_raw="$(_gh_try GET "$_GH_API/branches/$_bp_enc")" || exit 2
       _bp_rc=0; printf '%s' "$_bp_raw" | _bp_has branch || _bp_rc=$?
       case "$_bp_rc" in
         0)
           _bp_raw="$(_gh_try GET "$_GH_API/branches/$_bp_enc/protection/required_status_checks")" || exit 2
           _bp_rc=0; printf '%s' "$_bp_raw" | _bp_has classic || _bp_rc=$?
-          case "$_bp_rc" in 0) echo checks; exit 1 ;; 1) ;; *) exit 2 ;; esac ;;
+          case "$_bp_rc" in 0) _bp_cls=1 ;; 1) ;; *) exit 2 ;; esac ;;
         1) ;;
         *) exit 2 ;;
       esac
-      _bp_raw="$(_gh_try GET "$_GH_API/rules/branches/$_bp_enc")" || exit 2
+      if [ "$_bp_cls" -eq 1 ]; then
+        # The classic protection requires checks: it must not be enforced for admins.
+        # The rulesets are looked at too (they bind even where this one does not).
+        { _bp_admin && { _bp_raw="$(_gh_try GET "$_GH_API/branches/$_bp_enc/protection/enforce_admins")" \
+            && printf '%s' "$_bp_raw" | _bp_py enforce; }; } || { echo checks; exit 1; }
+      fi
+      _bp_raw="$(_gh_try GET "$_GH_API/rules/branches/$_bp_enc")" || { [ "$_bp_cls" -eq 1 ] && { echo checks; exit 1; }; exit 2; }
       _bp_rc=0; printf '%s' "$_bp_raw" | _bp_has rules || _bp_rc=$?
-      case "$_bp_rc" in 0) echo checks; exit 1 ;; 1) echo open; return 0 ;; *) exit 2 ;; esac
+      case "$_bp_rc" in
+        0)
+          { _bp_ids="$(printf '%s' "$_bp_raw" | _bp_py ids)" && _bp_admin && _bp_ruleset_bypass "$_bp_ids"; } \
+            && { echo checks-bypass; exit 1; }
+          echo checks; exit 1 ;;
+        1) [ "$_bp_cls" -eq 0 ] || { echo checks-bypass; exit 1; }
+           echo open; return 0 ;;
+        *) [ "$_bp_cls" -eq 0 ] || { echo checks; exit 1; }
+           exit 2 ;;
+      esac
       ;;
     pr-state)
       # pr-state <n> (#1057): open, closed or merged, from the one pulls/<n> read.
@@ -11251,9 +11372,10 @@ case "$VERB" in
       exit 2
     fi
     ;;
-  enqueue-pr|rate-limit)
+  enqueue-pr|rate-limit|cancel-pr-runs)
     # (#932) GitHub's merge queue only: no GitLab merge train or Azure equivalent.
     # (#1004) rate-limit reads GitHub's quota; no other provider has one.
+    # (#1081) cancel-pr-runs cancels GitHub Actions runs; nothing is cancelled elsewhere.
     if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ]; then
       echo "pipeline-vcs: $VERB: not implemented for provider '$PROVIDER'" >&2
       exit 2
@@ -12313,7 +12435,20 @@ if [ "$VERB" = "post-approval" ]; then
         _pa_ci_flag="--require-ci"
         _vcs_ci_gate_qa "$_pa_n" "$_pa_sha" || exit 1
         ;;
-      1) ;;
+      1)
+        # The queue's candidate CI mode (#1081): the PR has no CI of its own (it is a
+        # draft the merge queue merges after its candidate's CI), so a missing or
+        # pending required CI is no reason to refuse; a required check that ran on
+        # this head and is red still is.
+        if [ -f "$SCRIPT_DIR/pipeline-draft-check.sh" ] \
+          && [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" queue-ci 2>/dev/null)" = candidate ]; then
+          _vcs_ci_read "$_pa_n"
+          if [ "$_CI_KIND" = failed ]; then
+            echo "pipeline-vcs: post-approval: qa refused: required CI failed${_CI_NAMES:+: $_CI_NAMES}" >&2
+            exit 1
+          fi
+        fi
+        ;;
       *)
         # The resolver could not answer: QA ran with no pre-QA CI wait in this
         # mode, so skipping the check could approve a red head. Refuse.

@@ -8,12 +8,15 @@ caller's cwd and environment off sys.path). The callers are thin wrappers:
                 owners, in-flight, the priority of the queued and in-flight
                 issues, and the claim filter of #560). Options as
                 `--name value` pairs: vcs roles me merge-auto required-checks
-                pr-draft ready-gate fix-on-first-findings required-when
+                pr-draft ready-gate queue-ci fix-on-first-findings required-when
                 talos-labels branch-prefixes base-branch. `fix-on-first-findings` is `true`
                 (roles.fix_on_first_findings, #833: on a ready PR qa is routed
                 after the review roles too) or empty. `ready-gate` is
                 `qa-local` (pr.ready_gate, #535: on a draft PR qa is routed last,
-                after every other enabled approval) or empty/off. `required-when`
+                after every other enabled approval) or empty/off. `queue-ci` is
+                `candidate` (the queue's candidate CI mode, #1081: the same qa-last routing, and a
+                draft PR whose approvals are all current is routed to `merge`, not
+                to the ready wait) or empty/pr. `required-when`
                 is `yes` when roles.required_when is set (#835): each PR's review
                 roles are then narrowed by `pipeline-vcs.sh required-roles`, the
                 one resolver; no key (`no`), no call. `issue` (#1038) scopes the
@@ -291,9 +294,15 @@ def next_stage(n, labels, issue_labels, enabled):
         # CI run is never spent on a head QA would reject. Only here, after every
         # other enabled approval is fresh; a ready PR keeps QA first (above).
         # A lost qa:pass is not a reason to run QA again here either (#521).
-        if opts.get('ready-gate') == 'qa-local' and 'qa' in enabled \
+        # The queue's candidate CI mode (#1081) runs QA the same way, on the draft.
+        candidate = opts.get('queue-ci') == 'candidate'
+        if (opts.get('ready-gate') == 'qa-local' or candidate) and 'qa' in enabled \
                 and (('qa:pass' not in labels and 'qa' not in lost) or 'qa' in stale):
             return 'qa'
+        if candidate:
+            # Every approval is current and the PR stays a draft until the merge
+            # queue merges it: the merge gate enqueues it, no ready-pr, no CI wait.
+            return 'merge' if opts.get('merge-auto') == 'true' else 'human-merge'
         return 'ready'
     if qa_last and 'qa' in enabled and (('qa:pass' not in labels and 'qa' not in lost) or 'qa' in stale):
         return 'qa'
