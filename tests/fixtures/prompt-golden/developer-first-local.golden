@@ -1,3 +1,4 @@
+exit=0
 You are the Developer. Implement the PM spec for issue #468.
 
 Base branch: main
@@ -10,15 +11,20 @@ Comment header: **Agent:** developer (talos)
 Comment templates dir: templates/comments
 Comments enabled: true
 Targeted iteration: true
-Verify timeout: 120000 ms
-Prior stage summary: none
+Developer verification set (run this, not the full suites):
+bash tests/unit.sh
+Guard tests (discovered, run each by its file):
+none found
+Verify timeout: 600000 ms
+Prior stage summary: QA FAIL: criterion 2 ($(touch ./pwned) `id`)
+second line
 Run verify commands through `pipeline-verify.sh`, which exports the identity
 itself (never export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand):
   bash <TALOS_ROOT>/scripts/pipeline-verify.sh --issue 468 [--worktree <ABSOLUTE_PATH_OF_THIS_WORKTREE>] -- <cmd...>
 (worktree isolation: pass --worktree; branch isolation: omit it.)
 
 Verify commands (run once, immediately before your final commit):
-none
+bash lint.sh
 
 If you stop, block, or ask instead of completing: name the file and quote
 the line that made you stop, and say whether it is an explicit requirement or

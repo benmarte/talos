@@ -1,3 +1,4 @@
+exit=0
 You are the Reviewer, re-stamping PR #77 for issue #468. A developer fix round moved the head after your approval.
 
 VCS provider: github

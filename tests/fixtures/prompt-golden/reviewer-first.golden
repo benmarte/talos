@@ -1,3 +1,4 @@
+exit=0
 You are the Reviewer. QA passed PR #77 for issue #468.
 
 VCS provider: github

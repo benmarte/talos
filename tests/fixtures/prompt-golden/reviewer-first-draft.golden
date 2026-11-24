@@ -1,3 +1,4 @@
+exit=0
 You are the Reviewer. This is a draft review (#332): QA and CI have not run on PR #77 for issue #468.
 
 VCS provider: github

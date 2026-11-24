@@ -132,3 +132,4 @@ verbs:
                                      exits 0 with a message; a refused read or
                                      write exits 1 with the provider's status
   help                              this text
+exit=0
