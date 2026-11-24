@@ -123,6 +123,7 @@ TALOS_MARKERS=(
   talos:needs-owner
   talos:reviewed
   talos:qa-verdict
+  talos:blocked-by
   talos:ci-rerun
   talos:review-roles
   talos:forbidden-files-active
