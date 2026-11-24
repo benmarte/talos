@@ -372,11 +372,14 @@
 #           stop reason=context-budget size=<n> budget=<b>
 #           resume=/talos:pipeline
 #         An unknown size is `warn reason=context-unknown` beside the answer.
-# next-reasons: usage state-unavailable unsupported-verb:<provider-verb> max-fix-attempts max-total-dispatches budget-exceeded record-failed context-budget context-unknown duplicate-pr
+#         A dispatch or merge answer with execution.orchestrator: llm outside `run`
+#         whose lease has no live holder process (TALOS_LEASE_PID unset or dead,
+#         see Lease) carries `warn reason=lease-holder-unset` beside the answer.
+# next-reasons: usage state-unavailable unsupported-verb:<provider-verb> max-fix-attempts max-total-dispatches budget-exceeded record-failed context-budget context-unknown lease-holder-unset duplicate-pr
 #   stop: usage state-unavailable unsupported-verb:<provider-verb> max-fix-attempts
 #         max-total-dispatches budget-exceeded record-failed context-budget duplicate-pr
 #         (exit 2 for usage; exit 0 for context-budget and duplicate-pr; else 1)
-#   warn: context-unknown
+#   warn: context-unknown lease-holder-unset
 #   wait: draft ci human-merge blocked owner lease none dependency batched cap unassigned
 #
 # map     The project map (#614): one self-contained HTML page for this repository
@@ -534,6 +537,13 @@
 #         line whose holder process is gone is reclaimed once older than
 #         TALOS_LEASE_RECLAIM_S (default 10 s). `lease prune` removes every ledger
 #         line no reader counts as a lease, one `pruned issue=<N>` line each.
+#         The line's pid is TALOS_RUN_PID (the `run` driver, which also owns the
+#         lease), else TALOS_LEASE_PID, else the `next` shell's own pid. In the LLM
+#         loop every `next` is a fresh shell whose pid is dead on return, so pass
+#         TALOS_LEASE_PID=<pid of a process that lives as long as the session> on
+#         every `next`, `done` and `post-merge`: the lease then stays held (as in
+#         flight, never the caller's own) until `done`/`post-merge` releases it.
+#         TALOS_LEASE_PID changes nothing else (no context-budget or map change).
 # lease-reasons: lock-timeout ledger-unavailable
 #   stop: usage lock-timeout ledger-unavailable scripts-missing python-missing
 #         scratch-unavailable config-unreadable (exit 2 for usage; else 1)
@@ -4391,6 +4401,22 @@ _talos_lease_pid_live() {
   kill -0 "$1" 2>/dev/null
 }
 
+# _talos_lease_holder_pid: the pid a new lease line carries, the process whose
+# life keeps the lease alive (#1076): TALOS_RUN_PID (the `run` driver, which also
+# owns the lease), else TALOS_LEASE_PID (the LLM loop's session-long process; it
+# never marks the lease as the caller's own: only TALOS_RUN_PID and `$$` do),
+# else `$$`. A TALOS_LEASE_PID that is not a number is unset.
+_talos_lease_holder_pid() {
+  if [ -n "${TALOS_RUN_PID:-}" ]; then
+    printf '%s' "$TALOS_RUN_PID"
+  else
+    case "${TALOS_LEASE_PID:-}" in
+      ''|*[!0-9]*) printf '%s' "$$" ;;
+      *) printf '%s' "$TALOS_LEASE_PID" ;;
+    esac
+  fi
+}
+
 # _talos_lease_reclaimable <pid> <held> <now>: 0 the holder is gone and the
 # line is old enough (the line is NOT a lease); 1 it is still a lease. The
 # single decider (#522, AC4): no caller runs `kill -0` on a raw pid field.
@@ -4544,7 +4570,7 @@ _talos_lease() {
   _TALOS_LEASE_RECLAIMED="$_LS_RECLAIMED"
   _tmp="${_f}.tmp.$$"
   if { grep -v -e "^issue=$_issue " "$_f" 2>/dev/null || true
-       printf 'issue=%s held=%s expires=%s pid=%s\n' "$_issue" "$_now" "$((_now + _ttl))" "${TALOS_RUN_PID:-$$}"
+       printf 'issue=%s held=%s expires=%s pid=%s\n' "$_issue" "$_now" "$((_now + _ttl))" "$(_talos_lease_holder_pid)"
      } > "$_tmp" 2>/dev/null && mv "$_tmp" "$_f" 2>/dev/null; then
     _rc=0
   else
@@ -5488,6 +5514,12 @@ _talos_next() {
       _talos_emit_next_wait "action=wait reason=lease retry_after_s=${TALOS_LEASE_LOCK_S:-10}"
       _talos_end ;;
   esac
+  # The lease just taken is stamped with $$ (dead on return) unless a session-long
+  # process keeps it alive (#1076): under the LLM loop, outside `run`, say so.
+  if [ -z "${TALOS_RUN_PID:-}" ] && ! _talos_lease_pid_live "${TALOS_LEASE_PID:-}" \
+     && _talos_cfg_is execution.orchestrator llm; then
+    _talos_warn lease-holder-unset
+  fi
   _talos_emit_next "$_a$(_talos_next_ref "$_a")"
   _talos_flush
 }

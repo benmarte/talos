@@ -57,6 +57,9 @@ state() {  # $1 = prs JSON, $2 = queued JSON, $3 = inflight JSON
 }
 LEASE="$SANDBOX/.git/talos-lease.ledger"
 lease_reset() { rm -rf "$LEASE" "${LEASE:?}.lock.d"; }
+# This shell is the live lease holder (#1076): no `warn reason=lease-holder-unset`
+# beside the answers pinned below; each case resets the lease it took.
+export TALOS_LEASE_PID="$$"
 nx() { OUT="$(bash "$TN" next "$@" 2>"$ERR")"; RC=$?; }
 
 # A transcript whose latest call carries <n> tokens of context (cache read).

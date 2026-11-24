@@ -80,6 +80,7 @@ wait "$DEAD" 2>/dev/null
 # ── AC1: a live TALOS_LEASE_PID keeps the lease past the reclaim guard ────────
 reset_leases
 nx "$T0" TALOS_LEASE_PID="$LIVE"
+OUT_LIVE="$OUT"
 assert_contains "$OUT" "action=dispatch" "AC1 control: next dispatches the issue" "$(cat "$ERR")"
 assert_eq "$LIVE" "$(line_pid)" "AC1 the lease line carries TALOS_LEASE_PID"
 nx "$((T0 + GUARD + 50))" TALOS_LEASE_PID="$LIVE"
@@ -108,6 +109,7 @@ assert_contains "$OUT" "action=dispatch" "AC2 after done the issue can be routed
 # ── AC3: a dead TALOS_LEASE_PID is reclaimed like any dead holder ─────────────
 reset_leases
 nx "$T0" TALOS_LEASE_PID="$DEAD"
+OUT_DEAD="$OUT"
 assert_eq "$DEAD" "$(line_pid)" "AC3 control: the dead pid is the line's pid"
 nx "$((T0 + GUARD + 50))" TALOS_LEASE_PID="$DEAD"
 assert_contains "$(cat "$ERR")" "lease reclaimed from dead holder issue=$N" "AC3 the dead holder's lease is reclaimed after the guard"
@@ -118,12 +120,8 @@ reset_leases
 nx "$T0"
 assert_contains "$OUT" "warn reason=lease-holder-unset" "AC4 a dispatch with TALOS_LEASE_PID unset warns"
 assert_contains "$OUT" "action=dispatch" "AC4 the warn sits beside the dispatch answer"
-reset_leases
-nx "$T0" TALOS_LEASE_PID="$LIVE"
-assert_not_contains "$OUT" "lease-holder-unset" "AC4 a live TALOS_LEASE_PID does not warn"
-reset_leases
-nx "$T0" TALOS_LEASE_PID="$DEAD"
-assert_contains "$OUT" "warn reason=lease-holder-unset" "AC4 a TALOS_LEASE_PID naming no live process warns"
+assert_not_contains "$OUT_LIVE" "lease-holder-unset" "AC4 a live TALOS_LEASE_PID does not warn"
+assert_contains "$OUT_DEAD" "warn reason=lease-holder-unset" "AC4 a TALOS_LEASE_PID naming no live process warns"
 reset_leases
 nx "$T0" TALOS_RUN_PID="$LIVE"
 assert_not_contains "$OUT" "lease-holder-unset" "AC4 under run (TALOS_RUN_PID set) it never warns"
@@ -144,8 +142,6 @@ nx "$T0" TALOS_RUN_PID="$LIVE" TALOS_LEASE_PID="$$"
 assert_eq "$LIVE" "$(line_pid)" "AC5 with both set, the lease line carries TALOS_RUN_PID"
 own_check TALOS_RUN_PID="$LIVE" TALOS_LEASE_PID="$$"
 assert_contains "$OUT" "rc=0" "AC5 with both set, the lease is re-entrant for the run"
-reset_leases
-nx "$T0" TALOS_LEASE_PID="$LIVE"
-assert_contains "$OUT" "warn reason=context-unknown" "AC5 TALOS_LEASE_PID alone leaves the context budget check on"
+assert_contains "$OUT_LIVE" "warn reason=context-unknown" "AC5 TALOS_LEASE_PID alone leaves the context budget check on"
 
 finish
