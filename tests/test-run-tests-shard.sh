@@ -59,7 +59,9 @@ fi
 # a pattern composes with a shard: a subset of that shard, nothing outside it
 sub="$(bash "$REAL_RUN_TESTS" --shard 1/4 --list notify 2>/dev/null)"
 shard1="$(cat "$SHARDS_DIR/1-of-4")"
-extra="$(printf '%s\n' "$sub" | grep -v '^$' | grep -vxF "$shard1" || true)"
+# A shard whose slice of the pattern is empty prints "no tests in this shard" (that is
+# not a file name): which shard holds the pattern's files moves with tests/timings.txt.
+extra="$(printf '%s\n' "$sub" | grep -v '^$' | grep -vx 'no tests in this shard' | grep -vxF "$shard1" || true)"
 assert_eq "" "$extra" "pattern + shard selects only files of that shard"
 
 # bad specs are a usage error (rc 2), not a silent full run
