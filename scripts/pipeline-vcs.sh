@@ -393,10 +393,12 @@
 #                                             provider or an unreadable log is one
 #                                             `ci-failure-excerpt: unavailable (<why>)`
 #                                             line; always exit 0.
-#   rerun-ci <n>                             Re-run failed CI for the PR head SHA
-#   rerun-ci --sha <sha>                      Re-run the failed jobs of the failed
-#                                             runs of a commit that is no PR (#950,
-#                                             the merge queue's candidate). github
+#   rerun-ci <n>                             Re-run failed CI for the PR head SHA: only
+#                                             each workflow's newest run is re-run (#1077)
+#   rerun-ci --sha <sha>                      Re-run the failed jobs of each workflow's
+#                                             newest run, when failed, of a commit
+#                                             that is no PR (#950, the merge
+#                                             queue's candidate). github
 #                                             only; every other provider exits 1
 #                                             with one stderr line. Exit 0 only when
 #                                             a re-run started; 2 when no run has
@@ -6573,7 +6575,7 @@ sys.stdout.write(json.load(sys.stdin).get('body') or '')
       fi
       ;;
     rerun-ci)
-      local n="${1:-}" _rr_sha _rr_runs _rr_ids _rr_id _rr_what
+      local n="${1:-}" _rr_sha _rr_runs _rr_ids _rr_id _rr_what _rr_running
       if [ -n "$_MERGE_SHA" ]; then
         # --sha (#950): a commit with no PR; there is no PR number to take.
         [ -z "$n" ] || { echo "pipeline-vcs: rerun-ci: --sha takes no PR number" >&2; exit 1; }
@@ -6587,23 +6589,42 @@ sys.stdout.write(json.load(sys.stdin).get('body') or '')
         [ -n "$_rr_sha" ] || { echo "pipeline-vcs: could not resolve head SHA for PR #$n" >&2; exit 1; }
       fi
       _rr_runs="$(_gh_pages "$_GH_API/actions/runs?head_sha=$_rr_sha&per_page=100" "" "workflow runs" workflow_runs)" || exit 1
+      # Only each workflow's newest run counts (#1077): an older run that a newer
+      # run of the same workflow superseded (often cancelled by a concurrency
+      # group) is never re-run, or it cancels the current run. Newest = highest
+      # run_number, then highest id; a run with no workflow_id is its own
+      # workflow. Prints the ids of the failed newest runs, then `running` when
+      # a newest run has not completed.
       _rr_ids="$(printf '%s' "$_rr_runs" | python3 -I -c "
 import json, sys
+newest = {}
 for r in json.load(sys.stdin)['workflow_runs']:
+    wf = r.get('workflow_id')
+    key = ('wf', wf) if wf is not None else ('run', r['id'])
+    rank = (r.get('run_number') or 0, r['id'])
+    if key not in newest or rank > newest[key][0]:
+        newest[key] = (rank, r)
+running = False
+for _, r in sorted(newest.values(), key=lambda t: t[0]):
     if r.get('conclusion') in ('failure', 'timed_out', 'cancelled'):
-        print(r['id'])")"
+        print(r['id'])
+    elif r.get('conclusion') is None and r.get('status') != 'completed':
+        running = True
+if running:
+    print('running')")"
+      _rr_running=false
+      case $'\n'"$_rr_ids"$'\n' in *$'\nrunning\n'*) _rr_running=true; _rr_ids="$(printf '%s\n' "$_rr_ids" | grep -vx running || true)" ;; esac
       if [ -z "$_rr_ids" ]; then
+        if [ "$_rr_running" = "true" ]; then
+          # A newest run still in progress has no failed conclusion yet
+          # (rerun-failed-jobs needs a finished run). --sha (#950) answers for
+          # the queue, which reads a started re-run as exit 0: nothing re-run is
+          # never 0, so 2 is "ask again"; the PR form just reports it.
+          echo "rerun-ci: runs of $_rr_what ($_rr_sha) are still in progress; nothing to re-run yet"
+          [ -n "$_MERGE_SHA" ] && return 2
+          return 0
+        fi
         if [ -n "$_MERGE_SHA" ]; then
-          # --sha (#950) answers for the queue, which reads a started re-run as
-          # exit 0: nothing re-run is never 0. A run still in progress has no
-          # failed conclusion yet (rerun-failed-jobs needs a finished run), so 2
-          # is "ask again"; no run at all is 1.
-          if printf '%s' "$_rr_runs" | python3 -I -c "
-import json, sys
-sys.exit(0 if any(r.get('status') != 'completed' for r in json.load(sys.stdin)['workflow_runs']) else 1)"; then
-            echo "rerun-ci: runs of $_rr_what ($_rr_sha) are still in progress; nothing to re-run yet"
-            return 2
-          fi
           echo "rerun-ci: no failed runs found for $_rr_what ($_rr_sha)" >&2
           return 1
         fi
