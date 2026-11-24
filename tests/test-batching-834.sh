@@ -266,6 +266,7 @@ post_reset() {
   rm -rf "${PSTUB:?}"; mkdir -p "$PSTUB"
   printf '%s' '{"vcs": {"provider": "github"}}' > "$SANDBOX/talos.pipeline.json"
   pset current-user 0 "bot"
+  pset list-assignees 2 "" "not implemented"   # no assignees: sweep stays unfiltered (#1075)
   pset list-prs 0 "[]"
   pset read-comments 0 '{"comments":[]}'
   pset worktree.to-base 0 "talos:checkout state=kept"
