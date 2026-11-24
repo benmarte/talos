@@ -169,6 +169,7 @@
 2 test-instructions.sh
 2 test-isolation.sh
 13 test-lean-stage-prompts.sh
+55 test-lease-holder-pid.sh
 72 test-lease-reset-helper.sh
 160 test-llm-profiles.sh
 20 test-lock-claim-atomic.sh
