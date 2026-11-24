@@ -179,4 +179,22 @@ check "AC3 a pr-head that cannot be read stops the run with the same line and ex
 run_tail_output clean-wait > "$SANDBOX/actual.run"
 check "AC3 a clean wait ends the run with the same line and exit code" run-clean-wait "$SANDBOX/actual.run"
 
+# A scratch write fed through a pipe (the fix-round block) still stops the run
+# with `stop reason=scratch-unavailable` and exit 1, as the old
+# `> "$f" || _talos_stop` did. A `mktemp` shim makes the block's scratch file a
+# directory inside the cache dir, so only that one write fails.
+SHIM="$SANDBOX/shim-bin"
+mkdir -p "$SHIM"
+REAL_MKTEMP="$(command -v mktemp)"
+printf '#!/bin/sh\nd="$(%s "$@")" || exit 1\ncase "$d" in *talos-cfg-cache.*) mkdir "$d/pb.FIX_ROUND_LINES" ;; esac\nprintf "%%s\\n" "$d"\n' "$REAL_MKTEMP" > "$SHIM/mktemp"
+chmod +x "$SHIM/mktemp"
+reset_cfg
+env -u PIPELINE_CONFIG PATH="$SHIM:$PATH" bash "$TALOS_ROOT/scripts/talos.sh" prompt developer --issue 468 --pr 77 --shape fix-round > "$SANDBOX/scratch.out" 2> "$SANDBOX/scratch.err"
+scratch_rc=$?
+if [ "$scratch_rc" -eq 1 ] && [ "$(cat "$SANDBOX/scratch.out")" = 'stop reason=scratch-unavailable' ]; then
+  pass "AC3 a failed scratch write behind a pipe stops the run with scratch-unavailable"
+else
+  fail "AC3 a failed scratch write behind a pipe stops the run with scratch-unavailable" "rc=$scratch_rc out=$(cat "$SANDBOX/scratch.out")"
+fi
+
 finish
