@@ -46,7 +46,7 @@
 # no event carrying the field and no transcript figure the segment is absent:
 # an unknown figure is never printed as 0.
 #
-# Which issue: the current branch (^(fix|feat)/issue-<N>), else the newest event's.
+# Which issue: the current branch (^<prefix>/issue-<N>), else the newest event's.
 # An issue with a `merged` event is no longer active: the idle line.
 #
 # Links (#883): the line ends with ` · dashboard ↗` and ` · board ↗`, OSC 8
@@ -119,6 +119,11 @@ if [ "${TALOS_STATUSLINE_LINKS:-}" != 0 ]; then
 fi
 
 exec 3<&0 || exec 3</dev/null
+# The branch prefixes of `<prefix>/issue-<N>`: the one shared list (pipeline-contract.sh).
+TALOS_BRANCH_PREFIX_ALT=""
+# shellcheck disable=SC1091
+[ ! -f "$SCRIPT_DIR/pipeline-contract.sh" ] || . "$SCRIPT_DIR/pipeline-contract.sh" 2>/dev/null || :
+export TALOS_BRANCH_PREFIX_ALT
 python3 -I -B - "$SCRIPT_DIR" "$_common" "$_top" "$_branch" "$_remote" <<'PYEOF'
 import calendar, glob, importlib, json, os, re, select, signal, stat, sys, time, urllib.parse
 
@@ -322,7 +327,8 @@ def issue_of(rec):
     return n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else None
 
 
-m = re.match(r"(?:fix|feat)/issue-([0-9]{1,9})(?:-|$)", branch)
+prefixes = os.environ.get("TALOS_BRANCH_PREFIX_ALT", "")  # the shared list, pipeline-contract.sh
+m = re.match(r"(?:%s)/issue-([0-9]{1,9})(?:-|$)" % prefixes, branch) if re.fullmatch(r"[a-z]+(\|[a-z]+)*", prefixes) else None
 issue = int(m.group(1)) if m else next((issue_of(r) for r in reversed(recs) if issue_of(r)), None)
 if issue is None:
     idle("no active issue")

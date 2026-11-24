@@ -43,6 +43,7 @@
 16 test-board-sync.sh
 2 test-body-file-extension.sh
 7 test-bootstrap-board.sh
+8 test-branch-prefix-adoption.sh
 26 test-budget-guard.sh
 18 test-buzz-entry-904.sh
 1 test-buzz-open-url-917.sh

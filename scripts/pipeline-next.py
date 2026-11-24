@@ -9,7 +9,7 @@ caller's cwd and environment off sys.path). The callers are thin wrappers:
                 issues, and the claim filter of #560). Options as
                 `--name value` pairs: vcs roles me merge-auto required-checks
                 pr-draft ready-gate fix-on-first-findings required-when
-                talos-labels base-branch. `fix-on-first-findings` is `true`
+                talos-labels branch-prefixes base-branch. `fix-on-first-findings` is `true`
                 (roles.fix_on_first_findings, #833: on a ready PR qa is routed
                 after the review roles too) or empty. `ready-gate` is
                 `qa-local` (pr.ready_gate, #535: on a draft PR qa is routed last,
@@ -52,7 +52,9 @@ NEEDS_OWNER_LABEL = 'pipeline:needs-owner'
 # machine's mid-flight stages (their next stage comes from the issue-side routing).
 # A decomposed epic parent is an index no stage is dispatched onto (#524).
 INFLIGHT_LABELS = frozenset((CONFIRMED_LABEL, DEV_LABEL))
-BRANCH_RE = re.compile(r'^(?:fix|feat)/issue-([0-9]{1,9})(?:-|\Z)')
+# `<prefix>/issue-<N>[-slug]`: the prefixes are the collect's --branch-prefixes
+# (TALOS_BRANCH_PREFIXES of pipeline-contract.sh, the one shared list).
+BRANCH_TAIL = r'/issue-([0-9]{1,9})(?:-|\Z)'
 SHA_RE = re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
 CAP_RE = re.compile(r'result capped at')
 STALE_RE = re.compile(r'^stale role=([a-z]+) label=')
@@ -481,7 +483,12 @@ def read_owners():
     return owners
 
 
-def classify_prs(raw_prs, talos_labels, claims, base):
+def branch_re(prefixes):
+    """The head-branch pattern of a pipeline PR for these prefixes (#1073)."""
+    return re.compile('^(?:' + '|'.join(re.escape(p) for p in prefixes) + ')' + BRANCH_TAIL)
+
+
+def classify_prs(raw_prs, talos_labels, claims, base, branch_rx):
     """(eligible (n, labels, issue) in PR order, the count of ignored PRs, the blocked
     PRs). Which PRs are the pipeline's: a pipeline-style head branch alone is not
     enough, anyone can open a PR named fix/issue-3-x from a fork. Same base, and
@@ -491,7 +498,7 @@ def classify_prs(raw_prs, talos_labels, claims, base):
     for it in sorted((i for i in raw_prs if _num(i)), key=lambda i: i['number']):
         n, labels = it['number'], _label_set(it)
         branch = it.get('headRefName')
-        m = BRANCH_RE.match(branch) if isinstance(branch, str) else None
+        m = branch_rx.match(branch) if isinstance(branch, str) else None
         pipeline_pr = bool(m) and it.get('baseRefName') == base \
             and bool(labels & talos_labels or it.get('isCrossRepository') is False)
         # A pipeline PR whose issue is another operator's is theirs: not routed,
@@ -614,6 +621,9 @@ def collect():
     talos_labels = frozenset(x for x in opts.get('talos-labels', '').split(',') if x)
     if not talos_labels:
         die('no Talos label list (pipeline-contract.sh missing or empty)')
+    prefixes = [x for x in opts.get('branch-prefixes', '').split(',') if re.fullmatch(r'[a-z]{1,20}', x)]
+    if not prefixes:
+        die('no branch prefix list (pipeline-contract.sh missing or empty)')
     raw_prs, raw_issues, capped = read_lists(talos_labels)
     issues = dict((_num(i), _label_set(i)) for i in raw_issues if _num(i))
     claims = Claims(opts.get('me', ''))
@@ -622,7 +632,7 @@ def collect():
         if claims.me:
             issues = claims.split(issues, amap, talos_labels)
     owners = read_owners()
-    eligible, ignored, blocked = classify_prs(raw_prs, talos_labels, claims, opts['base-branch'])
+    eligible, ignored, blocked = classify_prs(raw_prs, talos_labels, claims, opts['base-branch'], branch_re(prefixes))
     if claims.me:
         owners = claims.keep_owners(owners)
     blocked += [('issue', n) for n in issues if BLOCKED_LABEL in issues[n]]
@@ -655,9 +665,23 @@ def collect():
 
 # ── pr-side: the PR-side half of `next` ──────────────────────────────────────
 
+def duplicate_stop(prs, issue=None):
+    """Stop (#1073) when one issue has more than one open pipeline PR: the lowest
+    such issue, or just `issue`. An operator chooses which PR stays; routing on
+    would open a third one. `prs=<a,b>` lists the PRs ascending."""
+    by_issue = {}
+    for p in prs:
+        if isinstance(p, dict) and _num(p, 'n') and _num(p, 'issue'):
+            by_issue.setdefault(p['issue'], []).append(p['n'])
+    for n in sorted(by_issue if issue is None else [issue]):
+        if len(by_issue.get(n, [])) > 1:
+            raise Stop('duplicate-pr issue=%d prs=%s' % (n, ','.join(str(x) for x in sorted(by_issue[n]))))
+
+
 def pr_side(data):
     """The lowest non-owner PR's action, else the sentinel `issue-side`. The
     PRs are already ordered by the collect; the state is trusted, no PR text is."""
+    duplicate_stop(data['prs'])
     answered = answered_owner_prs(data)
     prs = sorted((p for p in data['prs'] if not p.get('owner') or p['n'] in answered), key=lambda p: p['n'])
     if prs:
@@ -1025,6 +1049,7 @@ class Router:
 
     def route_named(self, n):
         """`next --issue <N>`, and each in-flight candidate of the untargeted walk."""
+        duplicate_stop(self.prs, n)
         self.owner_gate(n)
         if n in self.qset:
             self.adopt(n)

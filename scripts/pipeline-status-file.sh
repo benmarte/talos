@@ -23,8 +23,8 @@
 # "queued": [...], "held": [...], "inflight": [...], "owners": [...],
 # "capped": [...]}
 #   prs       the open pipeline PRs, ascending, each {n, issue, head, owner, stage}.
-#             A pipeline PR has a head branch matching ^(fix|feat)/issue-<digits>
-#             (-|$), baseRefName equal to the base branch, and either a Talos label
+#             A pipeline PR has a head branch matching ^<prefix>/issue-<digits>
+#             (-|$) (prefix: TALOS_BRANCH_PREFIXES of pipeline-contract.sh), baseRefName equal to the base branch, and either a Talos label
 #             (exactly a name in the stage or approval lists of pipeline-contract.sh)
 #             or a listing that says isCrossRepository is false: a fork PR cannot
 #             claim a pipeline slot by its branch name. Only the lowest-numbered PRs
@@ -206,5 +206,5 @@ python3 -I "$SCRIPT_DIR/pipeline-next.py" collect \
   ${_sf_scope:+--issue "$_sf_scope"} \
   --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --roles "$roles" --me "$me" \
   --merge-auto "$auto" --required-checks "$checks" --pr-draft "$draft" --ready-gate "$ready_gate" --fix-on-first-findings "$fix_first" --required-when "$required_when" \
-  --talos-labels "$talos_labels" --base-branch "$BASE_BRANCH" \
+  --talos-labels "$talos_labels" --branch-prefixes "${TALOS_BRANCH_PREFIX_CSV:-}" --base-branch "$BASE_BRANCH" \
   --meta "$SCRIPT_DIR/pipeline-meta.sh" --repo "$sf_repo" </dev/null

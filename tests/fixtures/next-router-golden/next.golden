@@ -120,9 +120,8 @@ rc=0
 out: action=wait reason=draft pr=20 issue=3
 call: view-issue 3
 ## named-adopt-two-prs
-rc=0
-out: action=dispatch stage=docs pr=20 issue=3
-call: view-issue 3
+rc=1
+out: stop reason=duplicate-pr issue=3 prs=20,22
 ## named-adopt-unknown-stage
 rc=1
 out: stop reason=unsupported-verb:bogus

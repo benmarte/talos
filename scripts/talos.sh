@@ -121,7 +121,7 @@
 #            delete is `warn reason=cleanup-failed branch=<b>`);
 #         2. the queue, as `queue list` reads it: a failed read or a corrupt
 #            marker is wait reason=queue-state-unverified; none is verdict=empty;
-#         3. the first merge.queue_batch PRs, the issue from the fix|feat/issue-<N>
+#         3. the first merge.queue_batch PRs, the issue from the <prefix>/issue-<N>
 #            head branch (another head branch: queue-state-unverified);
 #         4. base head B, then each PR's queued head applied in queue order in a
 #            throwaway detached worktree by merge.method (squash: one commit;
@@ -360,6 +360,10 @@
 #         first and never dispatches past a ceiling:
 #           stop reason=max-fix-attempts|max-total-dispatches|budget-exceeded
 #         or stop reason=unsupported-verb:<verb> when the provider lacks a verb.
+#         An issue with more than one open pipeline PR (any prefix of
+#         TALOS_BRANCH_PREFIXES) is never routed: exit 0, nothing leased,
+#           stop reason=duplicate-pr issue=<n> prs=<a,b>
+#         so an operator chooses which PR stays.
 #         `next` leases the issue before answering dispatch or merge (see Lease).
 #         Context budget (#605), under ORCHESTRATOR=llm outside `run` only: at or
 #         over execution.context_budget_tokens (the latest call's context in the
@@ -368,10 +372,10 @@
 #           stop reason=context-budget size=<n> budget=<b>
 #           resume=/talos:pipeline
 #         An unknown size is `warn reason=context-unknown` beside the answer.
-# next-reasons: usage state-unavailable unsupported-verb:<provider-verb> max-fix-attempts max-total-dispatches budget-exceeded record-failed context-budget context-unknown
+# next-reasons: usage state-unavailable unsupported-verb:<provider-verb> max-fix-attempts max-total-dispatches budget-exceeded record-failed context-budget context-unknown duplicate-pr
 #   stop: usage state-unavailable unsupported-verb:<provider-verb> max-fix-attempts
-#         max-total-dispatches budget-exceeded record-failed context-budget
-#         (exit 2 for usage; exit 0 for context-budget; else 1)
+#         max-total-dispatches budget-exceeded record-failed context-budget duplicate-pr
+#         (exit 2 for usage; exit 0 for context-budget and duplicate-pr; else 1)
 #   warn: context-unknown
 #   wait: draft ci human-merge blocked owner lease none dependency batched cap unassigned
 #
@@ -491,14 +495,15 @@
 #         stage's final message never does (stderr has the `note` lines and the
 #         `dispatch-failed ... reason=<why>` line). The playbook's end-state
 #         table (skills/pipeline/SKILL.md) has one action for each end.
-# run-reasons: qa-comment-missing usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable map-failed worktree-unavailable same-verdict-same-head verify-timeout qa-flaky config-mutated environment issue-closed
+# run-reasons: qa-comment-missing usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable map-failed worktree-unavailable same-verdict-same-head verify-timeout qa-flaky config-mutated environment issue-closed duplicate-pr
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         state-unavailable ready-pr-failed draft-unverified head-unresolved
 #         merge-failed provider-failed config-mutated worktree-unavailable (exit 1; 2 for usage),
 #         and with exit 0 stop-requested iterations-exhausted stage-blocked
 #         qa-fail-unchanged-head spec-unusable fix-round-unchanged-head
 #         checkout-return-failed same-verdict-same-head qa-flaky issue-closed (#1057: the
-#         issue reads closed, or its PR merged, right before a dispatch); plus the stop reasons
+#         issue reads closed, or its PR merged, right before a dispatch) duplicate-pr
+#         (#1073: `next` found two open PRs for one issue); plus the stop reasons
 #         of `next`, passed through (exit 1)
 #   warn: notify-failed board-failed spend-upsert-failed lease-release-failed
 #         map-failed (the run's first map failure only, then the map is off for the
@@ -2341,7 +2346,8 @@ _talos_queue_run() {
   local _base _prefix _batch _method _tmo _rows _p _qh _qe _br _n _rx _b _t0=""
   local _picked="" _csv="" _size=0 _n1="" _branches=() _a _recuts=0 _stale=0 _prc=0 _retry _rt=0
   _talos_prepare queue pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-hooks.sh \
-                       pipeline-mergebase.sh pipeline-lock.sh
+                       pipeline-mergebase.sh pipeline-lock.sh pipeline-contract.sh
+  . "$SCRIPT_DIR/pipeline-contract.sh"
   _TALOS_RL_MODE=queue
   [ "$(cfg merge.queue)" = "talos" ] || _talos_verdict off
   _base="$(_talos_base_branch)"
@@ -2395,7 +2401,8 @@ _talos_queue_run() {
   _talos_queue_fresh
   [ -n "$_QFRESH" ] || _talos_queue_end empty
   _rows="$(printf '%s\n' "$_QFRESH" | head -n "$_batch")"
-  _rx='^(fix|feat)/issue-([0-9]+)(-|$)'
+  [ -n "${TALOS_BRANCH_PREFIX_ALT:-}" ] || _talos_stop scripts-missing
+  _rx="^($TALOS_BRANCH_PREFIX_ALT)/issue-([0-9]+)(-|\$)"
   while read -r _p _qh _qe _br; do
     [[ "$_br" =~ $_rx ]] || _talos_queue_end wait queue-state-unverified
     _branches+=("$_br")
@@ -2824,13 +2831,13 @@ sys.stdout.write(out + "\n")
 
 # The open pipeline PRs of a list-prs array, one line each `<pr> <issue> <blocked>`
 # (blocked is 1 or 0), ascending: the rule pipeline-status-file.sh applies (a
-# fix|feat/issue-<N> head, the base branch, and a Talos label or a PR that is not
+# <prefix>/issue-<N> head (the shared TALOS_BRANCH_PREFIXES), the base branch, and a Talos label or a PR that is not
 # from a fork). argv: the base branch, the Talos label names joined by commas, and
 # optionally `any`: no base, label or fork test (every open PR with an issue head).
 _TALOS_PRS_PY='
-import json, re, sys
+import json, os, re, sys
 base, talos, anyp = sys.argv[1], set(sys.argv[2].split(",")), len(sys.argv) > 3
-rx = re.compile(r"^(?:fix|feat)/issue-([0-9]{1,9})(?:-|\Z)")
+rx = re.compile(r"^(?:" + os.environ["TALOS_BRANCH_PREFIX_ALT"] + r")/issue-([0-9]{1,9})(?:-|\Z)")
 rows = []
 for p in json.load(sys.stdin):
     n, b = p.get("number"), p.get("headRefName")
@@ -2975,7 +2982,8 @@ _talos_pipeline_prs() {
   for _e in ${TALOS_STAGE_LABELS[@]+"${TALOS_STAGE_LABELS[@]}"} ${TALOS_APPROVAL_LABELS[@]+"${TALOS_APPROVAL_LABELS[@]}"}; do
     _l="$_l${_e%%|*},"
   done
-  python3 -I -c "$_TALOS_PRS_PY" "$(_talos_base_branch)" "$_l" ${2:+"$2"} <<< "$1"
+  [ -n "${TALOS_BRANCH_PREFIX_ALT:-}" ] || return 1
+  TALOS_BRANCH_PREFIX_ALT="$TALOS_BRANCH_PREFIX_ALT" python3 -I -c "$_TALOS_PRS_PY" "$(_talos_base_branch)" "$_l" ${2:+"$2"} <<< "$1"
 }
 
 # _talos_sibling <merged-issue> <pr>: bring one sibling PR's branch up to date
@@ -5411,6 +5419,7 @@ _talos_next() {
       # The one non-guessing exit: an unknown stage.
       case "$_a" in
         "stop reason=unsupported-verb:"*) _talos_stop "${_a#stop reason=}" ;;
+        "stop reason=duplicate-pr issue="*) _talos_stop "${_a#stop reason=}" 0 ;;
         *) _talos_stop state-unavailable ;;
       esac
     fi
@@ -5435,6 +5444,7 @@ _talos_next() {
     if [ "$_r" -ne 0 ]; then
       case "$_a" in
         "stop reason=rate-limited reset="*) _talos_rate_wait "rate-limited reset=${_a##*reset=}" ;;
+        "stop reason=duplicate-pr issue="*) _talos_stop "${_a#stop reason=}" 0 ;;
         "stop reason="*) _talos_stop "${_a#stop reason=}" ;;
         *) _talos_stop state-unavailable ;;
       esac
@@ -6110,6 +6120,7 @@ _talos_run_loop() {
             "action=wait reason="*) continue ;;
             "action=ask-owner"*)
               _talos_emit stop "$_act"; _talos_end ;;
+            "stop reason=duplicate-pr issue="*) _talos_emit stop "reason=${_act#stop reason=}"; _talos_end ;;
             "stop reason="*) _talos_stop "${_act#stop reason=}" ;;
             *) _talos_stop state-unavailable ;;
           esac
@@ -6137,6 +6148,9 @@ _talos_run_loop() {
             _talos_emit stop "$_act"
             _talos_end ;;
         esac ;;
+      "stop reason=duplicate-pr issue="*)
+        # Two open PRs for one issue (#1073): an operator chooses, clean end.
+        _talos_emit stop "reason=${_act#stop reason=}"; _talos_end ;;
       "stop reason="*)
         # A state-read failure (`next`'s own stop): not a clean end.
         _talos_stop "${_act#stop reason=}" ;;
