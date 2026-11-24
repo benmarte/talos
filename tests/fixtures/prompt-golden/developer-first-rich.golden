@@ -1,0 +1,36 @@
+You are the Developer. Implement the issue body (PM was skipped) for issue #468.
+
+Base branch: develop
+VCS provider: github
+Issue number: 468
+Talos scripts: <TALOS_ROOT>/scripts
+Talos templates: <TALOS_ROOT>/templates/comments
+Worktree path: <ABSOLUTE_PATH_OF_THIS_WORKTREE>
+You ARE worktree-isolated.
+Comment header: **Agent:** developer (talos)
+Comment templates dir: tpl/comments
+Comments enabled: true
+Targeted iteration: false
+Final verification: Tests: files only — CI is the full run (merge.required_checks). Before the final push run only the spec's `Tests:` files (through `verify.targeted_commands` where that applies) and each guard test by its file; run neither the full `verify` list nor the `verify.dev_tests` set.
+Guard tests (discovered, run each by its file):
+none found
+Required checks:
+ci / test
+ci / lint
+Verify timeout: 300000 ms; CI wait budget: 600 seconds
+Prior stage summary: QA FAIL: criterion 2 ($(touch ./pwned) `id`)
+second line
+Run verify commands through `pipeline-verify.sh`, which exports the identity
+itself (never export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand):
+  bash <TALOS_ROOT>/scripts/pipeline-verify.sh --issue 468 [--worktree <ABSOLUTE_PATH_OF_THIS_WORKTREE>] -- <cmd...>
+(worktree isolation: pass --worktree; branch isolation: omit it.)
+
+Verify commands (run once, immediately before your final commit):
+none: CI is the full run (merge.required_checks)
+
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
+End every background command and watch before your final message, and write nothing after the report.
+
+Your role profile carries the full procedure.
