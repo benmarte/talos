@@ -122,7 +122,11 @@
 #            delete is `warn reason=cleanup-failed branch=<b>`);
 #         2. the queue, as `queue list` reads it: a failed read or a corrupt
 #            marker is wait reason=queue-state-unverified; none is verdict=empty;
-#         3. the first merge.queue_batch PRs, the issue from the <prefix>/issue-<N>
+#         3. the first merge.queue_batch PRs (#1082: a solo PR, one that carries a
+#            merge.queue_solo_labels label or changes a path matching a
+#            merge.queue_solo_paths glob, or whose labels or changed files cannot be
+#            read, is batched alone: the batch stops before it, it heads the next
+#            pass's batch, and `solo=<pr>` is printed), the issue from the <prefix>/issue-<N>
 #            head branch (another head branch: queue-state-unverified);
 #         4. base head B, then each PR's queued head applied in queue order in a
 #            throwaway detached worktree by merge.method (squash: one commit;
@@ -2002,6 +2006,8 @@ _QR_BAD=""
 _QR_ISO=""
 _QR_POLLS=120
 _QR_BATCH=3
+_QR_SOLO_L=""
+_QR_SOLO_P=""
 # Sync then batch (#1042): the base's protection (open or protected, read once per
 # run), the git attributes file that makes merge.union_paths a union merge inside the
 # candidate (empty: none), and the PRs (" 12 ") that only applied that way and are
@@ -2449,6 +2455,64 @@ _talos_queue_sync() {
   [ "$_RC" -eq 0 ] || { _talos_emit pr "$_p"; _talos_queue_end wait queue-state-unverified; }
 }
 
+# Whether a changed path matches a merge.queue_solo_paths glob (argv: the globs,
+# one per line; stdin: the changed paths). Matched as merge.forbidden_files is:
+# fnmatchcase on the lowercased basename or full path. Prints 1 or 0.
+_TALOS_SOLO_PY='
+import fnmatch, os, sys
+pats = [p.strip().lower() for p in sys.argv[1].splitlines() if p.strip()]
+for path in (l.strip() for l in sys.stdin if l.strip()):
+    low = path.lower()
+    base = os.path.basename(low)
+    if any(fnmatch.fnmatchcase(base, p) or fnmatch.fnmatchcase(low, p) for p in pats):
+        print(1)
+        sys.exit(0)
+print(0)
+'
+
+# _talos_queue_solo <pr> (#1082): 0 when the PR is batched alone, 1 when it may
+# share a candidate. Solo: it carries a merge.queue_solo_labels label, or changes
+# a path matching merge.queue_solo_paths, or the read of its labels or changed
+# files fails (nothing is batched on a guess). A key left empty reads nothing.
+_talos_queue_solo() {
+  local _pr="$1" _l _n
+  if [ -n "$_QR_SOLO_L" ]; then
+    _talos_cap _vcs view-pr "$_pr"
+    [ "$_RC" -eq 0 ] || return 0
+    _l="$(_talos_labels "$_OUT")" || return 0
+    while IFS= read -r _n; do
+      [ -z "$_n" ] || [[ $'\n'"$_QR_SOLO_L"$'\n' != *$'\n'"$_n"$'\n'* ]] || return 0
+    done <<< "$_l"
+  fi
+  if [ -n "$_QR_SOLO_P" ]; then
+    _talos_cap _vcs pr-files "$_pr"
+    { [ "$_RC" -eq 0 ] && [ -n "$_OUT" ]; } || return 0
+    _n="$(python3 -I -c "$_TALOS_SOLO_PY" "$_QR_SOLO_P" <<< "$_OUT" 2>/dev/null)" || return 0
+    [ "$_n" = 0 ] || return 0
+  fi
+  return 1
+}
+
+# _talos_queue_pick <batch size> (#1082): the batch's rows in _QROWS_PICK, from
+# _QFRESH in queue order: up to <batch size> PRs, a solo PR alone (it stops the batch
+# before it, so it heads the next pass, and runs alone when it is first). `solo=<pr>`
+# is emitted for a solo PR held back or run alone.
+_talos_queue_pick() {
+  local _p _r _cnt=0
+  _QROWS_PICK=""
+  while read -r _p _r <&4; do
+    [ -n "$_p" ] || continue
+    if _talos_queue_solo "$_p"; then
+      _talos_emit solo "$_p"
+      [ "$_cnt" -gt 0 ] || { _QROWS_PICK="$_p $_r"; _cnt=1; }
+      break
+    fi
+    _QROWS_PICK="$_QROWS_PICK${_QROWS_PICK:+$'\n'}$_p $_r"
+    _cnt=$((_cnt + 1))
+    [ "$_cnt" -lt "$1" ] || break
+  done 4<<< "$_QFRESH"
+}
+
 _talos_queue_run() {
   local _base _prefix _batch _method _tmo _rows _p _qh _qe _br _n _rx _b _t0=""
   local _picked="" _csv="" _size=0 _n1="" _branches=() _a _recuts=0 _stale=0 _prc=0 _retry _rt=0
@@ -2474,6 +2538,8 @@ _talos_queue_run() {
   fi
   _QR_POLLS=$((10#$_tmo / 30))
   _QR_BATCH="$((10#$_batch))"
+  _QR_SOLO_L="$(cfg merge.queue_solo_labels)"
+  _QR_SOLO_P="$(cfg merge.queue_solo_paths)"
   # merge.queue_retry (#950): 0-3, the re-runs of a red candidate before it is
   # bisected and ejected. Exactly one digit, so a leading zero or 1.5 is refused.
   _retry="$(cfg merge.queue_retry)"
@@ -2509,7 +2575,8 @@ _talos_queue_run() {
   _talos_queue_load "$_base" || _talos_queue_end wait queue-state-unverified
   _talos_queue_fresh
   [ -n "$_QFRESH" ] || _talos_queue_end empty
-  _rows="$(printf '%s\n' "$_QFRESH" | head -n "$_batch")"
+  _talos_queue_pick "$_batch"
+  _rows="$_QROWS_PICK"
   [ -n "${TALOS_BRANCH_PREFIX_ALT:-}" ] || _talos_stop scripts-missing
   _rx="^($TALOS_BRANCH_PREFIX_ALT)/issue-([0-9]+)(-|\$)"
   while read -r _p _qh _qe _br; do

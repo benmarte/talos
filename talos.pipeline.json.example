@@ -69,7 +69,8 @@
   "_note_merge_forbidden_files": "merge.forbidden_files (derived) is the built-in deny-pattern list that merge.forbidden_files_replace swaps for its own.",
   "_note_merge_queue": "merge.queue (off | talos | github, default off), merge.queue_batch (default 3), merge.queue_branch_prefix (default talos/queue/) and merge.queue_timeout_s (default 3600: how long a candidate waits for its required checks, 30-86400 seconds) and merge.queue_retry (default 1, 0-3: how many times a red candidate has its failed required checks re-run at the same sha before it is bisected and a PR ejected; 0 ejects at the first red) configure the merge queue (#927). talos: a PR that passes every merge gate is queued, and talos.sh queue run tests it with the next queued PRs on a candidate branch and merges them. github: the PR is enqueued in GitHub's own merge queue (enabled on the base branch; the CI workflow needs an on: merge_group: trigger) and never merged directly. merge.queue_batch, merge.queue_branch_prefix, merge.queue_timeout_s and merge.queue_retry apply to talos only.",
   "_note_merge_generated": "merge.generated_paths (globs, default empty) and merge.generate_command (a shell command run from the repo root, default empty, repo config only) let a conflict only in generated files be resolved mechanically: the merge queue and pipeline-mergebase.sh keep one side of those files, merge the rest, run the command and commit what it wrote; a failing command, a conflict marker or a change outside merge.generated_paths leaves the PR out (see docs/reference.md, Merge queue).",
-  "_note_merge_queue_ci":"merge.queue_ci (pr | candidate, default pr) set to candidate lets a reviewed draft PR join a batch with no CI run of its own: the candidate's CI is the only gate (see docs/reference.md, merge.queue_ci: candidate).",
+  "_note_merge_queue_solo": "merge.queue_solo_labels (a list of labels) and merge.queue_solo_paths (a list of path globs, matched like merge.forbidden_files), both default empty: a queued PR that carries one of the labels or changes a matching path is batched alone by talos.sh queue run, and so is a PR whose changed files cannot be read (docs/reference.md, Merge queue).",
+  "_note_merge_queue_ci": "merge.queue_ci (pr | candidate, default pr) set to candidate lets a reviewed draft PR join a batch with no CI run of its own: the candidate's CI is the only gate (see docs/reference.md, merge.queue_ci: candidate).",
   "_note_issues_assignee": "issues.assignee (default self) is the assignee the VCS adapter targets.",
   "_note_issues_claim": "issues.claim (default true, #560) makes several operators on one repo safe: Talos acts only on issues assigned to the operator and never picks up or claims an unassigned issue (#949: assign it, or run talos.sh claim <N>, first; issues.claim: false, or issues.assignee: none, switches claiming off and unassigned issues route as before), and identity.name (default unset, user-level) names the login the operator claims under when it is not the authenticated one.",
   "_note_notifications_buzz_timeout_s": "notifications.buzz_timeout_s (default 15) bounds each Buzz relay call.",
@@ -134,7 +135,9 @@
     "queue_batch": 3,
     "queue_branch_prefix": "talos/queue/",
     "queue_timeout_s": 3600,
-    "queue_retry": 1
+    "queue_retry": 1,
+    "queue_solo_labels": [],
+    "queue_solo_paths": []
   },
 
   "issues": {
