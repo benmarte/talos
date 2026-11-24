@@ -196,6 +196,7 @@
 60 test-merge-queue-drain.sh
 40 test-merge-queue-retry-950.sh
 28 test-merge-queue-runner-lock.sh
+25 test-merge-queue-solo.sh
 34 test-merge-queue-timeout-946.sh
 16 test-mergebase.sh
 0 test-mergesync-skill.sh
