@@ -271,6 +271,7 @@
 15 test-require-roles-848.sh
 26 test-required-when-835.sh
 102 test-rereview-785.sh
+5 test-rerun-ci-newest-run.sh
 60 test-resolve-all.sh
 1 test-restamp-dispatch.sh
 16 test-revise-body-spec.sh
