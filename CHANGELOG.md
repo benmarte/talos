@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: `pr-checks-required` and `ref-checks-required` no longer hang or misread when the caller has its own file descriptor 3 open: every call of the check-table helper in `scripts/pipeline-vcs.sh` now gets an explicit fd 3 instead of inheriting the caller's
 - fix: `talos.sh run` no longer dispatches a stage on an issue another lane's merge queue just merged and closed: right before every dispatch it re-reads the issue (and its PR, through the new GitHub `pr-state` verb), and a closed issue or a merged PR ends the run with `stop reason=issue-closed issue=<n>` (exit 0, lease released, no attempt recorded, no `pipeline:blocked` label); a failed read warns `pre-dispatch-unread` and dispatches as before; GitHub `view-issue` now carries `state`
 - fix: a developer merge-conflict round now needs a local trial merge to confirm the conflict: a PR the provider still reads CONFLICTING after a sync push, but whose head merges cleanly into the fetched base, ends `wait reason=base-synced` before QA and at the merge gate, with no developer dispatch and no attempt counted
 - fix: `pr-checks-required` and `ref-checks-required` (so the merge queue and the QA wait) no longer judge a required check as failed when its newest check run is cancelled or skipped while a newer workflow run for the same head is queued or in progress; it is pending until that run ends (the workflow runs are read once per judgement, and only then).
