@@ -88,6 +88,8 @@ merge.auto_sync	true	table	docs
 merge.forbidden_files		empty	pipeline-vcs.sh
 merge.forbidden_files_allow		empty	pipeline-vcs.sh
 merge.forbidden_files_replace		equiv	pipeline-vcs.sh
+merge.generate_command		empty	pipeline-mergebase.sh
+merge.generated_paths		empty	pipeline-mergebase.sh,talos.sh
 merge.method	squash	table	pipeline-vcs.sh
 merge.queue	off	table	docs (#928, new: nothing reads it yet)
 merge.queue_batch	3	table	docs (#928, new)

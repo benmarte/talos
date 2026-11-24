@@ -148,6 +148,8 @@ merge.forbidden_files_replace	bool	false	-	-	repo
 merge.forbidden_files_allow	list		-	-	repo
 merge.approval_waiver_paths	list		derived	-	repo
 merge.union_paths	list		derived	-	repo
+merge.generated_paths	list		-	-	repo
+merge.generate_command	str		-	-	repo
 merge.auto_sync	bool	true	-	-	any
 merge.require_current_base	bool	true	-	-	any
 merge.queue	enum	off	-	-	any

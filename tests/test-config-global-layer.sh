@@ -81,6 +81,8 @@ merge.approval_waiver_paths
 merge.forbidden_files
 merge.forbidden_files_allow
 merge.forbidden_files_replace
+merge.generate_command
+merge.generated_paths
 merge.required_checks
 merge.union_paths
 pipeline.risk_areas
@@ -167,7 +169,7 @@ assert_not_contains "$(bash "$CFG_SH" --has board.owner 2>/dev/null && echo yes)
 
 # Every repo-only group, one key each, one note each
 reset_cfg
-glob_json '{"base_branch":"b1","repo":"o/r","vcs":{"provider":"azure","repo":"o/r2","azure":{"org_url":"u","project":"p"},"file":{"source":{"path":"x.md"}}},"board":{"enabled":false,"project_number":4,"statuses":{"ready":"R"},"status_map":{"a":"b"}},"verify":{"commands":["make"],"qa_mode":"ci"},"merge":{"required_checks":["ci"],"forbidden_files":["f"],"forbidden_files_allow":["g"],"approval_waiver_paths":["w"],"union_paths":["u"]},"markers":{"trusted_authors":["t"],"verify_authors":false},"issues":{"label_filter":"l","skip_labels":["s"]}}'
+glob_json '{"base_branch":"b1","repo":"o/r","vcs":{"provider":"azure","repo":"o/r2","azure":{"org_url":"u","project":"p"},"file":{"source":{"path":"x.md"}}},"board":{"enabled":false,"project_number":4,"statuses":{"ready":"R"},"status_map":{"a":"b"}},"verify":{"commands":["make"],"qa_mode":"ci"},"merge":{"required_checks":["ci"],"forbidden_files":["f"],"forbidden_files_allow":["g"],"approval_waiver_paths":["w"],"union_paths":["u"],"generated_paths":["g"],"generate_command":"c"},"markers":{"trusted_authors":["t"],"verify_authors":false},"issues":{"label_filter":"l","skip_labels":["s"]}}'
 get base_branch >/dev/null
 DROPPED_KEYS="base_branch
 repo
@@ -187,6 +189,8 @@ merge.forbidden_files
 merge.forbidden_files_allow
 merge.approval_waiver_paths
 merge.union_paths
+merge.generated_paths
+merge.generate_command
 markers.trusted_authors
 markers.verify_authors
 issues.label_filter

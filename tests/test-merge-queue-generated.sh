@@ -131,10 +131,7 @@ q_reset() {  # [<generated paths JSON> <generate command>]
   q_cfg "${1-}" "${2-}"
   origin_reset
 }
-qr() {
-  OUT="$(bash "$GQ/talos.sh" queue run </dev/null 2>"$ERR")"; RC=$?
-  [ -z "${DBG:-}" ] || { printf '%s\n--- stderr\n' "$OUT"; tr '\0' ' ' < "$ERR"; journal | grep mergebase; } >&2
-}
+qr() { OUT="$(bash "$GQ/talos.sh" queue run </dev/null 2>"$ERR")"; RC=$?; }
 jc() { journal | grep -c -E "$1"; }
 line1() { printf '%s\n' "$OUT" | sed -n 1p; }
 has_line() { grep -qx -- "$1" <<< "$OUT"; }

@@ -17,8 +17,19 @@
 # branch's tests/gen-config-table.py). See docs/reference.md, Mechanically
 # resolved conflicts.
 #
+# Generated files (#1083): with merge.generated_paths and merge.generate_command both
+# set, a conflict in a generated file is resolved by keeping the base branch's side,
+# merging the rest and running the command once on the merged tree; what it wrote goes
+# into the merge commit. A failing command, a conflict marker or a change outside
+# merge.generated_paths is exit 3, nothing pushed.
+#
 # Usage: pipeline-mergebase.sh <PR> [--union-paths <glob,glob,...>]
 #        pipeline-mergebase.sh --union-list   (the validated union paths, as JSON)
+#        pipeline-mergebase.sh --generated-list   (the validated generated paths, as
+#                                                  JSON; [] unless both keys are set)
+#        pipeline-mergebase.sh --regenerate <dir> <PR>   (the merge queue's candidate
+#                              worktree: run the command, commit its output; 0 ok,
+#                              3 failed or broke the rules, 1 not configured)
 #
 # Exit codes:
 #   0  resolved and pushed -- caller should re-check pr-mergeable.
@@ -67,6 +78,20 @@ if [ "$PR_N" = "--union-list" ] && [ $# -eq 0 ]; then
   UNION_LIST_ONLY=1
   PR_N=0
 fi
+# --generated-list and --regenerate <dir> <pr> (#1083): the merge queue's two reads of
+# merge.generated_paths / merge.generate_command. Neither reads a PR.
+GEN_LIST_ONLY=0
+REGEN_DIR=""
+REGEN_PR=""
+if [ "$PR_N" = "--generated-list" ] && [ $# -eq 0 ]; then
+  GEN_LIST_ONLY=1
+  PR_N=0
+elif [ "$PR_N" = "--regenerate" ] && [ $# -eq 2 ]; then
+  REGEN_DIR="$1"
+  REGEN_PR="$2"
+  shift 2
+  PR_N=0
+fi
 UNION_PATHS_OVERRIDE=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -85,6 +110,12 @@ if [ -z "$PR_N" ]; then
   echo "usage: pipeline-mergebase.sh <PR> [--union-paths <glob,glob,...>]" >&2
   exit 1
 fi
+case "$REGEN_PR" in
+  *[!0-9]*)
+    echo "pipeline-mergebase: --regenerate needs a PR number, got '$REGEN_PR'" >&2
+    exit 1
+    ;;
+esac
 case "$PR_N" in
   ''|*[!0-9]*)
     echo "pipeline-mergebase: PR number must be an integer, got '$PR_N'" >&2
@@ -120,6 +151,128 @@ _MB_FORBIDDEN_PATTERNS="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" forbidden-files-pat
 if [ -z "$_MB_FORBIDDEN_PATTERNS" ]; then
   echo "pipeline-mergebase: could not resolve the effective merge.forbidden_files patterns" >&2
   exit 1
+fi
+
+# ── Generated files (#1083) ──────────────────────────────────────────────────
+# merge.generated_paths (globs) and merge.generate_command (repo config only) together
+# let a conflict that is only in generated files be resolved mechanically: the base's
+# side of those files is kept, everything else merged, then the command is run and
+# what it wrote committed. _MB_GEN_JSON is the validated glob list as a JSON array, `[]`
+# unless both keys are set. An entry that is not a plain path glob, or that would cover
+# forbidden-files-shaped content, is dropped with one stderr line.
+_MB_GEN_CMD="$(cfg merge.generate_command 2>/dev/null)"
+_MB_GEN_JSON="$(FORBIDDEN_PATTERNS="$_MB_FORBIDDEN_PATTERNS" python3 -I -c '
+import fnmatch, json, os, re, sys
+
+raw, cmd = sys.argv[1].strip(), sys.argv[2].strip()
+entries = []
+if raw:
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            raise ValueError("not a list")
+        entries = [str(e).strip() for e in parsed if str(e).strip()]
+    except ValueError:
+        sep = "," if "," in raw else "\n"
+        entries = [e.strip() for e in raw.split(sep) if e.strip()]
+canaries = []
+for pat in [p.strip() for p in os.environ.get("FORBIDDEN_PATTERNS", "").splitlines() if p.strip()]:
+    lit = pat
+    if any(c in pat for c in "*?[]"):
+        lit = re.sub(r"\[[^\]]*\]", "x", pat).replace("*", "x").replace("?", "x")
+    if lit:
+        canaries += [lit, "sub/dir/" + lit, "config/" + lit]
+ok = []
+for e in entries:
+    if not re.fullmatch(r"[A-Za-z0-9._*?@+][A-Za-z0-9._*?/@+-]*", e):
+        print("pipeline-mergebase: merge.generated_paths entry %r is not a plain path glob -- ignored" % e, file=sys.stderr)
+        continue
+    hit = next((c for c in canaries
+                if fnmatch.fnmatchcase(c.rsplit("/", 1)[-1].lower(), e.lower())
+                or fnmatch.fnmatchcase(c.lower(), e.lower())), None)
+    if hit:
+        print("pipeline-mergebase: merge.generated_paths entry %r would cover forbidden-files-shaped content (%r) -- ignored" % (e, hit), file=sys.stderr)
+        continue
+    ok.append(e)
+print(json.dumps(ok if cmd else []))
+' "$(cfg merge.generated_paths 2>/dev/null)" "$_MB_GEN_CMD")"
+[ -n "$_MB_GEN_JSON" ] || _MB_GEN_JSON="[]"
+
+# _mb_regenerate <dir>: run merge.generate_command from <dir> (the worktree root), as a
+# verify command runs: bash -c, TALOS_WORKTREE_PATH exported, no stdin, killed after
+# verify.timeout_ms. Then every file it changed, added or deleted must match
+# merge.generated_paths and hold no conflict marker. 0 ok; 3 the command failed or broke
+# those rules (nothing is committed here: the caller leaves the PR out); 1 not configured.
+_mb_regenerate() {
+  local dir="$1" ms secs rc
+  if [ "$_MB_GEN_JSON" = "[]" ] || [ -z "$_MB_GEN_CMD" ] || [ ! -d "$dir" ]; then
+    echo "pipeline-mergebase: merge.generated_paths and merge.generate_command are not both set" >&2
+    return 1
+  fi
+  ms="$(cfg verify.timeout_ms 2>/dev/null)"
+  case "$ms" in ''|*[!0-9]*) ms=600000 ;; esac
+  secs=$((ms / 1000))
+  TALOS_WORKTREE_PATH="$dir" python3 -I -c '
+import os, signal, subprocess, sys
+
+d, cmd, t = sys.argv[1], sys.argv[2], float(sys.argv[3])
+p = subprocess.Popen(["bash", "-c", cmd], cwd=d, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                     stderr=subprocess.STDOUT, start_new_session=True, text=True, errors="replace")
+try:
+    out, _ = p.communicate(timeout=t)
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL)
+    p.communicate()
+    print("pipeline-mergebase: merge.generate_command timed out after %d s" % t, file=sys.stderr)
+    sys.exit(124)
+if p.returncode != 0:
+    for line in out.strip().splitlines()[-10:]:
+        print(line, file=sys.stderr)
+sys.exit(p.returncode)
+' "$dir" "$_MB_GEN_CMD" "$secs"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "pipeline-mergebase: merge.generate_command failed (exit $rc), not mechanically resolvable" >&2
+    return 3
+  fi
+  { git -C "$dir" diff --name-only -z 2>/dev/null; git -C "$dir" ls-files --others --exclude-standard -z 2>/dev/null; } \
+    | GEN_JSON="$_MB_GEN_JSON" python3 -I -c '
+import fnmatch, json, os, re, sys
+
+pats = json.loads(os.environ["GEN_JSON"])
+dirp = sys.argv[1]
+bad = []
+for path in [p for p in sys.stdin.read().split("\0") if p]:
+    base = path.rsplit("/", 1)[-1]
+    if not any(fnmatch.fnmatch(base, g) or fnmatch.fnmatch(path, g) for g in pats):
+        bad.append("%s is outside merge.generated_paths" % path)
+        continue
+    try:
+        with open(os.path.join(dirp, path), errors="replace") as fh:
+            if any(re.match(r"(<<<<<<<|>>>>>>>)( |$)", line) for line in fh):
+                bad.append("%s holds a conflict marker" % path)
+    except OSError:
+        pass
+for b in bad:
+    print("pipeline-mergebase: merge.generate_command: " + b, file=sys.stderr)
+sys.exit(3 if bad else 0)
+' "$dir"
+  return $?
+}
+
+if [ "$GEN_LIST_ONLY" = 1 ]; then
+  printf '%s\n' "$_MB_GEN_JSON"
+  exit 0
+fi
+if [ -n "$REGEN_DIR" ]; then
+  # The merge queue's regeneration of a PR applied to its candidate (#1083): the
+  # command, its checks, then what it wrote committed as the PR's part of the candidate.
+  _mb_regenerate "$REGEN_DIR" || exit $?
+  git -C "$REGEN_DIR" add -A >/dev/null 2>&1 || exit 1
+  git -C "$REGEN_DIR" diff --cached --quiet && exit 0
+  git -C "$REGEN_DIR" -c user.name=talos-queue -c user.email=talos@local -c commit.gpgsign=false \
+    commit -q -m "queue: #$REGEN_PR regenerated" >/dev/null 2>&1 || exit 1
+  exit 0
 fi
 
 _MB_UNION_PATHS="$(FORBIDDEN_PATTERNS="$_MB_FORBIDDEN_PATTERNS" python3 -I -c "
@@ -435,6 +588,15 @@ TALOS_PYd9Lk4Vb1Xe
   _MB_BUILTIN_NOTES="$_MB_BUILTIN_NOTES; $p config table regenerated"
 }
 
+# A conflicting generated path (#1083): the base branch's side, to be regenerated once
+# every conflict is resolved. A side that deleted the file is not resolvable (return 3).
+_mb_resolve_generated() {
+  local p="$1"
+  git -C "$_MB_TMPDIR" show ":2:$p" >/dev/null 2>&1 || return 3
+  git -C "$_MB_TMPDIR" show ":3:$p" > "$_MB_TMPDIR/$p" 2>/dev/null || return 3
+  git -C "$_MB_TMPDIR" add -- "$p"
+}
+
 _MB_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/talos-mergebase.XXXXXX" 2>/dev/null)"
 if [ -z "$_MB_TMPDIR" ]; then
   echo "pipeline-mergebase: mktemp failed" >&2
@@ -471,13 +633,14 @@ if [ "$_MB_MERGE_RC" -eq 1 ]; then
   # the exact path and not configurable: tests/timings.txt (one line per test
   # basename) and the generated config table of docs/reference.md (regenerated
   # from the base branch's generator). The classifier prints one line per
-  # conflicting path, `<kind><TAB><path>`: U union, T timings, D docs table,
-  # X not mechanically resolvable (a forbidden-shaped path is always X).
-  _MB_CLASS="$(CONFLICTS="$_MB_CONFLICTS" UNION_JSON="$_MB_UNION_PATHS" FORBIDDEN_PATTERNS="$_MB_FORBIDDEN_PATTERNS" python3 -I -c "
+  # conflicting path, `<kind><TAB><path>`: U union, G generated (#1083), T timings,
+  # D docs table, X not mechanically resolvable (a forbidden-shaped path is always X).
+  _MB_CLASS="$(CONFLICTS="$_MB_CONFLICTS" UNION_JSON="$_MB_UNION_PATHS" GEN_JSON="$_MB_GEN_JSON" FORBIDDEN_PATTERNS="$_MB_FORBIDDEN_PATTERNS" python3 -I -c "
 import fnmatch, json, os
 BUILTIN = {'tests/timings.txt': 'T', 'docs/reference.md': 'D'}
 conflicts = [c for c in os.environ.get('CONFLICTS', '').splitlines() if c.strip()]
 patterns = json.loads(os.environ.get('UNION_JSON', '[]'))
+generated = json.loads(os.environ.get('GEN_JSON', '[]'))
 forbidden = [p.strip() for p in os.environ.get('FORBIDDEN_PATTERNS', '').splitlines() if p.strip()]
 def matches_any(path, pats):
     base = path.rsplit('/', 1)[-1]
@@ -491,6 +654,8 @@ for c in conflicts:
         print('X\t' + c)
     elif matches_any(c, patterns):
         print('U\t' + c)
+    elif matches_any(c, generated):
+        print('G\t' + c)
     elif c in BUILTIN:
         print(BUILTIN[c] + '\t' + c)
     else:
@@ -507,11 +672,13 @@ for c in conflicts:
   # PR branch, since the worktree is checked out at origin/$HEAD_REF) first,
   # so the union keeps the PR's own entry ahead of the base's.
   _MB_RESOLVE_TMP="$(mktemp -d)"
+  _mb_regen=0
   while IFS=$'\t' read -r _mb_kind _mb_path; do
     [ -z "$_mb_path" ] && continue
     case "$_mb_kind" in
       T) _mb_resolve_timings "$_mb_path" || exit $? ; continue ;;
       D) _mb_resolve_docs_table "$_mb_path" || exit $? ; continue ;;
+      G) _mb_resolve_generated "$_mb_path" || exit $? ; _mb_regen=1 ; continue ;;
     esac
     git -C "$_MB_TMPDIR" show ":1:$_mb_path" > "$_MB_RESOLVE_TMP/base" 2>/dev/null || : > "$_MB_RESOLVE_TMP/base"
     git -C "$_MB_TMPDIR" show ":2:$_mb_path" > "$_MB_RESOLVE_TMP/ours" 2>/dev/null || : > "$_MB_RESOLVE_TMP/ours"
@@ -530,6 +697,14 @@ for c in conflicts:
     git -C "$_MB_TMPDIR" add -- "$_mb_path"
   done <<< "$_MB_CLASS"
   rm -rf "$_MB_RESOLVE_TMP"
+  # Generated files (#1083): with every conflict resolved and staged, the command runs
+  # once on the merged tree and what it wrote is staged into the merge commit. A failure
+  # exits 3 with nothing pushed: the developer merge-base task.
+  if [ "$_mb_regen" = 1 ]; then
+    _mb_regenerate "$_MB_TMPDIR" || exit $?
+    git -C "$_MB_TMPDIR" add -A >/dev/null 2>&1 || exit 1
+    _MB_BUILTIN_NOTES="$_MB_BUILTIN_NOTES; generated files regenerated"
+  fi
 fi
 
 # A merge with no conflict at all (or none left) can still leave the generated
