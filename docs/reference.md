@@ -216,6 +216,27 @@ claude plugin marketplace add benmarte/talos
 claude plugin install talos@talos
 ```
 
+### Upgrading from v0.22.2
+
+v0.23.0 adds Talos's own merge queue and fixes many routing, CI-wait and lock faults. Re-run `bash install.sh --global` and restart the Claude Code sessions that drive Talos. The Buzz plugin is unchanged, so it does not need to be loaded again.
+
+Check these before your next run:
+
+- **Only assigned issues are picked up.** With `issues.claim` on (the default), `next` and `run` act only on issues assigned to the operator and no longer claim an unassigned one. `state --summary` lists those as `unassigned: #N`. Assign the issue, or run `talos.sh claim N`, before Talos picks it up. `issues.claim: false` restores the old behaviour. `sweep` is scoped the same way (#1075).
+- **A behind PR is synced before it merges.** Under `merge.queue: off`, the new `merge.require_current_base` (default `true`) makes the merge gate sync a PR that is behind its base, then merge only once its CI is green at the new head. Set it to `false` to keep merging PRs that are behind.
+- **The CI template is pinned.** Every `uses:` in `templates/ci/github-tests.yml` is pinned to a commit SHA, and its concurrency group now ends in `-draft` or `-ready`. Re-copy the template if your repo uses it.
+- **Long-running loops need a lease holder.** An LLM loop that runs `talos.sh next` and keeps a stage running in the background should export `TALOS_LEASE_PID` (a pid that stays alive while the stage runs). Otherwise `next` warns `reason=lease-holder-unset` and the lease can be reclaimed (#1076). The `run` driver needs nothing.
+
+New: the merge queue ([Merge queue](#merge-queue)). It is off by default (`merge.queue: off`).
+
+- `merge.queue: talos` batches reviewed PRs into a `talos/queue/<base>-<epoch>` candidate. CI runs once on the candidate, and when it is green each PR merges at its reviewed head. A red candidate re-runs its failed checks (`merge.queue_retry`, default 1), then is bisected, and the PR that breaks it is ejected to a fix round. Your CI must run the required checks on a push to `talos/queue/**`.
+- `merge.queue_ci: candidate` lets a reviewed PR join a batch without its own CI run. The PR stays a draft until the queue merges it, and the candidate's run is its only CI gate. It needs `pr.draft`, `roles.qa`, and either an unprotected base or one whose required checks admins may bypass (`base-protection` answers `checks-bypass`) (#1081).
+- `merge.queue_solo_labels` and `merge.queue_solo_paths` keep PRs such as migrations out of shared batches (#1082). `merge.generated_paths` and `merge.generate_command` regenerate a conflicting generated file instead of sending the PR to a developer (#1083).
+- `merge.queue: github` enqueues in GitHub's native merge queue where the plan offers one.
+- Other queue keys: `merge.queue_batch` (default 3) and `merge.queue_timeout_s` (default 3600; raise it when a full CI run takes longer).
+
+Other changes: a GitHub rate limit is now a `wait reason=rate-limited`, not a failure. Routing makes far fewer API calls. `run` waits for CI in code before QA, and a QA `ci-pending` verdict is a wait. `pipeline-lock.sh` claims with an exclusive file create, because `mkdir` is not atomic on Ubuntu 26.04. `merge-pr --sha` refuses to merge a head that moved after the gate. `rerun-ci` re-runs only each workflow's newest run (#1077). Every change is listed in [CHANGELOG.md](../CHANGELOG.md).
+
 ### Upgrading from v0.22.1
 
 v0.22.2 is a patch with three fixes. Re-run `bash install.sh --global`. The Buzz plugin is unchanged, so it does not need to be loaded again.
