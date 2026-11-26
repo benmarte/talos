@@ -11,6 +11,8 @@
 # CLAUDE_STUB_LIST_RAW=<text> (print this for `marketplace list --json`),
 # CLAUDE_STUB_ADD_FAIL=1, CLAUDE_STUB_INSTALL_FAIL=1, CLAUDE_STUB_REMOVE_FAIL=1.
 # `marketplace remove` deletes $CLAUDE_STUB_STATE/marketplace (#586).
+# `update <plugin>` appends <plugin> to $CLAUDE_STUB_STATE/updates and exits
+# CLAUDE_STUB_UPDATE_RC (default 0) (#1092).
 STATE="${CLAUDE_STUB_STATE:-}"
 LOG="${CLAUDE_PLUGIN_LOG:-/dev/null}"
 {
@@ -26,6 +28,18 @@ if [ -n "${CLAUDE_STUB_NO_PLUGIN:-}" ]; then
 fi
 case "${1:-}" in
   --help|-h) echo "Usage: claude plugin [options] [command]"; exit 0 ;;
+  update)
+    if [ -n "$STATE" ]; then
+      mkdir -p "$STATE"
+      printf '%s\n' "${2:-}" >> "$STATE/updates"
+    fi
+    if [ "${CLAUDE_STUB_UPDATE_RC:-0}" != "0" ]; then
+      echo 'checking agent-skills@talos'
+      echo '{"command":"update","outcome":"failed","message":"could not reach github.com"}'
+      exit "$CLAUDE_STUB_UPDATE_RC"
+    fi
+    echo '{"command":"update","outcome":"ok","message":"Plugin agent-skills@talos updated"}'
+    exit 0 ;;
   install)
     if [ -n "${CLAUDE_STUB_INSTALL_FAIL:-}" ]; then
       echo '{"command":"install","outcome":"failed","message":"could not fetch dependency agent-skills"}'

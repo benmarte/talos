@@ -159,6 +159,7 @@
 10 test-hooks-post-stage.sh
 20 test-hooks-pre-dispatch.sh
 10 test-import-usage-911.sh
+20 test-install-agent-skills-update.sh
 7 test-install-agents-md.sh
 126 test-install-agents-skills.sh
 9 test-install-atomic-copy.sh
