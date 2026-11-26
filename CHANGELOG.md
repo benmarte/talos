@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: every install and re-install now gets upstream's latest agent-skills: `install.sh --global` runs `claude plugin update agent-skills@talos` after installing the talos plugin (a failure prints a notice), and a per-repo re-install overwrites the skills it vendored (recorded in `.claude/skills/.agent-skills-manifest`; a repo with `AGENT-SKILLS-LICENSE` and no manifest counts every upstream-named skill as vendored) without `--force`, while your own skills are still skipped; `--no-agent-skills` opts out
 
 ## [0.23.0] - 2026-11-24
 - feat: two new repo-only keys, `merge.generated_paths` (globs, default empty) and `merge.generate_command` (a shell command run from the repo root, default empty), let a conflict that is only in generated files (generated code, lock files, schema dumps) be resolved by regeneration instead of a developer: `pipeline-mergebase.sh` keeps the base's side of those files, merges the rest, runs the command (as a `verify` command: same environment, `verify.timeout_ms`) and commits what it wrote, and under `merge.queue: talos` on a base with no required checks the queue does the same inside its candidate (`regenerated=<pr>`) and syncs the PR through `pipeline-mergebase.sh` before its merge; a failing command, a conflict marker or a change outside `merge.generated_paths` leaves the PR out with `conflict=<pr> action=generate-failed` and nothing pushed; with either key empty nothing changes

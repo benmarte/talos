@@ -24,7 +24,10 @@
 #   the marketplace entry points at this checkout, so re-run it from the new
 #   location if the checkout moves. Installing the plugin also
 #   installs its agent-skills dependency from GitHub, even with
-#   --no-agent-skills. No `claude` on PATH, or one without
+#   --no-agent-skills. After a successful install,
+#   `claude plugin update agent-skills@talos` brings that dependency to
+#   upstream's latest (#1092; skipped with --no-agent-skills; a failure prints a
+#   notice). No `claude` on PATH, or one without
 #   `claude plugin`: a notice with the two commands to run inside Claude Code,
 #   and nothing is deleted.
 #   Retired bare skills: ~/.claude/skills/pipeline, ~/.claude/skills/pipeline-setup
@@ -103,6 +106,9 @@
 #   <target>/AGENTS.md (scripts/pipeline-instructions.sh: created, appended or
 #   repaired between its markers; commit the file). No scripts are copied into
 #   the repo. Relies on the global install at ~/.talos/.
+#   agent-skills is vendored into <target>/.claude/skills/ and refreshed from
+#   upstream on every re-install (--no-agent-skills opts out); a skill Talos did
+#   not vendor is kept unless --force (see vendor_agent_skills).
 #   --no-agents-md      write no AGENTS.md.
 #   --import-agents-md  also append an `@AGENTS.md` import to <target>/CLAUDE.md
 #                       and <target>/GEMINI.md when they exist (never creates
@@ -301,29 +307,107 @@ prune_and_write_manifest() {
 }
 
 # ── install_file helper ───────────────────────────────────────────────────────
+# copy_atomic <src> <dest> -- copy beside the destination and rename over it
+# (#977): a process that has the old file open keeps it, the next reader gets the
+# new one. A failed copy leaves the destination as it was and removes the temp
+# file. Returns 1 on any failure (callers may run it in a `||` or `if`, where
+# set -e is off, so every step is checked).
+copy_atomic() {
+  local src="$1" dest="$2" dir tmp mode
+  dir="$(dirname "$dest")"
+  mkdir -p "$dir" || return 1
+  tmp="$(mktemp "$dir/.install-file.XXXXXX")" || return 1
+  # mktemp makes a 0600 file; give it the mode a plain cp would have created.
+  mode=$(( 0666 & ~$(umask) ))
+  [ -x "$src" ] && mode=$(( 0777 & ~$(umask) ))
+  if ! { cp "$src" "$tmp" && chmod "$(printf '%o' "$mode")" "$tmp" && mv -f "$tmp" "$dest"; }; then
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
 install_file() {
   local src="$1" dest="$2"
   if [ -f "$dest" ] && [ "$FORCE" = "false" ]; then
     echo "  skip (exists): $(printable "$dest")  (pass --force to overwrite)"
     return
   fi
-  local dir tmp mode
-  dir="$(dirname "$dest")"
-  mkdir -p "$dir"
-  # Copy beside the destination and rename over it (#977): a process that has
-  # the old file open keeps it, the next reader gets the new one. A failed copy
-  # leaves the destination as it was and removes the temp file.
-  tmp="$(mktemp "$dir/.install-file.XXXXXX")" || return 1
-  if ! cp "$src" "$tmp"; then
-    rm -f "$tmp"
-    return 1
-  fi
-  # mktemp makes a 0600 file; give it the mode a plain cp would have created.
-  mode=$(( 0666 & ~$(umask) ))
-  [ -x "$src" ] && mode=$(( 0777 & ~$(umask) ))
-  chmod "$(printf '%o' "$mode")" "$tmp"
-  mv -f "$tmp" "$dest"
+  copy_atomic "$src" "$dest" || return 1
   echo "  installed: $(printable "$dest")"
+}
+
+# ── agent-skills, per repo (#1092) ───────────────────────────────────────────
+# vendor_agent_skills <clone> <skills-dir> -- copy every skills/<name>/SKILL.md of
+# the upstream clone into <skills-dir>/<name>/. What Talos vendored is recorded in
+# <skills-dir>/.agent-skills-manifest (one name per line, sorted), and a listed
+# skill is overwritten on every re-install. With no manifest, a licence copy left
+# by an earlier install means every existing upstream-named skill is vendored.
+# Any other existing SKILL.md is the user's own: skipped unless --force. The
+# manifest is written even when empty, before the licence, so a later run never
+# takes a skipped skill for a vendored one. Never fatal.
+vendor_agent_skills() {
+  local clone="$1" skills="$2"
+  local manifest="$2/.agent-skills-manifest"
+  local legacy=false prev="" kept="" new=0 updated=0 skill_dir name dest lic tmp existed
+  if [ -f "$manifest" ]; then
+    prev="$(tr -d '\r' < "$manifest")"
+  elif [ -f "$skills/AGENT-SKILLS-LICENSE" ]; then
+    legacy=true
+  fi
+  for skill_dir in "$clone/skills"/*/; do
+    [ -f "$skill_dir/SKILL.md" ] || continue
+    name="$(basename "$skill_dir")"
+    dest="$skills/$name/SKILL.md"
+    existed=false
+    if [ -f "$dest" ]; then
+      existed=true
+      if [ "$FORCE" = "false" ]; then
+        if [ "$legacy" = "false" ] && ! grep -Fxq -- "$name" <<<"$prev"; then
+          echo "  skip (exists): $(printable "$dest")"
+          continue
+        fi
+        # A link is the user's doing: never write through or replace it.
+        if [ -L "$skills/$name" ] || [ -L "$dest" ]; then
+          echo "  skip (symlink): $(printable "$dest")  (pass --force to overwrite)"
+          kept="$kept$name"$'\n'
+          continue
+        fi
+      fi
+    fi
+    if copy_atomic "$skill_dir/SKILL.md" "$dest"; then
+      kept="$kept$name"$'\n'
+      if [ "$existed" = "true" ]; then updated=$((updated + 1)); else new=$((new + 1)); fi
+    else
+      echo "  notice: could not write $(printable "$dest")"
+      [ "$existed" = "true" ] && kept="$kept$name"$'\n'
+    fi
+  done
+  # A listed skill upstream no longer ships stays on disk, and stays listed.
+  while IFS= read -r name || [ -n "$name" ]; do
+    case "$name" in ""|.*|*/*) continue ;; esac
+    [ -f "$clone/skills/$name/SKILL.md" ] && continue
+    [ -f "$skills/$name/SKILL.md" ] || continue
+    echo "  agent-skills: no longer upstream: $(printable "$name")"
+    kept="$kept$name"$'\n'
+  done <<<"$prev"
+  mkdir -p "$skills" 2>/dev/null || true
+  if tmp="$(mktemp "$skills/.install-file.XXXXXX" 2>/dev/null)" \
+     && printf '%s' "$kept" | LC_ALL=C sort -u > "$tmp" \
+     && chmod "$(printf '%o' $(( 0666 & ~$(umask) )))" "$tmp" \
+     && mv -f "$tmp" "$manifest"; then
+    # Ship the licence alongside the copy -- this is third-party MIT content.
+    for lic in LICENSE LICENSE.md; do
+      if [ -f "$clone/$lic" ]; then
+        cp "$clone/$lic" "$skills/AGENT-SKILLS-LICENSE" \
+          || echo "  notice: could not write $(printable "$skills")/AGENT-SKILLS-LICENSE"
+        break
+      fi
+    done
+  else
+    [ -n "${tmp:-}" ] && rm -f "$tmp"
+    echo "  notice: could not write $(printable "$manifest")"
+  fi
+  echo "  installed: $new new, updated: $updated skill(s) into $(printable "$skills")/"
 }
 
 # ── Claude adapter ────────────────────────────────────────────────────────────
@@ -384,6 +468,17 @@ else:
 # note: this checkout, or the marketplace that was left as is.
 CLAUDE_PLUGIN_REGISTERED=false
 CLAUDE_PLUGIN_FROM=""
+
+# update_agent_skills_plugin -- `claude plugin install` leaves an installed
+# dependency as it is, so ask for upstream's latest (#1092). Never fatal.
+update_agent_skills_plugin() {
+  local out
+  if out="$(claude plugin update agent-skills@talos --json </dev/null 2>&1)"; then
+    echo "    agent-skills: updated to the latest (agent-skills@talos)"
+  else
+    echo "    notice: 'claude plugin update agent-skills@talos' failed: $(printable "$(printf '%s' "$out" | tail -n 1 | LC_ALL=C cut -c1-200)") -- to update it yourself: claude plugin update agent-skills@talos"
+  fi
+}
 
 install_claude_plugin() {
   local state kind val out here there src_p val_p kept=false
@@ -482,6 +577,7 @@ install_claude_plugin() {
       CLAUDE_PLUGIN_FROM="this checkout ($src_p)"
       echo "    registered: talos@talos (user scope). The marketplace is the local checkout $src_p and Claude Code reads the plugin from that checkout (it reads on each session start, or on /reload-plugins), so /talos:* follows your edits; re-run $rerun from the new location if you move it."
     fi
+    [ "$WITH_SKILLS" = "true" ] && update_agent_skills_plugin
   else
     echo "    notice: 'claude plugin install talos@talos' failed: $(printable "$(printf '%s' "$out" | tail -n 1 | cut -c1-200)")"
     echo "            Nothing was deleted. After fixing that, re-run this installer or $manual."
@@ -908,7 +1004,8 @@ echo ""
 # restating it, so a vendored install without them runs every stage from a
 # paragraph rather than a rubric. The PLUGIN gets them via a declared dependency;
 # install.sh has to fetch them itself. For per-repo installs, agent-skills still
-# goes into the repo's .claude/skills/ so role profiles can find them locally.
+# goes into the repo's .claude/skills/ so role profiles can find them locally,
+# and every re-install refreshes the vendored copies (vendor_agent_skills).
 #
 # Only skills/ is vendored. The roles invoke skills, never agents -- they have no
 # Task tool -- so agent-skills' own agents would be dead weight in the target repo.
@@ -923,28 +1020,7 @@ if [ "$WITH_SKILLS" = "true" ]; then
     as_tmp="$(mktemp -d)"
     if git clone --depth 1 --quiet "$AGENT_SKILLS_REPO" "$as_tmp/agent-skills" 2>/dev/null \
        && [ -d "$as_tmp/agent-skills/skills" ]; then
-      as_n=0
-      for skill_dir in "$as_tmp/agent-skills/skills"/*/; do
-        [ -f "$skill_dir/SKILL.md" ] || continue
-        name="$(basename "$skill_dir")"
-        dest="$TARGET/.claude/skills/$name/SKILL.md"
-        if [ -f "$dest" ] && [ "$FORCE" = "false" ]; then
-          echo "  skip (exists): $(printable "$dest")"
-        else
-          mkdir -p "$(dirname "$dest")"
-          cp "$skill_dir/SKILL.md" "$dest"
-          as_n=$((as_n + 1))
-        fi
-      done
-      # Ship the licence alongside the copy -- this is third-party MIT content.
-      for lic in LICENSE LICENSE.md; do
-        if [ -f "$as_tmp/agent-skills/$lic" ]; then
-          mkdir -p "$TARGET/.claude/skills"
-          cp "$as_tmp/agent-skills/$lic" "$TARGET/.claude/skills/AGENT-SKILLS-LICENSE"
-          break
-        fi
-      done
-      echo "  installed: $as_n skill(s) into $(printable "$TARGET")/.claude/skills/"
+      vendor_agent_skills "$as_tmp/agent-skills" "$TARGET/.claude/skills"
       echo "  source:    $(printable "$AGENT_SKILLS_REPO") (MIT, unmodified)"
       echo "  skip with: --no-agent-skills"
     else

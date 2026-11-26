@@ -161,7 +161,7 @@ same_file "$SANDBOX/own.orig" "$A/.claude/skills/$TDD/SKILL.md" "AC6 with every 
 # A manifest name that is a symlinked directory is not written through.
 mkdir -p "$SANDBOX/outside"
 cp "$SANDBOX/own.orig" "$SANDBOX/outside/SKILL.md"
-rm -rf "${S:?}/$CRQ"
+rm -rf "${S:?}/${CRQ:?}"
 ln -s "$SANDBOX/outside" "$S/$CRQ"
 repo_inst "$UP" "$T"
 same_file "$SANDBOX/own.orig" "$SANDBOX/outside/SKILL.md" "AC6 a symlinked skill directory is not written through"
@@ -170,7 +170,7 @@ rm -f "${S:?}/$CRQ"
 repo_inst "$UP" "$T"
 
 # upstream drops a skill
-git -C "$UP" rm -qr "skills/$CRQ"
+git -C "$UP" rm -qr "skills/${CRQ:?}"
 commit_upstream "$UP"
 cp "$S/$CRQ/SKILL.md" "$SANDBOX/dropped.orig"
 repo_inst "$UP" "$T"
