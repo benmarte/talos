@@ -218,6 +218,14 @@ claude plugin marketplace add benmarte/talos
 claude plugin install talos@talos
 ```
 
+### Upgrading from v0.23.0
+
+v0.23.1 is a patch with one fix: agent-skills now stays current (#1092). Re-run `bash install.sh --global` and restart the Claude Code sessions that drive Talos. The Buzz plugin is unchanged.
+
+- Before this patch, both install paths took upstream's agent-skills on the first install and never refreshed it. Now `install.sh --global` runs `claude plugin update agent-skills@talos` after it installs the talos plugin. A failed update prints a notice with the command to run yourself, and the install still succeeds.
+- A per-repo re-install (`install.sh <repo>`) overwrites the skills it vendored into `<repo>/.claude/skills/` with upstream's current copies, without `--force`. It records them in `.claude/skills/.agent-skills-manifest`, which you should commit with the skills. A repo vendored by an earlier version is recognised by its `AGENT-SKILLS-LICENSE` file, and there every skill with an upstream name counts as vendored: if you edited one of those, commit or copy it before you re-install. Otherwise a skill you wrote yourself, or a symlink, is never overwritten, and a skill upstream dropped is left in place and named.
+- `--no-agent-skills` opts out of both.
+
 ### Upgrading from v0.22.2
 
 v0.23.0 adds Talos's own merge queue and fixes many routing, CI-wait and lock faults. Re-run `bash install.sh --global` and restart the Claude Code sessions that drive Talos. The Buzz plugin is unchanged, so it does not need to be loaded again.
