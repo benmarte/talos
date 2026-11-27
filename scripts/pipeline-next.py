@@ -75,7 +75,7 @@ UNSUPPORTED_RE = re.compile(r'not implemented for provider|unknown verb')
 # The line that marks a spec the design-mode security pass has been through (#837).
 # A member of a batch (#834): one line naming its lead, the number not followed by a digit.
 BATCHED_RE = re.compile(r'^[ \t]*Batched into:[ \t]*#([0-9]+)(?![0-9])', re.M)
-THREAT_MODEL_RE = re.compile(r'^[ \t]*## Threat model[ \t]*$', re.M)
+THREAT_MODEL_RE = re.compile(r'^[ \t]*## Threat model[ \t]*\r?$', re.M)  # CRLF too (#1099)
 APPROVALS = (('qa', 'qa:pass'), ('docs', 'docs:done'), ('reviewer', 'review:approved'),
              ('security', 'security:approved'), ('adversarial', 'adversarial:approved'))
 # The roles roles.required_when may skip (#835): qa and docs never are.
