@@ -29,7 +29,7 @@ vcs.azure.project vcs.azure.work_item_type vcs.azure.area_path vcs.file.source.p
 board.enabled board.stage_label board.url board.project_number board.owner board.status_field board.statuses.*
 board.status_map.* board.azure_team board.azure_board board.azure_columns.* board.azure_states.* board.azure_states.ready board.azure_states.in_progress
 board.azure_states.in_review board.azure_states.done verify verify.commands verify.qa_mode
-verify.targeted verify.ci_scope verify.targeted_commands verify.dev_tests verify.e2e verify.guide review.guide developer.checklist verify.e2e_artifacts.dir verify.e2e_artifacts.include verify.e2e_artifacts.max_files verify.e2e_artifacts.max_mb verify.walk.specs verify.walk.max_mb verify.walk.require_video verify.walk.ui_paths verify.ready verify.ci_wait_s verify.ci_requeue_stuck verify.timeout_ms merge.auto merge.method
+verify.targeted verify.ci_scope verify.ci_covers qa.unverifiable qa.browser verify.targeted_commands verify.dev_tests verify.e2e verify.guide review.guide developer.checklist verify.e2e_artifacts.dir verify.e2e_artifacts.include verify.e2e_artifacts.max_files verify.e2e_artifacts.max_mb verify.walk.specs verify.walk.max_mb verify.walk.require_video verify.walk.ui_paths verify.ready verify.ci_wait_s verify.ci_requeue_stuck verify.timeout_ms merge.auto merge.method
 merge.required_checks merge.forbidden_files
 merge.forbidden_files_replace merge.forbidden_files_allow merge.approval_waiver_paths
 merge.union_paths merge.generated_paths merge.generate_command merge.auto_sync merge.require_current_base merge.queue merge.queue_ci merge.queue_batch merge.queue_branch_prefix merge.queue_timeout_s merge.queue_retry merge.queue_solo_labels merge.queue_solo_paths issues.label_filter issues.skip_labels

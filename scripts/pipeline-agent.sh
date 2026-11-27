@@ -110,6 +110,10 @@
 #                       dontAsk | plan; unset (default) passes no --permission-mode.
 #                       Role-first like the list. An explicit opt-in: see the risk note in
 #                       docs/reference.md (issue text is untrusted input).
+#   qa.browser          (#1095) off (default) | playwright: the claude runner's qa and
+#                       developer stages get --mcp-config
+#                       <talos>/templates/mcp/playwright.json (unless the repo's
+#                       .mcp.json defines `playwright`) and the mcp__playwright rule.
 #   agents.capture_usage  (#420) bool, default true. Records each attempt's token
 #                       usage in the stage event. claude gets `--output-format
 #                       json` (after agents.runner_args, before the prompt) and
@@ -1539,9 +1543,46 @@ _guard_changed() {
   return 1
 }
 
+# ── Browser (#1095) ───────────────────────────────────────────────────────────
+# `--setting-sources project` loads no user-level MCP server, so a stage has no
+# browser of its own. With qa.browser: playwright the qa and developer stages get
+# Talos's pinned config (templates/mcp/playwright.json) and the mcp__playwright
+# rule. A repo whose .mcp.json defines `playwright` keeps its own server: the
+# rule only, no second server.
+_cp_browser_wanted() {
+  case "$ROLE" in developer | qa) ;; *) return 1 ;; esac
+  [ "$(cfg qa.browser)" = playwright ]
+}
+# _cp_repo_playwright: the stage cwd's or the repo root's .mcp.json defines it.
+_cp_repo_playwright() {
+  local _d
+  for _d in "$PWD" "$(git rev-parse --show-toplevel 2>/dev/null)"; do
+    [ -n "$_d" ] && [ -f "$_d/.mcp.json" ] || continue
+    if python3 -I -c 'import json, sys
+sys.exit(0 if "playwright" in json.load(open(sys.argv[1]))["mcpServers"] else 1)' "$_d/.mcp.json" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+# --mcp-config takes several values: another flag, or the `--` before the prompt,
+# always follows it in the dispatch.
+_cp_browser_config() {
+  local _f
+  ! _cp_repo_playwright || return 0
+  if _f="$(cd "$SCRIPT_DIR/../templates/mcp" 2>/dev/null && pwd)/playwright.json" && [ -f "$_f" ]; then
+    _CP_ARGS+=(--mcp-config "$_f")
+  else
+    _cp_warn "qa.browser is playwright but this install has no templates/mcp/playwright.json; reinstall Talos"
+  fi
+}
+
 _claude_perm_build() {
-  local _a _own_allow=0 _skip=0 _own_mode=0 _mode _f _n _d _i=0 _line _rules=() _dirs=() _deny=() _tools _in_cwd=0 _phys _home _g
+  local _a _own_allow=0 _skip=0 _own_mode=0 _mode _f _n _d _i=0 _line _rules=() _dirs=() _deny=() _tools _in_cwd=0 _phys _home _g _browser=0
   _CP_ARGS=()
+  # The server is configuration, not a permission: it is added even when
+  # runner_args owns the permissions.
+  if _cp_browser_wanted; then _browser=1; _cp_browser_config; fi
   for _a in ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"}; do
     case "$_a" in
       --allowedTools | --allowed-tools | --allowedTools=* | --allowed-tools=*) _own_allow=1 ;;
@@ -1650,6 +1691,8 @@ EOF
   done <<EOF
 $_tools
 EOF
+  # After the config list, so a role list that replaces the global one keeps it.
+  [ "$_browser" -eq 0 ] || _rules+=(mcp__playwright)
   _CP_ARGS+=(--allowedTools "${_rules[@]}")
   [ "${#_deny[@]}" -eq 0 ] || _CP_ARGS+=(--disallowedTools "${_deny[@]}")
 }

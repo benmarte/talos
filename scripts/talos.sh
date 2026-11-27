@@ -39,11 +39,17 @@
 #         and per role agent.<role>.<field> (runner, runner_cmd, model, effort,
 #         fallback, effort_notice; only runner is always printed) from
 #         `pipeline-agent.sh --resolve-roles`. Then the `ref=` lines, last: none
-#         under ORCHESTRATOR=code, `ref=llm-loop` first under llm.
-# env-reasons: scripts-missing python-missing scratch-unavailable config-unreadable isolation-invalid usage unknown-verb draft-resolve-failed resolve-failed effort-check-failed value-truncated
+#         under ORCHESTRATOR=code, `ref=llm-loop` first under llm. QA_BROWSER
+#         and QA_UNVERIFIABLE (#1095) are the effective qa.browser and
+#         qa.unverifiable (any other value: the default, `warn
+#         reason=invalid-value key=<key>`); `warn
+#         reason=required-checks-skip-verify` says merge.required_checks is set,
+#         verify.ci_scope is full and verify.ci_covers is false.
+# env-reasons: scripts-missing python-missing scratch-unavailable config-unreadable isolation-invalid usage unknown-verb draft-resolve-failed resolve-failed effort-check-failed value-truncated invalid-value required-checks-skip-verify
 #   stop: scripts-missing python-missing scratch-unavailable config-unreadable
 #         isolation-invalid usage unknown-verb draft-resolve-failed
-#   warn: resolve-failed effort-check-failed value-truncated
+#   warn: resolve-failed effort-check-failed value-truncated invalid-value
+#         required-checks-skip-verify
 #
 # gate    Composes the pipeline-vcs.sh and pipeline-budget.sh calls of the playbook
 #         into one verdict. It never merges: on `verdict=merge` the orchestrator
@@ -948,6 +954,18 @@ _talos_resolve_roles() {
   done < "$_f"
 }
 
+# _talos_env_enum <VAR> <key> <default> <other>: prints VAR=<the key's value>; a
+# value that is neither prints the default and `warn reason=invalid-value`.
+_talos_env_enum() {
+  local _v
+  _v="$(cfg "$2")"
+  case "$_v" in
+    "$3" | "$4") ;;
+    *) _talos_emit warn "reason=invalid-value key=$2"; _v="$3" ;;
+  esac
+  _talos_emit "$1" "$_v"
+}
+
 # _talos_base_branch: base_branch, else the remote's default branch, else main.
 _talos_base_branch() {
   local _b
@@ -992,6 +1010,17 @@ _talos_env() {
   done <<EOF
 $(_talos_env_table)
 EOF
+
+  # The QA keys (#1095): the effective value, which is the default for any value
+  # that is neither of the two.
+  _talos_env_enum QA_BROWSER qa.browser off playwright
+  _talos_env_enum QA_UNVERIFIABLE qa.unverifiable note fail
+  # #1095: required checks are taken as the full run, but the owner says some
+  # verify commands do not run in them.
+  if [ -n "$(cfg merge.required_checks)" ] && [ "$(cfg verify.ci_scope)" = full ] \
+     && [ "$(cfg verify.ci_covers)" = false ]; then
+    _talos_emit warn reason=required-checks-skip-verify
+  fi
 
   # The harness and the LLM profiles (#539). Only a profile-aware run prints them
   # (profiles configured, TALOS_PROFILE or TALOS_HARNESS set; pipeline-config.sh
@@ -4256,7 +4285,13 @@ _talos_prompt_role() {
         _g="$(bash "$SCRIPT_DIR/pipeline-verify.sh" --guards ${_wt:+--worktree "$_wt"} 2>/dev/null)" || _g=""
         _g="Guard tests (discovered, run each by its file):"$'\n'"${_g:-none found}"
       fi
-      if [ -n "$_ck" ]; then
+      # #1095: verify.ci_covers: false = some verify commands do not run in CI, so
+      # beside required checks the developer runs the whole list, not a subset.
+      if [ -n "$_ck" ] && [ "$(cfg verify.ci_covers)" = false ]; then
+        _talos_pv VERIFY_COMMANDS "${_v:-none}"
+        _talos_pv DEV_TESTS_LINE ""
+        _talos_pv FINAL_VERIFY_LINE "Final verification: the full \`verify\` list, once, before the final commit (\`verify.ci_covers: false\`: some of these commands do not run in CI). It replaces any \`verify.dev_tests\` set."
+      elif [ -n "$_ck" ]; then
         _talos_pv VERIFY_COMMANDS "none: CI is the full run (merge.required_checks)"
         _talos_pv DEV_TESTS_LINE ""
         _talos_pv FINAL_VERIFY_LINE "Final verification: Tests: files only — CI is the full run (merge.required_checks). Before the final push run only the spec's \`Tests:\` files (through \`verify.targeted_commands\` where that applies) and each guard test by its file; run neither the full \`verify\` list nor the \`verify.dev_tests\` set."$'\n'"$_g"
@@ -4304,7 +4339,8 @@ _talos_prompt_role() {
       _skip=0
       if [ -f "$_r/tests/run-tests.sh" ]; then
         _talos_pv QA_TARGETED_LINE ""
-        [ -z "$(cfg merge.required_checks)" ] || _skip=1
+        # #1095: unless CI does not run every verify command.
+        [ -z "$(cfg merge.required_checks)" ] || [ "$(cfg verify.ci_covers)" = false ] || _skip=1
       else
         _talos_pv QA_TARGETED_LINE "Targeted run: this repo has no \`tests/run-tests.sh\`, so the step 2 command that runs it does not apply. The targeted run is the one \`qa-run\` already did through \`verify.targeted_commands\`; the verdict reports that, never a missing file."
       fi
