@@ -3,8 +3,8 @@
 # until the test stops it (#1106). A `sleep 30 &` holder could die under load
 # before the second `next` read its lease, and a dead holder answers
 # retry_after_s=<reclaim guard>, not the lease's remaining TTL.
-#   AC1 (test) live_holder / stop_holder (tests/helpers.sh): a live process with
-#       no lifetime of its own, killed and reaped by the stop
+#   AC1 (test) start_live_holder / stop_live_holder (tests/helpers.sh): a live
+#       process with no lifetime of its own, killed and reaped by the stop
 #   AC2 (test) tests/talos-run-sections.sh starts no fixed-lifetime holder
 #   AC3 (same) `talos.sh next` answers the TTL for a live holder and the reclaim
 #       guard for a dead one
@@ -18,9 +18,9 @@ use_stubs
 
 # ── AC1: the holder helper pair ───────────────────────────────────────────────
 HOLDER=""
-live_holder HOLDER
+start_live_holder HOLDER
 kill -0 "${HOLDER:-none}" 2>/dev/null
-assert_eq "0" "$?" "AC1 live_holder gives the caller the pid of a live process"
+assert_eq "0" "$?" "AC1 start_live_holder gives the caller the pid of a live process"
 CMD="$(ps -o command= -p "${HOLDER:-none}" 2>/dev/null)"
 if [ -n "$CMD" ] && ! grep -qE '^([^ ]*/)?sleep +[0-9.]+[smhd]? *$' <<<"$CMD"; then
   pass "AC1 the holder is not a bounded sleep"
@@ -28,20 +28,20 @@ else
   fail "AC1 the holder is not a bounded sleep" "command line: ${CMD:-<no process>}"
 fi
 STOPPED="$HOLDER"
-stop_holder "${HOLDER:-}"
-assert_eq "0" "$?" "AC1 stop_holder succeeds"
+stop_live_holder "${HOLDER:-}"
+assert_eq "0" "$?" "AC1 stop_live_holder succeeds"
 if [ -n "$STOPPED" ] && ! kill -0 "$STOPPED" 2>/dev/null; then
-  pass "AC1 after stop_holder the pid is gone (killed and reaped)"
+  pass "AC1 after stop_live_holder the pid is gone (killed and reaped)"
 else
-  fail "AC1 after stop_holder the pid is gone (killed and reaped)" "pid: ${STOPPED:-<none>}"
+  fail "AC1 after stop_live_holder the pid is gone (killed and reaped)" "pid: ${STOPPED:-<none>}"
 fi
 
 # ── AC2: no fixed-lifetime holder in the run sections ─────────────────────────
 SECTIONS="$TALOS_ROOT/tests/talos-run-sections.sh"
 assert_eq "" "$(grep -nE 'sleep [0-9]+ *&' "$SECTIONS")" "AC2 no foreign holder with a fixed lifetime"
-STARTED="$(sed -n 's/^ *live_holder \([A-Za-z_][A-Za-z0-9_]*\)$/\1/p' "$SECTIONS")"
-STOPPED_VARS="$(sed -n 's/^ *stop_holder "\$\([A-Za-z_][A-Za-z0-9_]*\)"$/\1/p' "$SECTIONS")"
-assert_eq "4" "$(grep -c . <<<"$STARTED")" "AC2 the four holder sites use live_holder"
+STARTED="$(sed -n 's/^ *start_live_holder \([A-Za-z_][A-Za-z0-9_]*\)$/\1/p' "$SECTIONS")"
+STOPPED_VARS="$(sed -n 's/^ *stop_live_holder "\$\([A-Za-z_][A-Za-z0-9_]*\)"$/\1/p' "$SECTIONS")"
+assert_eq "4" "$(grep -c . <<<"$STARTED")" "AC2 the four holder sites use start_live_holder"
 assert_eq "$STARTED" "$STOPPED_VARS" "AC2 each section stops the holder it started"
 
 # ── AC3: why the holder must live ─────────────────────────────────────────────
@@ -80,14 +80,14 @@ held_next() {
 lease_wait() { grep -o 'action=wait reason=lease retry_after_s=[0-9]*' <<<"$OUT"; }
 
 HOLDER=""
-live_holder HOLDER
+start_live_holder HOLDER
 # Control: a pid that is no number also answers 1800 (the fail-closed TTL shape).
 kill -0 "${HOLDER:-none}" 2>/dev/null
 assert_eq "0" "$?" "AC3 control: the lease line's pid is a live process"
 held_next "${HOLDER:-none}"
 assert_eq "action=wait reason=lease retry_after_s=1800" "$(lease_wait)" \
   "AC3 a live holder's lease answers the remaining TTL"
-stop_holder "${HOLDER:-}"
+stop_live_holder "${HOLDER:-}"
 
 sh -c ':' & DEAD=$!
 wait "$DEAD" 2>/dev/null

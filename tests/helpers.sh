@@ -414,6 +414,26 @@ wait_until() {
   "$@"
 }
 
+# start_live_holder <var>: start a foreign lease or lock holder and put its pid
+# in <var>. It has no lifetime of its own (#1106): a `sleep <n>` holder can die
+# under load before the code under test reads its lease, and a dead holder takes
+# another branch. It ends on stop_live_holder, or when the shell that started it
+# is gone (so an aborted test leaks nothing); never call it inside `$(...)`.
+start_live_holder() {
+  python3 -I -c 'import os, time
+owner = os.getppid()
+while os.getppid() == owner:
+    time.sleep(1)' </dev/null >/dev/null 2>&1 &
+  printf -v "$1" '%s' "$!"
+}
+# stop_live_holder <pid>: kill the holder and reap it, so the pid reads dead on
+# return.
+stop_live_holder() {
+  kill "$1" 2>/dev/null
+  wait "$1" 2>/dev/null
+  return 0
+}
+
 # lock_contention_run <resource> <workers> <n> <timeout_s> <errdir>: <workers>
 # background workers each do <n> read-sleep-write increments of the counter file
 # <resource> through with_lock (scripts/pipeline-lock.sh) with <timeout_s>; each
