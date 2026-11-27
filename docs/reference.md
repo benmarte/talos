@@ -1035,6 +1035,7 @@ Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azu
 | `assign-issue` | yes | yes | yes | exception: local-only |
 | `assign-pr` | yes | yes (merge requests) | yes (no-op: a pull request has no assignee, its creator is the account user) | exception: local-only |
 | `comment-pr`, `pr-head`, `pr-head-ref`, `check-approval-sha` | yes | yes | yes | exception: no PRs |
+| `post-threat-model` | yes | yes | yes | exception: exits 2 |
 | `pr-state` | yes (`open`, `closed` or `merged`; `talos.sh run` reads it before a dispatch) | exception: not implemented | exception: not implemented | exception: no PRs |
 | `ci-failure-excerpt` | yes (the failing lines of each failed required job, read with `gh run view --log-failed`) | answers `ci-failure-excerpt: unavailable (...)`, exit 0 | answers `ci-failure-excerpt: unavailable (...)`, exit 0 | answers `ci-failure-excerpt: unavailable (...)`, exit 0 |
 | `enqueue-pr` | yes (GitHub's merge queue) | exception: exits 2 | exception: exits 2 | exception: exits 2 |
