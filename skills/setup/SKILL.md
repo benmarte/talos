@@ -89,6 +89,18 @@ Wait for answer.
 
 ---
 
+## Step 3b — Ask: does this project have a UI?
+
+> "Does this project have a UI? [detected: yes/no — e.g. a web framework in `package.json`, or an `.xcodeproj`]"
+
+Wait for answer. Visual checks stay optional either way: `qa.unverifiable` defaults to `note`, so a prose criterion QA cannot check is listed under "Needs a human" and is not a FAIL (`fail` makes it one; set it only when the user asks).
+
+- **No:** write no `qa` block. `qa.browser` stays `off` and nothing is downloaded.
+- **Yes, a web UI:** write `"qa": { "browser": "playwright" }` (claude runner only: the `qa` and `developer` stages get Talos's pinned Playwright MCP server, `templates/mcp/playwright.json`; screenshots land in `.talos/qa-shots`). Chromium is about 150 MB and is not installed by default: offer `bash <talos-checkout>/install.sh --global --with-browser` and run it only on a yes. If the repo's `.mcp.json` already defines `playwright`, Talos keeps that server and only allows its tools; a headless stage loads it only when the repo's `.claude/settings.json` approves it (`"enableAllProjectMcpServers": true`).
+- **Yes, an iOS app:** Playwright does not drive it, so leave `qa.browser` off. Suggest the existing wiring for an XCUITest screenshot suite: `verify.e2e` (the `xcodebuild test` command QA runs once) with `verify.e2e_artifacts.dir` and `verify.e2e_artifacts.include`, which attach its screenshots to the PR.
+
+---
+
 ## Step 4 — Ask: roles
 
 > "Which review stages should run? (all are on by default except adversarial)
@@ -482,6 +494,16 @@ PR (QA's CI-wait loop waits for a check that will never appear, until
 matrix in the workflow you just wrote." This check applies whether the
 config was written earlier in this same run (Step 7) or already existed
 before setup started.
+
+**CI coverage (`verify.ci_covers`).** When `merge.required_checks` is
+non-empty, Talos takes CI as the full run: the developer runs only the spec's
+tests and QA skips its targeted run. Ask: "Does every `verify:` command also
+run in the required checks?" On a no (for example a Swift `xcodebuild test`
+beside a Node-only required job), write `"ci_covers": false` inside `verify`
+(use the object form: `"verify": { "commands": [...], "ci_covers": false }`):
+the developer then runs the full `verify:` list once before the final commit,
+QA keeps its targeted run, and `talos.sh env` prints
+`warn reason=required-checks-skip-verify`. Say that to the user.
 
 If no: skip, no file is written.
 

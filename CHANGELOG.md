@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- feat: visual checks are optional (#1095): with the new repo-only key `qa.unverifiable` unset or `note`, a prose criterion QA cannot check (`AC<n> prose unverified (<why>)`) is listed under **Needs a human** and is no FAIL (`fail` keeps the old verdict); `qa.browser: playwright` gives the claude runner's `qa` and `developer` stages a pinned headless Playwright MCP server (`install.sh --with-browser` pre-installs Chromium, off by default, a repo's own `playwright` server is kept); `verify.ci_covers: false` makes the developer run the full `verify` list beside `merge.required_checks`, keeps QA's targeted run and makes `talos.sh env` warn `required-checks-skip-verify`; `env` also prints `QA_BROWSER` and `QA_UNVERIFIABLE`
 
 ## [0.23.1] - 2026-11-26
 - fix: every install and re-install now gets upstream's latest agent-skills: `install.sh --global` runs `claude plugin update agent-skills@talos` after installing the talos plugin (a failure prints a notice), and a per-repo re-install overwrites the skills it vendored (recorded in `.claude/skills/.agent-skills-manifest`; a repo with `AGENT-SKILLS-LICENSE` and no manifest counts every upstream-named skill as vendored) without `--force`, while your own skills are still skipped; `--no-agent-skills` opts out

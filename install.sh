@@ -39,6 +39,9 @@
 #   A single update (git pull + install.sh --global) reaches every repo and harness.
 #   Re-runs overwrite existing ~/.talos/ and ~/.claude/ files by default.
 #   Pass --no-overwrite to skip.
+#   --with-browser (either mode, #1095) also runs `install-browser chromium` of the
+#   @playwright/mcp version pinned in templates/mcp/playwright.json, for repos
+#   that set qa.browser: playwright; off by default, a failure is a notice.
 #   Stale files (#579): each run writes ~/.talos/.install-manifest, one path per
 #   line relative to ~/.talos, for every file it ships under scripts/,
 #   templates/, skills/<command>/refs/ and buzz-plugin/ (the Buzz plugin, #902:
@@ -161,6 +164,7 @@ KEEP_MARKETPLACE=false
 NO_STATUSLINE=false
 STATUSLINE_UNDO=false
 LOCAL_PLUGIN=false
+WITH_BROWSER=false
 AGENT_SKILLS_REPO="${TALOS_AGENT_SKILLS_REPO:-https://github.com/addyosmani/agent-skills}"
 
 expect_harness=false
@@ -183,6 +187,7 @@ for arg in "$@"; do
     --no-statusline)     NO_STATUSLINE=true ;;
     --statusline-undo)   STATUSLINE_UNDO=true; GLOBAL=true ;;
     --local-plugin)      LOCAL_PLUGIN=true ;;
+    --with-browser)      WITH_BROWSER=true ;;
     --harness)       expect_harness=true ;;
     --harness=*)       HARNESS_RAW="${arg#*=}"; HARNESS_GIVEN=true ;;
     *)                 [ -z "$TARGET" ] && TARGET="$arg" ;;
@@ -763,6 +768,25 @@ TALOS_POINTER_BODY
   done
 }
 
+# ── Browser for qa.browser (#1095) ───────────────────────────────────────────
+# --with-browser pre-installs the Chromium of the @playwright/mcp version that
+# templates/mcp/playwright.json pins (the one place that names it), about 150 MB.
+# Optional: a failure prints a notice and never aborts the install.
+install_browser() {
+  [ "$WITH_BROWSER" = "true" ] || return 0
+  local _pkg=""
+  echo ""
+  echo "Browser (qa.browser: playwright):"
+  _pkg="$(python3 -I -c 'import json, sys
+args = json.load(open(sys.argv[1]))["mcpServers"]["playwright"]["args"]
+print(next(a for a in args if a.startswith("@playwright/mcp@")))' "$SRC/templates/mcp/playwright.json" 2>/dev/null)" || _pkg=""
+  if [ -n "$_pkg" ] && command -v npx >/dev/null 2>&1 && npx -y "$_pkg" install-browser chromium; then
+    echo "  Chromium installed for $(printable "$_pkg"); set \"qa\": {\"browser\": \"playwright\"} in a repo's talos.pipeline.json to use it."
+  else
+    echo "  notice: Chromium was not installed (needs python3, npx and network). Run it later: npx -y ${_pkg:-@playwright/mcp@<pinned version>} install-browser chromium" >&2
+  fi
+}
+
 # ── GLOBAL INSTALL ────────────────────────────────────────────────────────────
 if [ "$GLOBAL" = "true" ]; then
   TALOS_HOME_DIR="${TALOS_HOME:-$HOME/.talos}"
@@ -975,6 +999,7 @@ sys.stdout.buffer.write(open(sys.argv[1], "rb").read().replace(b"__TALOS_HOME__"
     echo "        Role profiles registered at: $(printable "$CLAUDE_DIR")/agents/<role>.md"
     echo "        Prompt cache: the developer and qa profiles ask for the 1-hour cache (needs Claude Code 2.1.248+). On 2.1.242 to 2.1.247 set \"subagentPromptCacheTtl\": \"1h\" in $(printable "$CLAUDE_DIR")/settings.json yourself; this installer writes no setting."
   fi
+  install_browser
   exit 0
 fi
 
@@ -1141,3 +1166,5 @@ if [ "$CLAUDE_ADAPTER" = "true" ]; then
   echo "        /plugin marketplace add benmarte/talos"
   echo "        Skills are discovered at session start; restart any open session."
 fi
+
+install_browser

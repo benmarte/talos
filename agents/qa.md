@@ -36,10 +36,9 @@ substitute it).
    `qa-run: verdict PASS|FAIL|BLOCKED <why>` line:
    - `AC<n> red@<sha8> green@head` -- a test criterion that was red, then green.
    - `AC<n> FAIL ...` -- not green at head, missing, or `vacuous` (green at the
-     red commit). A `vacuous` FAIL is not repaired by adding an assertion: the
-     red commit is the branch's first, so no later commit can turn it red. The
-     fix is the spec (the criterion becomes `(same: <why>)`, or its test file
-     goes on the `Tests:` line); `talos.sh run` stops it as `spec-unusable`.
+     red commit). No later commit repairs `vacuous`: fix the spec
+     (`(same: <why>)`, or the test file on the `Tests:` line); `talos.sh run`
+     stops it as `spec-unusable`.
    - `AC<n> guard green@head (green at red@<sha8>)` -- a vacuous test beside
      red-then-green ones: a guard, copied into the verdict, not exercised by hand.
    - `AC<n> PASS same red@<sha8> green@head` -- a `(same)` criterion green at
@@ -65,9 +64,8 @@ substitute it).
    a `verify.ready` command failed) means the code was not judged: skip the
    Fail procedure and the remaining steps; the first line is
    `BLOCKED: environment: <why>`. A `CONFLICTING` PR is "PR conflicts with base; no CI
-   run will be scheduled" (GitHub schedules no CI run for it, so do not wait on
-   one). Exit 3: no usable runner -- check the criteria by hand and say so in
-   the verdict.
+   run will be scheduled" (do not wait for one). Exit 3: no usable runner --
+   check by hand and say so in the verdict.
 Foreground rule: run the criteria check, the verify list and the CI-wait poll
 in the foreground with an explicit timeout of `min(verify.timeout_ms, 600000)`
 ms (default 600000; the harness caps a foreground command at 600000); never use
@@ -104,10 +102,8 @@ foreground ends QA: the final message's first line is
    empty → the targeted run was not run, not a pass, with the estimate.
    The budget is for Talos's own `tests/run-tests.sh` only; another runner keeps
    `verify.targeted_commands` and no `--budget-s`.
-   - `ci` — beyond the targeted tests above, also run this single bounded
-     foreground command and wait for it to finish before continuing — it
-     blocks in one shell call and returns only once every check named in
-     `merge.required_checks` passes or the wait budget elapses:
+   - `ci` — also run this one bounded foreground command and let it finish; it
+     waits for every `merge.required_checks` check or the budget:
      `bash scripts/pipeline-vcs.sh pr-checks-required <pr> --wait <CI wait budget>`
      It polls inside the one call: exit 2 while a required check is pending or
      missing, 1 once one has failed, 0 once all pass. Not 0 is a FAIL, fail
@@ -123,11 +119,9 @@ foreground ends QA: the final message's first line is
      carries a `CI per-job results` table for the head (job, result, a known
      flake named), from `pr-checks <pr>`. `post-approval` refuses unless the
      required CI is green and re-runs a listed `ci.known_flakes` job once.
-   - `local` (including the empty-`required_checks` fallback above) — there is
-     no CI to trust, but the developer already ran the full `verify:` list
-     before opening the PR (#195), so the targeted-only rule above is
-     unchanged; nothing extra to run. Prefer
-     summary output (`--quiet`); quote only failures, never green output.
+   - `local` (including the empty-`required_checks` fallback above) — the
+     developer ran the full `verify:` list before the PR (#195): the
+     targeted-only rule is unchanged. Prefer `--quiet`; quote only failures.
 3. A criterion `qa-run` reports `red@<sha8> green@head` has its proof: do not
    re-run or hand-exercise it. Every other one (`green@head (red: missing)`,
    `prose hand-checked`, any `qa-run` did not run): drive the actual behavior
@@ -135,6 +129,12 @@ foreground ends QA: the final message's first line is
    spec marker) `prose declared by developer`. After `post-approval`,
    do not re-read your comment.
    The verdict has one line per criterion id, copied from `qa-run`'s lines.
+   Prose you cannot check (no harness, tool or permission; no defect seen)
+   follows `qa-run`'s `unverifiable prose policy` line. `note`: write
+   `AC<n> prose unverified (<why>)` on its own line and PASS if all else is green
+   (listed under "Needs a human"). A failed test criterion or a defect is a FAIL.
+   With `mcp__playwright` tools, use the browser for visual criteria:
+   screenshot without a name (saved in `.talos/qa-shots`), `Read` and cite it.
 4. Look for missing edge-case tests and obvious regressions.
 5. A tool refusal ("requires approval", "don't ask mode") is not a block. Once
    `qa-run` printed a verdict, post it (`post-approval` or `post-verdict`)
