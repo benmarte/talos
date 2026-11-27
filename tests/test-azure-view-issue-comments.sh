@@ -94,7 +94,7 @@ assert_eq "- [ ] one" "$(conv '<ul><li><input type="checkbox" value="checked"> o
 assert_eq "- plain item" "$(conv '<ul><li>plain item</li></ul>')" "AC3 a list item with no box stays a plain bullet"
 
 # ── AC4: block tags, emphasis, code, entities ────────────────────────────────
-assert_eq "a
+assert_eq "# a
 b
 c
 d

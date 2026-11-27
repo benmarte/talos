@@ -9425,7 +9425,8 @@ json.dump({"comments": out}, sys.stdout)
   # item stores (_azure_post_comment's _md_to_html) back into the markdown the
   # spec readers match (#696): <strong>/<b> -> **x**, <em>/<i> -> *x*, <code>
   # -> `x`, <li> -> a "- " line (a checkbox -- [ ] / [x] text, U+2610/2611/2612
-  # or <input type=checkbox> -- is kept as "[ ]" / "[x]"), other block tags ->
+  # or <input type=checkbox> -- is kept as "[ ]" / "[x]"), <hN>text</hN> -> one
+  # line of N "#", a space and the text (#1101), other block tags ->
   # newlines (runs collapsed), <pre> text kept as is, remaining tags dropped,
   # entities unescaped. A <!-- ... --> marker, raw or as &lt;!-- ... --&gt;, is
   # kept verbatim. Every scan is linear: untrusted text, as _ado_description_text.
@@ -9434,7 +9435,7 @@ json.dump({"comments": out}, sys.stdout)
     python3 -I -c '
 import html, json, re, sys
 d = json.load(sys.stdin)
-BLOCK = set("p div br li ul ol tr table blockquote pre h1 h2 h3 h4 h5 h6".split())
+BLOCK = set("p div br li ul ol tr table blockquote pre".split())
 TAG = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9]*)(?![A-Za-z0-9])([^<>]*)>")
 OPEN_PRE = re.compile(r"<pre(?![A-Za-z0-9])[^<>]*>", re.I)
 CLOSE_PRE = re.compile(r"</pre\s*>", re.I)
@@ -9470,7 +9471,7 @@ def convert(src):
             m = pattern.search(s, i)
             return None if m is None else m.span()
         return find
-    src = src.replace("\x01", "").replace("\x02", "")
+    src = re.sub(r"[\x01-\x04]", "", src)
     src = spans(src, lit("<!--"), lit("-->"), lambda o, mid, c: hold(o + mid + c))
     src = spans(src, lit("&lt;!--"), lit("--&gt;"), lambda o, mid, c: hold(html.unescape(o + mid + c)))
     src = spans(src, rx(OPEN_PRE), rx(CLOSE_PRE),
@@ -9492,8 +9493,14 @@ def convert(src):
             return "`"
         if name == "li":
             return "\n" if closing else "\n- "
+        if len(name) == 2 and name[0] == "h" and name[1] in "123456":
+            return "\x04" if closing else "\x03" + name[1]
         return "\n" if name in BLOCK else ""
-    text = html.unescape(TAG.sub(tag, src))
+    def heading(m):
+        words = " ".join(m.group(2).split())
+        return "\n" + "#" * int(m.group(1)) + " " + words + "\n" if words else "\n"
+    text = re.sub("\x03([1-6])([^\x03\x04]*)\x04", heading, TAG.sub(tag, src))
+    text = html.unescape(re.sub("\x03[1-6]|\x04", "\n", text))
     text = text.replace("☐", "[ ] ").replace("☑", "[x] ").replace("☒", "[x] ")
     lines = []
     for line in text.split("\n"):

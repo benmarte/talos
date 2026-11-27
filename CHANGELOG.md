@@ -4,6 +4,7 @@ One line per change, newest first. Releases before 0.17.0 are listed in the last
 
 ## [Unreleased]
 - fix: a spec with CRLF line endings now counts as threat-modelled, so `next` no longer dispatches the threat stage again on it, and `pipeline-vcs.sh post-threat-model` accepts a section with CRLF or lone CR line endings and posts the whole comment with LF line endings (#1099)
+- fix: on Azure DevOps a markdown heading in a work-item comment now survives the round trip: `view-issue` turns `<h1>`..`<h6>` back into `#`..`######` lines, so `## Threat model` is seen and a risk-area issue no longer stops `threat-unresolved`, and `post-threat-model` no longer flattens the spec's headings
 
 ## [0.24.0] - 2026-11-27
 - feat: visual checks are optional (#1095): with the new repo-only key `qa.unverifiable` unset or `note`, a prose criterion QA cannot check (`AC<n> prose unverified (<why>)`) is listed under **Needs a human** and is no FAIL (`fail` keeps the old verdict); `qa.browser: playwright` gives the claude runner's `qa` and `developer` stages a pinned headless Playwright MCP server (`install.sh --with-browser` pre-installs Chromium, off by default, a repo's own `playwright` server is kept); `verify.ci_covers: false` makes the developer run the full `verify` list beside `merge.required_checks`, keeps QA's targeted run and makes `talos.sh env` warn `required-checks-skip-verify`; `env` also prints `QA_BROWSER` and `QA_UNVERIFIABLE`

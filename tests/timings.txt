@@ -23,6 +23,7 @@
 9 test-azure-board-columns.sh
 10 test-azure-board-team-default.sh
 18 test-azure-gate-verbs.sh
+10 test-azure-headings-1101.sh
 6 test-azure-normalised-shapes.sh
 5 test-azure-pr-checks-fallback.sh
 11 test-azure-pr-checks.sh
