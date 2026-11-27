@@ -2,9 +2,11 @@
 # test-body-file-extension.sh — a stage's body files are hook-safe (#712). A
 # project's "no stray .md/.txt" PreToolUse hook blocks a `*.md` body file, so no
 # stage could post. A role with Write names a `.talos/<role>-<name>.body` file; a
-# role without Write (it cannot create a file) posts from stdin, `--body-file -`.
+# role without Write (it cannot create a file) posts from stdin, `--body-file -`;
+# for a long body it builds a draft with `draft-append` and posts that (#1089).
 #  AC1 agents/*.md: --body-file/--summary-file args are `-` or literal .talos/<role>-*.body
-#      paths; a profile whose tools: line lacks Write uses `-` only and names no .body path
+#      paths; a profile whose tools: line lacks Write uses `-` (with draft-append, also
+#      the `<path>` it prints) and names no .body path
 #  AC2 no "render/post <template>.md" instruction in agents, prompts or refs; developer and
 #      docs name their .body file, the read-only roles post with `--body-file -`
 #  AC3 planner and llm-loop refs use .talos/*.body, not mktemp or the placeholder F
@@ -45,7 +47,10 @@ for f in "$AGENTS"/*.md; do
       "AC1 $role: every --body-file/--summary-file argument is - or a literal .talos/$role-*.body path"
   else
     notstdin="$(file_args "$f" 'body-file|summary-file' | grep -vx -e '-' || true)"
-    assert_eq "" "$notstdin" "AC1 $role: no Write tool, so every --body-file/--summary-file argument is -"
+    # #1089: `draft-append` builds a long body without Write, so a profile that
+    # names it may also say `<path>`, the draft path it prints. Nothing else.
+    if grep -q 'draft-append' "$f"; then notstdin="$(grep -vx -e '<path>' <<<"$notstdin" || true)"; fi
+    assert_eq "" "$notstdin" "AC1 $role: no Write tool, so every --body-file/--summary-file argument is - (or the draft-append <path>)"
     assert_eq "0" "$(grep -cE '\.talos/[a-z0-9-]+\.body' "$f")" "AC1 $role: no Write tool, so no .talos/*.body path"
   fi
   text="$(cat "$f")"

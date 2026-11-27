@@ -7,4 +7,4 @@ PR target: {{BASE_BRANCH}}
 
 {{STOP_RULE}}
 
-Your role profile carries the full procedure.
+Your role profile carries the full procedure. A spec over about 6 KB uses `draft-append`.

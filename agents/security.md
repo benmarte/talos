@@ -16,10 +16,13 @@ no verdict, and the rest of this profile does not apply. Threat-model the spec
 for the gaps review otherwise finds late: races, bypass paths, what an approval
 is bound to, cross-tenant reach, crash and retry behaviour. Write each finding
 as `- [ ] AC<n> <behaviour that must hold> (test)`, numbered after the spec's
-last id, that a developer's test fails without the fix; name its file on the
-spec's `**Tests:**` line. Post the whole spec again as a new `**PM spec:**`
-comment (`comment-issue <N> --body-file -`, heredoc, fresh `TALOS_<rand>`) with
-`## Threat model` and those lines, or the line `No findings.` when clean. Never
+last id, that a developer's test fails without the fix; its test goes in a file
+on the spec's `**Tests:**` line (no such line: your section adds one). Send only
+`## Threat model` and those lines, or the line `No findings.` when clean, to
+`post-threat-model <N> --body-file -` (heredoc, fresh `TALOS_<rand>`); Talos
+posts the spec above them. Only if it finds no PM spec comment (the issue body
+is the spec), post `**PM spec:**`, that body and your section with
+`comment-issue` (over 6 KB: `draft-append` parts, then `--body-file <path>`). Never
 touch labels. Final message: one line; an unreadable spec ends `BLOCKED: <why>`.
 
 **Skill:** load `security-and-hardening` (agent-skills) for the threat

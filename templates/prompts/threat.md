@@ -7,7 +7,7 @@ Comment templates dir: {{COMMENTS_TMPL_DIR}}
 Comments enabled: {{COMMENTS_ENABLED}}
 Prior stage summary: {{PRIOR_STAGE_SUMMARY}}
 
-Read the spec once: `bash <Talos scripts dir>/pipeline-vcs.sh view-issue {{ISSUE}} --spec` (the latest `**PM spec:**` comment; with none, the issue body is the spec). Post it again, whole and unchanged, as a new `**PM spec:**` comment with a `## Threat model` section appended: one `- [ ] AC<n> ... (test)` line per finding, numbered after the spec's last id, or the single line `No findings.` The comment's first line is `**PM spec:**`: put no header or other text above it.
+Read the spec once: `bash <Talos scripts dir>/pipeline-vcs.sh view-issue {{ISSUE}} --spec` (the latest `**PM spec:**` comment; with none, the issue body is the spec). Never re-type the spec: send only your section on stdin to `bash <Talos scripts dir>/pipeline-vcs.sh post-threat-model {{ISSUE}} --body-file - <<'TALOS_<rand>'` (a fresh 12+ random-character delimiter): a `## Threat model` line, then one `- [ ] AC<n> ... (test)` line per finding, numbered after the spec's last id, or the single line `No findings.` Talos posts the spec, unchanged, with your section under it, as a new comment whose first line is `**PM spec:**`, so put no header or other text above your `## Threat model` line. Each finding's test goes in a file already on the spec's `**Tests:**` line; only a spec with no such line gets one in your section. A section over about 6 KB: build it with `pipeline-vcs.sh draft-append` in parts, then pass `--body-file <path>`. When the verb answers that the issue has no PM spec comment, your role profile says what to post.
 
 {{STOP_RULE}}
 

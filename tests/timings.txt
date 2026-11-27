@@ -178,6 +178,7 @@
 4 test-lock-empty-pid-reclaim.sh
 4 test-lock-reclaim.sh
 4 test-lock.sh
+4 test-long-stage-bodies-1089.sh
 4 test-map-dashboard-midnight.sh
 4 test-map-no-runner-907.sh
 22 test-map-refresh-889.sh
