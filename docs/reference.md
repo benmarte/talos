@@ -221,6 +221,17 @@ claude plugin marketplace add benmarte/talos
 claude plugin install talos@talos
 ```
 
+### Upgrading from v0.23.1
+
+v0.24.0 makes visual checks optional and fixes three threat-stage and PM-spec faults (#1095, #1088, #1089, #1090). Re-run `bash install.sh --global` and restart the Claude Code sessions that drive Talos. The Buzz plugin is unchanged.
+
+- **A prose criterion QA cannot check no longer fails the PR.** `qa.unverifiable` (repo-only) defaults to `note`: a `(prose: ...)` criterion QA has no harness, tool or permission for is reported as `AC<n> prose unverified (<why>)` under **Needs a human**, and a PR whose test criteria pass gets `qa:pass`. A failing test criterion or a code defect is still a FAIL. Set `qa.unverifiable: fail` to keep the old verdict.
+- **Optional browser for QA and the developer.** `qa.browser: playwright` (default `off`) gives the claude runner's `qa` and `developer` stages a pinned headless Playwright MCP server (`templates/mcp/playwright.json`, screenshots in `.talos/qa-shots`). A repo whose own `.mcp.json` defines `playwright` keeps its server. `install.sh --with-browser` pre-installs Chromium (about 150 MB, off by default). The browser refuses `file:` URLs, so QA checks a page served by the repo's dev server.
+- **`verify.ci_covers: false`** (repo-only, default `true`) says some `verify.commands` do not run in CI. With `merge.required_checks` set, the developer then runs the full `verify` list once before the final commit, QA keeps its targeted run, and `talos.sh env` warns `required-checks-skip-verify`. `env` also prints `QA_BROWSER` and `QA_UNVERIFIABLE`.
+- **The threat stage sends only its findings.** It pipes its `## Threat model` section to the new `pipeline-vcs.sh post-threat-model <n> --body-file -`, and Talos posts the latest PM spec, unchanged, above it. It runs once per spec: when its run leaves no `## Threat model`, `next` stops `reason=threat-unresolved issue=<n>` instead of dispatching it again (before, it could loop without end). See [the stop table](#a-run-stops) for what to do.
+- **Long specs post in parts.** A headless `claude -p` session refuses a Bash command over about 9 KB (`Parser aborted`), so the PM builds a spec over about 6 KB with the new `pipeline-vcs.sh draft-append <name> --body-file -` (files in the git-ignored `.talos/drafts/`) and posts it with `--body-file <path>`.
+- `agents/pm.md` adds one rule: a criterion's test never runs other test files or the whole suite.
+
 ### Upgrading from v0.23.0
 
 v0.23.1 is a patch with one fix: agent-skills now stays current (#1092). Re-run `bash install.sh --global` and restart the Claude Code sessions that drive Talos. The Buzz plugin is unchanged.
