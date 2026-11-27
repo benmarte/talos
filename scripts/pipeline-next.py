@@ -803,10 +803,9 @@ def issues_overlap(a, b):
 
 def latest_spec(d):
     """The latest spec comment of a `view-issue --spec` document, '' with none."""
-    for c in (d.get('comments') or [])[-1:]:
-        b = c.get('body') if isinstance(c, dict) else None
-        return b if isinstance(b, str) else ''
-    return ''
+    comments = d.get('comments') or [None]
+    b = comments[-1].get('body') if isinstance(comments[-1], dict) else None
+    return b if isinstance(b, str) else ''
 
 
 def threat_key(d):
