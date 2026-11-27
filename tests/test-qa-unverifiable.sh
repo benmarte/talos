@@ -111,6 +111,14 @@ targeted run skipped: CI is the full run (merge.required_checks), yet login fail
 AC2 prose unverified (no browser) but the app crashes (see the log)
 TALOS_h3Vn8cYt5QwZ
 
+# A long header line with text after it is read in linear time, not backtracked.
+LONG="qa-run: issue #5 PR #9 head aabb1122 red abc12345 runner talos tests$(printf ' tests/a.b.c.d.sh%.0s' {1..40}) !"
+started=$SECONDS
+pv "$LONG
+$UNVER"
+assert_eq "0" "$RC" "AC1 a header line with trailing text posts the FAIL"
+assert_eq "yes" "$([ $((SECONDS - started)) -lt 20 ] && echo yes || echo no)" "AC1 and it is matched without backtracking"
+
 # The report lines agents/qa.md and the QA prompt require are no failure. The
 # criterion lines are real `report` output, not hand-written ones.
 printf '%s\n' '- [ ] AC1 greet prints (test)' '- [ ] AC2 the page looks right (prose: visual)' > "$SANDBOX/spec.md"

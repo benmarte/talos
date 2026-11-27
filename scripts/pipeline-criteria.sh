@@ -67,8 +67,9 @@
 #       prints the `report` lines plus one verdict line:
 #         qa-run: verdict PASS ...      the mechanical half passed (prose is yours);
 #             `, <k> same` is named before the prose count when k > 0
-#       A passing run with prose criteria prints `qa-run: unverifiable prose
-#       policy: note|fail ...` before the verdict line (qa.unverifiable, #1095).
+#       A passing run (or one with no usable runner, exit 3) with prose criteria
+#       prints `qa-run: unverifiable prose policy: note|fail ...` before the
+#       verdict line (qa.unverifiable, #1095).
 #       The frozen run (#714): when a Tests file differs between the red commit
 #       and the head, the red commit's version of it runs against the head code
 #       (one more targeted run; none when no file changed or the red proof was
@@ -1702,6 +1703,7 @@ EOF
     4) printf 'qa-run: verdict BLOCKED spec: %s\n' "$runner_why"; return 4 ;;
     3)
       echo "qa-run: no tests/run-tests.sh and no test command in verify:"
+      _qa_unverifiable_line "$n_prose"
       printf 'qa-run: verdict FAIL no usable test runner; hand-check the criteria and say so\n'
       return 3 ;;
   esac
