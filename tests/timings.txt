@@ -121,6 +121,7 @@
 8 test-e2e-artifacts-776.sh
 46 test-e2e-pipeline.sh
 3 test-env-allowlist.sh
+6 test-env-qa-keys.sh
 158 test-env-refs.sh
 3 test-epic-acceptance.sh
 17 test-eval-set-792.sh
@@ -219,6 +220,7 @@
 14 test-per-role-runner.sh
 1 test-pipeline-meta.sh
 7 test-pipeline-status.sh
+20 test-pipeline-agent-browser.sh
 1 test-pipeline-verify-qa-bare.sh
 2 test-pipeline-verify.sh
 5 test-planner.sh
@@ -261,6 +263,7 @@
 17 test-qa-skip-targeted-859.sh
 46 test-qa-spec-fault-678.sh
 5 test-qa-targeted-budget.sh
+10 test-qa-unverifiable.sh
 40 test-queue-sync-then-batch.sh
 5 test-rate-limit-raw-sites.sh
 3 test-ready-gate.sh
