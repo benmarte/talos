@@ -77,7 +77,9 @@
 #                                             same {title, body, labels, comments}
 #                                             shape, but comments is at most the one
 #                                             latest comment whose body starts with
-#                                             "**PM spec:**". That prefix alone decides:
+#                                             "**PM spec:**" (or has it right under
+#                                             the pm or threat stage header; #645,
+#                                             #1088). That prefix alone decides:
 #                                             a spec that quotes a "<!-- talos:" marker
 #                                             is still the spec (#610). Every other
 #                                             comment (marker comments, "**Agent:**"
@@ -1890,16 +1892,17 @@ json.dump({'comments': comments}, sys.stdout)
 }
 
 # ── PM spec comment test (#645), shared by both filters below ────────────────
-# _vi_pm_header prints the pm role's stage header (comments.header with {role}
-# replaced by pm; empty when the key is empty). The PM stage prompt once handed
-# the PM that header, so a spec posted under it must be found: a body is a spec
-# when its first non-blank line starts "**PM spec:**", or is exactly that header
-# and the next non-blank line starts "**PM spec:**". Nothing else may come
-# before the spec prefix.
-_vi_pm_header() {
+# _vi_spec_headers prints the stage headers a spec comment may sit under, one a
+# line: comments.header with {role} replaced by pm, then by threat (empty lines
+# when the key is empty). Both stages post the spec, and their prompts once
+# handed them that header (#645, #1088), so a spec posted under it must be
+# found: a body is a spec when its first non-blank line starts "**PM spec:**",
+# or is exactly one of those headers and the next non-blank line starts
+# "**PM spec:**". Nothing else may come before the spec prefix.
+_vi_spec_headers() {
   local _h
   _h="$(cfg comments.header 2>/dev/null)" || _h=""
-  printf '%s' "${_h//\{role\}/pm}"
+  printf '%s\n%s' "${_h//\{role\}/pm}" "${_h//\{role\}/threat}"
 }
 # _vi_trust_load <resolver-cmd> [args...] (#847)
 #   Resolves the trust inputs exactly as each adapter's read-attempt does
@@ -1917,13 +1920,14 @@ _vi_trust_load() {
   export TRUSTED_AUTHORS VERIFY_AUTHORS CURRENT_USER CURRENT_USER_REFUSED TALOS_CFG
 }
 _VI_PM_SPEC_PY='
-def is_pm_spec(c, hdr):
+def is_pm_spec(c, hdrs):
     lines = [l.strip() for l in (c.get("body") or "").splitlines() if l.strip()]
     if not lines:
         return False
     if lines[0].startswith("**PM spec:**"):
         return True
-    return bool(hdr) and lines[0] == hdr.strip() and len(lines) > 1 and lines[1].startswith("**PM spec:**")
+    headers = [h.strip() for h in hdrs.split("\n") if h.strip()]
+    return lines[0] in headers and len(lines) > 1 and lines[1].startswith("**PM spec:**")
 
 # Author trust (#847): a stage comment counts only from the shared trust set
 # (_vcs_shared_trust_py, the one read-attempt uses), so a commenter outside it
@@ -1968,7 +1972,7 @@ _vi_spec_filter() {
   # (MAX_ARG_STRLEN, 128 KiB): issues with a large comment history hit
   # "Argument list too long" on the argv form, and every caller reads that as
   # state-unavailable. Feed the two JSON payloads on stdin instead, one line
-  # each; the PM header stays the sole argv entry.
+  # each; the two spec headers stay the sole argv entry.
   (_vi_trust_load "$@"; printf '%s\n%s\n' "$_vf_meta" "$_vf_comments" | python3 -I -c "$(_vcs_shared_trust_py)
 $_VI_PM_SPEC_PY
 import json, sys
@@ -1988,7 +1992,7 @@ result = {
     'comments': kept,
 }
 print(json.dumps(result))
-" "$(_vi_pm_header)")
+" "$(_vi_spec_headers)")
 }
 
 # ── Delta comment filter (view-issue --since-stage, #548) ─────────────────────
@@ -2034,7 +2038,7 @@ print(json.dumps({
     'comments': [c for i, c in enumerate(comments) if i >= cut and (i == cut or is_human(c))],
     'earlier_comments': sum(1 for c in comments[:cut + 1] if is_human(c)),
 }))
-" "$(_vi_pm_header)")
+" "$(_vi_spec_headers)")
 }
 
 # ── diff --stat formatting (shared by diff-pr --stat, github and github-api,
@@ -6023,7 +6027,7 @@ print(json.dumps(out))
       _gh_num "$verb" issue "$_vi_n"
       if [ "$DRY_RUN" = "true" ]; then
         if [ "$_vi_spec" = "true" ]; then
-          echo "[dry-run] GET $_GH_API/issues/$_vi_n; read-comments $_vi_n (filter to latest **PM spec:** comment, bare or under the pm stage header line, dropping talos: markers and **Agent:** verdicts)"
+          echo "[dry-run] GET $_GH_API/issues/$_vi_n; read-comments $_vi_n (filter to latest **PM spec:** comment, bare or under the pm or threat stage header line, dropping talos: markers and **Agent:** verdicts)"
         elif [ "$_vi_since" = "true" ]; then
           echo "[dry-run] GET $_GH_API/issues/$_vi_n; read-comments $_vi_n (keep the latest **PM spec:** / **Agent:** comment and the comments after it)"
         else

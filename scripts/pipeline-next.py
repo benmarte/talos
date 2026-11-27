@@ -28,6 +28,9 @@ caller's cwd and environment off sys.path). The callers are thin wrappers:
     issue-side  talos.sh next: the issue-side answer (queue walk, routing,
                 adoption of a queued issue's PR) from a state file plus options.
     where       talos.sh state --summary: the three `where` lines.
+    threat-key  talos.sh done threat (#1088): a `view-issue --spec` document on
+                stdin; prints the attempt key of its latest spec while that spec
+                has no `## Threat model` line, else an empty line.
     sweep-scope talos.sh sweep (#1075): list-issues JSON on stdin, options `vcs`
                 and `me`; prints the issues the operator acts on, as `,<n>,<m>,`
                 (`,` for none), or `-` when the provider has no assignees
@@ -43,6 +46,7 @@ Exit status: 0 an answer; 1 a `stop reason=<enum>` line on stdout (issue-side,
 pr-side) or a `pipeline-status-file: <why>` line on stderr (collect).
 """
 
+import hashlib
 import json
 import os
 import re
@@ -797,6 +801,26 @@ def issues_overlap(a, b):
 # capacity check counts them, and an in-flight candidate among them is passed
 # over (#601).
 
+def latest_spec(d):
+    """The latest spec comment of a `view-issue --spec` document, '' with none."""
+    for c in (d.get('comments') or [])[-1:]:
+        b = c.get('body') if isinstance(c, dict) else None
+        return b if isinstance(b, str) else ''
+    return ''
+
+
+def threat_key(d):
+    """'' when the latest spec of a `view-issue --spec` document has its
+    `## Threat model` line. Else the attempt key of the spec that lacks it (the
+    comment, with none the issue body): a new spec is a new key (#1088)."""
+    spec = latest_spec(d)
+    if THREAT_MODEL_RE.search(spec):
+        return ''
+    body = d.get('body')
+    text = spec or (body if isinstance(body, str) else '')
+    return 'spec-' + hashlib.sha256(text.encode('utf-8', 'surrogatepass')).hexdigest()[:16]
+
+
 class Passed(Exception):
     """While the untargeted walk tries a candidate, a wait is not the answer yet:
     it raises Passed with the line, and the walk goes on (#601)."""
@@ -957,11 +981,23 @@ class Router:
             raise Stop('max-fix-attempts')
         raise Stop('record-failed')
 
+    def threat_ran(self, n, key):
+        """Is the latest attempt record of issue n the threat stage's run on the
+        spec of this key (#1088)? `done threat` writes it."""
+        rc, out, err = self.run_vcs('read-attempt', str(n))
+        if rc != 0:
+            if UNSUPPORTED_RE.search(err):
+                raise Stop('unsupported-verb:read-attempt')
+            raise Stop('state-unavailable')
+        return re.search(r'^stage=threat count=[0-9]+ total=[0-9]+ key=%s$' % re.escape(key), out, re.M) is not None
+
     def needs_threat(self, n):
         """Does issue n still need its design-mode security pass (#837)? Its
         title, body or latest PM spec names a risk area and that spec has no
         `## Threat model` line yet. One `view-issue --spec` read, only with
-        areas configured; an unreadable issue is never guessed."""
+        areas configured; an unreadable issue is never guessed. A stage that
+        already ran on this spec is never dispatched on it again (#1088): that
+        stops threat-unresolved."""
         if not self.risk_areas:
             return False
         rc, out, err = self.run_vcs('view-issue', str(n), '--spec')
@@ -975,14 +1011,15 @@ class Router:
             raise Stop('state-unavailable')
         if not isinstance(d, dict):
             raise Stop('state-unavailable')
-        spec = ''
-        for c in (d.get('comments') or [])[-1:]:
-            b = c.get('body') if isinstance(c, dict) else None
-            spec = b if isinstance(b, str) else ''
-        if THREAT_MODEL_RE.search(spec):
+        key = threat_key(d)
+        if not key:
             return False
-        text = '\n'.join(x for x in (d.get('title'), d.get('body'), spec) if isinstance(x, str)).lower()
-        return any(a in text for a in self.risk_areas)
+        text = '\n'.join(x for x in (d.get('title'), d.get('body'), latest_spec(d)) if isinstance(x, str)).lower()
+        if not any(a in text for a in self.risk_areas):
+            return False
+        if self.threat_ran(n, key):
+            raise Stop('threat-unresolved issue=%d' % n)
+        return True
 
     def developer_route(self, n):
         # A developer dispatch for an issue that already has an open PR is a fix
@@ -1281,6 +1318,10 @@ def main(argv):
     if mode == 'collect':
         opts = opts_from(argv[1:])
         collect()
+        return 0
+    if mode == 'threat-key':
+        d = json.load(sys.stdin)
+        print(threat_key(d))
         return 0
     if mode == 'sweep-scope':
         opts = opts_from(argv[1:])

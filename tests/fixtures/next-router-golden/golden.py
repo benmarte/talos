@@ -198,10 +198,13 @@ def next_cases():
     add(issue_case('confirmed-planner-long-body', S(), [iss(3, [C], body='x' * 2000)], issue='3', roles='planner,pm'))
     add(issue_case('confirmed-planner-small', S(), [iss(3, [C], body='small')], issue='3', roles='planner,pm'))
     # threat
-    add(issue_case('threat-needed', S(), [iss(3, [D], body='touches auth code', comments=comment('spec'))], issue='3', risk_areas='auth\ncrypto'))
+    no_attempt = {'read-attempt.3.json': 'stage= count=0 total=0'}
+    add(issue_case('threat-needed', S(), [iss(3, [D], body='touches auth code', comments=comment('spec'))], issue='3', risk_areas='auth\ncrypto',
+                   files=no_attempt))
     add(issue_case('threat-done', S(), [iss(3, [D], body='touches auth code', comments=comment('spec\n## Threat model\nok'))], issue='3', risk_areas='auth'))
     add(issue_case('threat-no-area', S(), [iss(3, [D], body='plain', comments=comment('spec'))], issue='3', risk_areas='auth'))
-    add(issue_case('threat-in-spec', S(), [iss(3, [D], body='plain', comments=comment('uses CRYPTO'))], issue='3', risk_areas='crypto'))
+    add(issue_case('threat-in-spec', S(), [iss(3, [D], body='plain', comments=comment('uses CRYPTO'))], issue='3', risk_areas='crypto',
+                   files=no_attempt))
     add(issue_case('threat-with-pr-is-fix-round', S(prs=[pr(20, 3, 'qa')]), [iss(3, [D], body='auth')], issue='3', risk_areas='auth',
                    files={'check-attempt.3.rc': '0'}))
     add(issue_case('threat-unsupported', S(), [iss(3, [D], body='auth')], issue='3', risk_areas='auth',
