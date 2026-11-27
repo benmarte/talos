@@ -4,6 +4,7 @@ One line per change, newest first. Releases before 0.17.0 are listed in the last
 
 ## [Unreleased]
 - fix: the `threat` stage is no longer dispatched forever: its prompt carries no comment header (the header hid the re-posted spec from `view-issue --spec`), a spec posted under the pm or threat stage header is read as the spec, and a threat run that leaves the latest spec without `## Threat model` is recorded, so `next` stops `reason=threat-unresolved issue=<n>` instead of dispatching it again on the same spec
+- fix: `agents/pm.md` adds a spec-writing rule: a criterion's test never runs other test files or the whole suite, because the `verify` list carries regression safety, and a `(same)` test is one focused check of the kept behaviour (existing tests are unchanged)
 
 ## [0.23.1] - 2026-11-26
 - fix: every install and re-install now gets upstream's latest agent-skills: `install.sh --global` runs `claude plugin update agent-skills@talos` after installing the talos plugin (a failure prints a notice), and a per-repo re-install overwrites the skills it vendored (recorded in `.claude/skills/.agent-skills-manifest`; a repo with `AGENT-SKILLS-LICENSE` and no manifest counts every upstream-named skill as vendored) without `--force`, while your own skills are still skipped; `--no-agent-skills` opts out
