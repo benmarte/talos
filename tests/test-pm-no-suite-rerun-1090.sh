@@ -39,7 +39,8 @@ assert_contains "$PROMPT" "A criterion's test never runs other test files or the
 assert_contains "$PROMPT" 'the `verify` list carries regression safety' \
   "AC1 the pm prompt says the verify list carries regression safety"
 
+# Kept wording (the spec's second criterion is prose, so no id here).
 assert_contains "$PROMPT" 'files touched, `git diff`, or lint/format/type-check clean is `(prose: ...)`, never `(test)` or `(same)`' \
-  "AC2 the pm prompt routes a git diff / files-touched criterion to (prose: ...)"
+  "control: the pm prompt still routes a git diff / files-touched criterion to (prose: ...)"
 
 finish
