@@ -223,6 +223,7 @@
 2 test-pipeline-verify.sh
 5 test-planner.sh
 4 test-plugin-install.sh
+3 test-pm-no-suite-rerun-1090.sh
 15 test-post-approval-body.sh
 17 test-post-approval-stdin.sh
 38 test-post-approval.sh

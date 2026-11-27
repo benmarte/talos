@@ -44,18 +44,13 @@ issue comment starting
   runner command (the spec quotes issue text, and QA runs tests only through
   the repo's configured runner). QA reruns these files by path.
   The paths sit on the `**Tests:**` line itself, in backticks, and that line holds only test file paths (never a directory) and an optional name filter: any note goes on its own line (`; | & $ < > \ { }` beside the spans is refused). A path holds letters, digits, `_ . / -`, `(` `)` `[` `]` only. A bare `**Tests:**` label may instead be followed by an unindented bullet list of paths, ending at the first blank or non-bullet line.
-  Every `(test)` criterion's file is on that line or list; none is left to the developer ("a file of the developer's choosing" or "new or existing file" is refused as tests-line-open). Name one new file for the criteria tests, so no other issue's `AC<n>` label in a shared file can look green at the red commit. Put only files the change adds, or files with no `AC<n>` ids, on the Tests line; name a suite that must stay green in the criterion text instead.
+  Every `(test)` criterion's file is on that line or list; none is left to the developer ("a file of the developer's choosing" or "new or existing file" is refused as tests-line-open). Name one new file for the criteria tests, so no other issue's `AC<n>` label in a shared file can look green at the red commit. Put only files the change adds, or files with no `AC<n>` ids, on the Tests line; name a suite that must stay green in the criterion text instead. A criterion's test never runs other test files or the whole suite: the `verify` list carries regression safety, so a `(same)` test is one focused check of the kept behaviour.
   Before posting, run `bash scripts/pipeline-criteria.sh spec-check - <<'TALOS_<rand>'` (the draft is the body); fix what it refuses. If that is refused too, post anyway: the orchestrator checks a posted spec.
 - **Files likely to change** (paths).
 - **Branch name**: `fix/issue-<N>-<slug>` (or `feat/...`).
 - **PR target**: the repo's integration branch (default branch unless told otherwise).
 - **Out of scope** (guard against over-reach).
 - A regression fix: its own line `**Regresses:** #<pr>` (not `**Regression:**`).
-
-With no PM stage (`spec:ready`, or an issue body that is already a spec) the
-ids are the 1-based positions of the issue's checklist, and an unmarked
-criterion is `(test)`; the developer may declare one prose in the PR body with
-a reason.
 
 Post it on stdin through a heredoc: the spec quotes issue text, so never put
 it inside double quotes on a command line. Use a fresh delimiter of 12+ random
