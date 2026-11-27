@@ -86,6 +86,8 @@ merge.generated_paths
 merge.required_checks
 merge.union_paths
 pipeline.risk_areas
+qa.browser
+qa.unverifiable
 repo
 review.guide
 roles.required_when.*
@@ -97,6 +99,7 @@ vcs.file.source.path
 vcs.provider
 vcs.repo
 verify
+verify.ci_covers
 verify.ci_scope
 verify.commands
 verify.dev_tests
