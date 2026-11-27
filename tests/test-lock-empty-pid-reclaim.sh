@@ -2,7 +2,7 @@
 # Regression tests for the reclaim of a lock whose holder died inside the claim
 # window (#1011): a lock dir with no pid file, or an empty one, is reclaimed once
 # the dir is over the grace period old, and a stale reclaim gate is cleared by
-# one waiter only (an atomic rename, not an rm -rf two waiters can both run).
+# one waiter only (a claim on that one gate, not an rm two waiters can both run).
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
@@ -51,16 +51,16 @@ rc3b=0
 assert_eq "1" "$rc3b" "AC3 a fresh lock dir with an empty pid file is waited on until the timeout"
 assert_file_exists "$LOCK3B/pid" "AC3 the fresh empty pid file is left alone"
 
-# ── AC4: a stale gate and two concurrent waiters: one rename clears it ───────
+# ── AC4: a stale gate and two concurrent waiters: one of them clears it ──────
 RES4="$SANDBOX/ac4-target"
 LOCK4="$RES4.lock.d"
 GATE4="$LOCK4.reclaim"
-RENAMES4="$SANDBOX/ac4-renames"
+CLEARS4="$SANDBOX/ac4-clears"
 mkdir -p "$LOCK4"
 printf '%s\n' "$(dead_pid)" > "$LOCK4/pid"
 printf '%s\n' "999999" > "$GATE4"
 touch -t 202601010000 "$GATE4"
-: > "$RENAMES4"
+: > "$CLEARS4"
 waiter4() {  # $1 = waiter name
   (
     WAITER="$1"
@@ -81,11 +81,11 @@ waiter4() {  # $1 = waiter name
       fi
       command find "$@"
     }
-    # Log every successful rename of the gate itself.
-    mv() {
-      command mv "$@"; local rc=$?
-      if [ "$rc" -eq 0 ] && [ "$1" = "$GATE4" ]; then printf '%s\n' "$WAITER" >> "$RENAMES4"; fi
-      return "$rc"
+    # Log every clear of the stale gate that reports success.
+    eval "_real_clear_gate() $(declare -f _lock_clear_stale_gate | sed 1d)"
+    _lock_clear_stale_gate() {
+      _real_clear_gate "$@" || return 1
+      printf '%s\n' "$WAITER" >> "$CLEARS4"
     }
     _lock_acquire "$RES4" 5 && _lock_release "$RES4"
   ) >/dev/null 2>&1
@@ -93,7 +93,7 @@ waiter4() {  # $1 = waiter name
 waiter4 w1 & P41=$!
 waiter4 w2 & P42=$!
 wait "$P41" "$P42" 2>/dev/null || true
-assert_eq "1" "$(grep -c . "$RENAMES4")" "AC4 exactly one waiter's rename of the stale gate succeeds"
+assert_eq "1" "$(grep -c . "$CLEARS4")" "AC4 exactly one waiter clears the stale gate"
 assert_file_absent "$GATE4" "AC4 the stale gate is cleared"
 assert_file_absent "$LOCK4" "AC4 the dead holder's lock was reclaimed and released"
 
