@@ -230,6 +230,7 @@ rc=0
 out: action=dispatch stage=threat issue=3
 call: view-issue 3
 call: view-issue 3 --spec
+call: read-attempt 3
 ## threat-done
 rc=0
 out: action=dispatch stage=developer issue=3
@@ -245,6 +246,7 @@ rc=0
 out: action=dispatch stage=threat issue=3
 call: view-issue 3
 call: view-issue 3 --spec
+call: read-attempt 3
 ## threat-with-pr-is-fix-round
 rc=0
 out: action=dispatch stage=developer issue=3

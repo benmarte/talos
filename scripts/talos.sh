@@ -326,7 +326,11 @@
 #         rollback is `stop reason=label-failed`. No PM spec comment: nothing is
 #         checked; a read that failed is `warn reason=spec-check-unread`.
 #         `done threat` (#837, no verdict) runs the same check on the spec the
-#         threat stage posted again with its `## Threat model` section.
+#         threat stage posted again with its `## Threat model` section. While the
+#         latest spec has no such section (#1088), it also does `record-attempt
+#         <N> threat` keyed by that spec, so `next` stops threat-unresolved
+#         instead of dispatching the stage again; a record that fails or meets a
+#         ceiling is pipeline:blocked on the issue, next=stop.
 #         Output: `done=ok` first, `spend=<line>`, `spec_check=<slug>` (a refused
 #         PM spec only), `next=` last:
 #            continue | stop | fix-round stage=<role> | batch | ci-pending
@@ -383,6 +387,11 @@
 #         TALOS_BRANCH_PREFIXES) is never routed: exit 0, nothing leased,
 #           stop reason=duplicate-pr issue=<n> prs=<a,b>
 #         so an operator chooses which PR stays.
+#         A threat stage that ran on the latest spec and left no `## Threat model`
+#         is never dispatched on it again (#1088): nothing leased,
+#           stop reason=threat-unresolved issue=<n>
+#         Post a `**PM spec:**` comment with that section to go on, or a changed
+#         spec without it for one more threat run.
 #         `next` leases the issue before answering dispatch or merge (see Lease).
 #         Context budget (#605), under ORCHESTRATOR=llm outside `run` only: at or
 #         over execution.context_budget_tokens (the latest call's context in the
@@ -394,9 +403,10 @@
 #         A dispatch or merge answer with execution.orchestrator: llm outside `run`
 #         whose lease has no live holder process (TALOS_LEASE_PID unset or dead,
 #         see Lease) carries `warn reason=lease-holder-unset` beside the answer.
-# next-reasons: usage state-unavailable unsupported-verb:<provider-verb> max-fix-attempts max-total-dispatches budget-exceeded record-failed context-budget context-unknown lease-holder-unset duplicate-pr
+# next-reasons: usage state-unavailable unsupported-verb:<provider-verb> max-fix-attempts max-total-dispatches budget-exceeded record-failed context-budget context-unknown lease-holder-unset duplicate-pr threat-unresolved
 #   stop: usage state-unavailable unsupported-verb:<provider-verb> max-fix-attempts
 #         max-total-dispatches budget-exceeded record-failed context-budget duplicate-pr
+#         threat-unresolved
 #         (exit 2 for usage; exit 0 for context-budget and duplicate-pr; else 1)
 #   warn: context-unknown lease-holder-unset
 #   wait: draft ci human-merge blocked owner lease none dependency batched cap unassigned
@@ -4988,6 +4998,8 @@ _talos_evidence_verb() {
 # The latest `**PM spec:**` comment of a `view-issue --spec` answer on stdin,
 # nothing when there is none; with the one argument `body` (#596), the issue
 # body of that answer instead of nothing. Exit 1 when the answer is not that JSON.
+# view-issue --spec has vetted the comment: a bare spec, or one under the pm or
+# threat stage header line (#645, #1088), as _QA_SPEC_PY reads it.
 _TALOS_PM_SPEC_PY='
 import json, sys
 try:
@@ -4999,7 +5011,8 @@ if not isinstance(d, dict):
 text = ""
 for c in d.get("comments") or []:
     b = c.get("body") if isinstance(c, dict) else None
-    if isinstance(b, str) and b.lstrip().startswith("**PM spec:**"):
+    lines = [l.strip() for l in b.splitlines() if l.strip()][:2] if isinstance(b, str) else []
+    if any(l.startswith("**PM spec:**") for l in lines):
         text = b
 if not text and sys.argv[1:] == ["body"] and isinstance(d.get("body"), str):
     text = d["body"]
@@ -5016,11 +5029,13 @@ sys.stdout.write(text)
 # the comment body only, never stdout.
 _talos_spec_check() {
   local _n="$1" _spec="$_CFG_CACHE_DIR/spec.md" _why
+  : > "$_CFG_CACHE_DIR/spec.json"
   _talos_cap _vcs view-issue "$_n" --spec
   if [ "$_RC" -ne 0 ] || ! python3 -I -c "$_TALOS_PM_SPEC_PY" <<< "$_OUT" > "$_spec" 2>/dev/null; then
     _talos_warn spec-check-unread "issue=$_n"
     return 0
   fi
+  printf '%s' "$_OUT" > "$_CFG_CACHE_DIR/spec.json"
   [ -s "$_spec" ] || return 0
   _talos_run_capture spec-check bash "$SCRIPT_DIR/pipeline-criteria.sh" spec-check "$_spec" < /dev/null
   case "$_RC:$_OUT" in
@@ -5059,6 +5074,24 @@ _talos_spec_check() {
       > "$_CFG_CACHE_DIR/body" \
       && _vcs comment-issue "$_n" --body-file "$_CFG_CACHE_DIR/body" > /dev/null; } \
     || _talos_warn comment-failed "issue=$_n"
+}
+
+# _talos_threat_record <issue> (#1088): the threat stage ran. While the latest
+# spec (the one _talos_spec_check just read; with no spec comment, the issue
+# body) still has no `## Threat model`, the run goes into the attempt record,
+# keyed by that spec: `next` then stops threat-unresolved instead of dispatching
+# the stage on it again, and a new spec has a new key. A record that was not
+# made (a failed write) or that met a ceiling blocks the issue and sets the
+# caller's _next=stop. An unread spec records nothing (spec-check-unread said so).
+_talos_threat_record() {
+  local _n="$1" _key
+  [ -s "$_CFG_CACHE_DIR/spec.json" ] || return 0
+  _key="$(python3 -I "$SCRIPT_DIR/pipeline-next.py" threat-key < "$_CFG_CACHE_DIR/spec.json" 2>/dev/null)" || _key=""
+  [ -n "$_key" ] || return 0
+  _talos_cap _vcs record-attempt "$_n" threat --idempotency-key "$_key"
+  [ "$_RC" -ne 0 ] || return 0
+  _talos_block_labels "$_n" ""
+  _next=stop
 }
 
 # done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
@@ -5108,7 +5141,7 @@ _talos_done() {
 
   _talos_prepare done pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh pipeline-draft-check.sh \
                       pipeline-status.sh pipeline-notify.sh pipeline-hooks.sh pipeline-events.sh \
-                      pipeline-lock.sh pipeline-criteria.sh
+                      pipeline-lock.sh pipeline-criteria.sh pipeline-next.py
   . "$SCRIPT_DIR/pipeline-contract.sh"
   _TALOS_NOTE_KEY=done
   _PM_ISSUE="$_n"
@@ -5153,6 +5186,9 @@ _talos_done() {
   # its Tests: line checked, before the relay. So has the threat stage (#837),
   # which posts the spec again with its `## Threat model` section.
   case "$_role" in pm | threat) [ -n "$_v" ] || _talos_spec_check "$_n" ;; esac
+  # #1088: a threat run that left no `## Threat model` is recorded, so it is the
+  # only one on this spec. A refused spec goes back to the PM instead.
+  [ "$_role:$_v:$_SPEC_SLUG" != "threat::" ] || _talos_threat_record "$_n"
 
   case "$_role:$_v" in
     *:BLOCKED) _col="Blocked"; _msg="$_role blocked"; _ev=blocked ;;

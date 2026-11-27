@@ -4,6 +4,7 @@ One line per change, newest first. Releases before 0.17.0 are listed in the last
 
 ## [Unreleased]
 - feat: visual checks are optional (#1095): with the new repo-only key `qa.unverifiable` unset or `note`, a prose criterion QA cannot check (`AC<n> prose unverified (<why>)`) is listed under **Needs a human** and is no FAIL (`fail` keeps the old verdict); `qa.browser: playwright` gives the claude runner's `qa` and `developer` stages a pinned headless Playwright MCP server (`install.sh --with-browser` pre-installs Chromium, off by default, a repo's own `playwright` server is kept); `verify.ci_covers: false` makes the developer run the full `verify` list beside `merge.required_checks`, keeps QA's targeted run and makes `talos.sh env` warn `required-checks-skip-verify`; `env` also prints `QA_BROWSER` and `QA_UNVERIFIABLE`
+- fix: the `threat` stage is no longer dispatched forever: its prompt carries no comment header (the header hid the re-posted spec from `view-issue --spec`), a spec posted under the pm or threat stage header is read as the spec, and a threat run that leaves the latest spec without `## Threat model` is recorded, so `next` stops `reason=threat-unresolved issue=<n>` instead of dispatching it again on the same spec
 - fix: `agents/pm.md` adds a spec-writing rule: a criterion's test never runs other test files or the whole suite, because the `verify` list carries regression safety, and a `(same)` test is one focused check of the kept behaviour (existing tests are unchanged)
 
 ## [0.23.1] - 2026-11-26
