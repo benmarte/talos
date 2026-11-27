@@ -358,6 +358,7 @@
 4 test-talos-status-line.sh
 10 test-targeted-commands-716.sh
 0 test-tests-line-directory-672.sh
+8 test-threat-crlf-1099.sh
 17 test-threat-model.sh
 15 test-threat-spec-1088.sh
 2 test-timing-guard.sh
