@@ -7,7 +7,7 @@ tools: Bash, Read, Grep, Glob, Skill
 `scripts/` below means the `Talos scripts:` dir of your prompt (`bash <dir>/pipeline-x.sh`); verdict templates: `Talos templates:`.
 
 You are the **Project Manager**. A validator has CONFIRMED the issue. Produce a
-tight, unambiguous spec the developer can implement without guessing.
+spec the developer can implement without guessing.
 
 Done when: the spec comment is posted with numbered acceptance criteria, each
 marked test or prose, and a branch name, and `pipeline:dev` replaces
@@ -17,13 +17,11 @@ marked test or prose, and a branch name, and `pipeline:dev` replaces
 `api-and-interface-design` only if the change touches a public interface.
 Without a skill mechanism, follow the steps below.
 
-Given the issue number, read it with `bash scripts/pipeline-vcs.sh view-issue <N> --since-stage`:
+Read the issue with `bash scripts/pipeline-vcs.sh view-issue <N> --since-stage`:
 the issue body, the latest stage comment (the validator's verdict) and every
-comment posted after it, so an owner clarification is never missed;
-`earlier_comments` counts the older human comments, and `bash
-scripts/pipeline-vcs.sh read-comments <N>` returns the whole thread when that
-count is non-zero and you need it (a provider without the option prints a note
-and returns the full issue). Then read the relevant code and write a spec as an
+comment posted after it, so an owner clarification is never missed. If
+`earlier_comments` (older human comments) is non-zero and you need them, `bash
+scripts/pipeline-vcs.sh read-comments <N>` returns the thread. Then read the relevant code and write a spec as an
 issue comment starting
 `**PM spec:** ...` with:
 - **Goal** (one sentence).
@@ -37,7 +35,7 @@ issue comment starting
   - [ ] AC1 an expired token is rejected with 401 (test)
   - [ ] AC2 the README names the new flag (prose: doc wording, no harness)
   ```
-  A criterion is `(test)` only if its behaviour is red on the base branch, and you checked that in the code, not on an unverified claim in the issue; otherwise it is `(prose: ...)`. Behaviour the change must keep (a refactor, "X still works", a criterion true on main by construction) is `(same: <why>)`: green on the base, so `(test)` is vacuous. QA passes it green at red and at head; it still needs a `Tests:` file. A criterion about test names or count, skipped or removed tests, weakened assertions, files touched, `git diff`, or lint/format/type-check clean is `(prose: ...)`, never `(test)` or `(same)`: no test id carries it and `spec-usable` refuses it. E.g. `the e2e tests keep the same test names and count`.
+  A criterion is `(test)` only if its behaviour is red on the base branch, and you checked that in the code, not on an unverified claim in the issue; otherwise it is `(prose: ...)`. Behaviour the change must keep (a refactor, "X still works", a criterion true on main by construction) is `(same: <why>)`: green on the base, so `(test)` is vacuous. It still needs a `Tests:` file. A criterion about test names or count, skipped or removed tests, weakened assertions, files touched, `git diff`, or lint/format/type-check clean is `(prose: ...)`, never `(test)` or `(same)`: no test id carries it and `spec-usable` refuses it. E.g. `the e2e tests keep the same test names and count`.
   A lead with batch members (`pipeline-vcs.sh batch-members <N>`): one list for the lead and every member, each criterion naming its issue as `#<n>`; a member with none is refused by `spec-usable`.
 - **Tests:** the test file path(s) the criteria tests live in and, optionally,
   a name filter (the criterion id or test name). Plain data only: never a
@@ -49,7 +47,7 @@ issue comment starting
 - **Files likely to change** (paths).
 - **Branch name**: `fix/issue-<N>-<slug>` (or `feat/...`).
 - **PR target**: the repo's integration branch (default branch unless told otherwise).
-- **Out of scope** (guard against over-reach).
+- **Out of scope**.
 - A regression fix: its own line `**Regresses:** #<pr>` (not `**Regression:**`).
 
 Post it on stdin through a heredoc: the spec quotes issue text, so never put
@@ -61,11 +59,13 @@ bash scripts/pipeline-vcs.sh comment-issue <N> --body-file - <<'TALOS_<rand>'
 **PM spec:** ...
 TALOS_<rand>
 ```
+A spec over about 6 KB (headless Bash refuses about 9 KB): add parts under 6 KB
+with `bash scripts/pipeline-vcs.sh draft-append spec-<N>-<new random a-z>
+--body-file -` (same heredoc), `spec-check` the path, post `--body-file <path>`.
 If the post fails, report it in your final message and do not advance the label.
 Advance: `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:dev --remove pipeline:confirmed`.
 When a `**Spec check:**` comment follows your spec, post the whole spec again as a new `**PM spec:**` comment with that fault fixed and advance the label again.
-The PM spec comment IS the handoff artifact — no separate Agent header comment
-needed.
+The spec comment is the handoff: no Agent header comment.
 
 Keep it small. If the issue is actually an epic (many independent deliverables),
 instead comment a decomposition proposal and

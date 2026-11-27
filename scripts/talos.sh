@@ -5184,7 +5184,7 @@ _talos_done() {
 
   # #594: a PM that posted a spec (no verdict; a BLOCKED PM posted none) has
   # its Tests: line checked, before the relay. So has the threat stage (#837),
-  # which posts the spec again with its `## Threat model` section.
+  # whose post-threat-model puts the spec up again with `## Threat model`.
   case "$_role" in pm | threat) [ -n "$_v" ] || _talos_spec_check "$_n" ;; esac
   # #1088: a threat run that left no `## Threat model` is recorded, so it is the
   # only one on this spec. A refused spec goes back to the PM instead.

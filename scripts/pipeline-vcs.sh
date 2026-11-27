@@ -112,6 +112,28 @@
 #                                             A positional <body> of exactly "-" is
 #                                             refused (exit 1, nothing posted): it is
 #                                             NOT stdin. Use `--body-file -` (#449).
+#   post-threat-model <n> --body-file <path|->  (#1089) Post the issue's latest PM
+#                                             spec (the one `view-issue --spec`
+#                                             keeps), unchanged, from its
+#                                             "**PM spec:**" line, then a blank line
+#                                             and the given section, as one new
+#                                             comment. The threat stage sends only
+#                                             its `## Threat model` section. Exit 1,
+#                                             nothing posted, for a section with no
+#                                             `## Threat model` line or an issue
+#                                             with no PM spec comment; the size caps
+#                                             apply to the combined comment. github,
+#                                             github-api, gitlab, azure; file mode
+#                                             exits 2.
+#   draft-append <name> --body-file -         (#1089) Append stdin to
+#                                             .talos/drafts/<name>.md in the
+#                                             checkout and print
+#                                             `path=<p> bytes=<total>`: a long body
+#                                             is built in parts, then passed with
+#                                             --body-file <p>, because a headless
+#                                             claude session refuses a Bash command
+#                                             over about 9 KB. <name> is
+#                                             [a-z0-9-]+. No provider call.
 #   close-issue <n> <body>                    Close issue with a comment
 #               <n> --body-file <path|->      ...or read the comment from a file / stdin
 #   label-issue <n> [--add <l>] [--remove <l>]  Add/remove labels
@@ -1006,6 +1028,59 @@ if [ "$VERB" = "merge-pr" ] || [ "$VERB" = "rerun-ci" ]; then
   done
   ARGS=(${_ms_args[@]+"${_ms_args[@]}"})
   unset _ms_args _ms_i
+fi
+
+# draft-append <name> --body-file - (#1089): a long body goes to a file in
+# parts, each small enough for one Bash command. Local only, so it runs here,
+# before any provider read. The stages that use it hold no Write tool: the name
+# is plain characters and no symlink is followed, so it can write nowhere else.
+_vcs_draft_append() {
+  local _da_name="${ARGS[0]-}" _da_top _da_dir _da_file _da_p _da_shown
+  if [ "${#ARGS[@]}" -ne 3 ] || [ "${ARGS[1]}" != "--body-file" ] || [ "${ARGS[2]}" != "-" ]; then
+    echo "pipeline-vcs: draft-append: Usage: draft-append <name> --body-file - (the text comes only from stdin)" >&2
+    return 2
+  fi
+  # The letters are spelled out: an [a-z] range matches upper case in some locales.
+  case "$_da_name" in
+    '' | *[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
+      echo "pipeline-vcs: draft-append: <name> must be [a-z0-9-]+; nothing written" >&2
+      return 1
+      ;;
+  esac
+  if [ -t 0 ] || ! { : 3<&0; } 2>/dev/null; then
+    echo "pipeline-vcs: draft-append --body-file -: stdin is closed or a terminal; pipe the text in (heredoc)" >&2
+    return 1
+  fi
+  _da_top="$(git rev-parse --show-toplevel 2>/dev/null)" && [ -n "$_da_top" ] || _da_top="$(pwd -P)"
+  _da_dir="$_da_top/.talos/drafts"
+  _da_file="$_da_dir/$_da_name.md"
+  for _da_p in "$_da_top/.talos" "$_da_dir" "$_da_file"; do
+    if [ -L "$_da_p" ]; then
+      echo "pipeline-vcs: draft-append: '$_da_p' is a symlink; nothing written" >&2
+      return 1
+    fi
+  done
+  if [ -e "$_da_file" ] && [ ! -f "$_da_file" ]; then
+    echo "pipeline-vcs: draft-append: '$_da_file' is not a regular file; nothing written" >&2
+    return 1
+  fi
+  _da_shown="$_da_file"
+  [ "$_da_top" != "$(pwd -P)" ] || _da_shown=".talos/drafts/$_da_name.md"
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] append stdin to $_da_shown"
+    return 0
+  fi
+  . "$SCRIPT_DIR/pipeline-paths.sh"
+  _talos_ignore_in_tree "$_da_top"
+  if ! { mkdir -p "$_da_dir" && cat >> "$_da_file"; }; then
+    echo "pipeline-vcs: draft-append: could not write '$_da_file'" >&2
+    return 1
+  fi
+  printf 'path=%s bytes=%s\n' "$_da_shown" "$(wc -c < "$_da_file" | tr -d ' ')"
+}
+if [ "$VERB" = "draft-append" ]; then
+  _vcs_draft_append
+  exit $?
 fi
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -11418,6 +11493,74 @@ sys.exit(4 if len(raw) > int(sys.argv[2]) else 0)
     *) echo "pipeline-vcs: $VERB: could not check the body size; nothing posted." >&2; exit 1 ;;
   esac
 }
+
+# post-threat-model <n> --body-file <path|-> (#1089): the threat stage sends only
+# its `## Threat model` section and Talos posts the latest PM spec above it, so
+# the model never re-types a spec that does not fit one Bash command. The spec is
+# the one `view-issue --spec` keeps, byte for byte from its "**PM spec:**" line
+# (a stage header above it is left out). The combined body then goes through the
+# provider's own comment-issue.
+if [ "$VERB" = "post-threat-model" ]; then
+  _tm_n="${ARGS[0]-}"
+  case "$_tm_n" in ''|*[!0-9]*) _tm_n="" ;; esac
+  if [ -z "$_tm_n" ] || [ "${#ARGS[@]}" -ne 3 ] || [ "${ARGS[1]}" != "--body-file" ]; then
+    echo "pipeline-vcs: post-threat-model: Usage: post-threat-model <n> --body-file <path|->" >&2
+    exit 2
+  fi
+  case "$PROVIDER" in
+    github|github-api|gitlab|azure) ;;
+    *)
+      echo "pipeline-vcs: post-threat-model: not implemented for provider '$PROVIDER'" >&2
+      exit 2
+      ;;
+  esac
+  if [ "${ARGS[2]}" = "-" ]; then
+    _read_stdin_body
+    _tm_section="$_TALOS_STDIN_BODY"
+  else
+    _tm_section="$(cat "${ARGS[2]}")" || { echo "pipeline-vcs: post-threat-model --body-file: cannot read '${ARGS[2]}'" >&2; exit 1; }
+  fi
+  # The line `talos.sh next` looks for (THREAT_MODEL_RE in pipeline-next.py).
+  if ! grep -qE '^[[:blank:]]*## Threat model[[:blank:]]*$' <<<"$_tm_section"; then
+    echo "pipeline-vcs: post-threat-model: the body has no \`## Threat model\` line; nothing posted." >&2
+    exit 1
+  fi
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] view-issue $_tm_n --spec; then comment-issue $_tm_n (the latest PM spec, a blank line, the section)"
+    exit 0
+  fi
+  _tm_spec="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" view-issue "$_tm_n" --spec ${REPO:+--repo "$REPO"})" \
+    || { echo "pipeline-vcs: post-threat-model: could not read the spec of issue #$_tm_n; nothing posted." >&2; exit 1; }
+  # Both texts go on stdin: either may exceed Linux's single-argument limit.
+  _tm_rc=0
+  _tm_body="$(printf '%s\n%s' "$_tm_spec" "$_tm_section" | python3 -I -c '
+import json, sys
+data = sys.stdin.buffer.read().decode("utf-8", "surrogateescape").lstrip()
+doc, end = json.JSONDecoder().raw_decode(data)
+section = data[end:]
+if section.startswith("\n"):
+    section = section[1:]
+comments = doc.get("comments")
+body = comments[-1].get("body") if comments else None
+at = body.find("**PM spec:**") if isinstance(body, str) else -1
+if at < 0:
+    sys.exit(3)
+spec = body[at:]
+gap = "" if spec.endswith("\n\n") else "\n" if spec.endswith("\n") else "\n\n"
+sys.stdout.buffer.write((spec + gap + section).encode("utf-8", "surrogateescape"))
+')" || _tm_rc=$?
+  if [ "$_tm_rc" -eq 3 ]; then
+    echo "pipeline-vcs: post-threat-model: issue #$_tm_n has no PM spec comment; nothing posted." >&2
+    exit 1
+  elif [ "$_tm_rc" -ne 0 ]; then
+    echo "pipeline-vcs: post-threat-model: could not read the spec of issue #$_tm_n; nothing posted." >&2
+    exit 1
+  fi
+  _check_body_caps "$_tm_body"
+  ARGS=("$_tm_n" "$_tm_body")
+  VERB=comment-issue
+  unset _tm_n _tm_section _tm_spec _tm_body _tm_rc
+fi
 
 # approve-pr / close-issue / mark-needs-owner take free text too (a reviewer
 # summary, a resolution note, the question for the owner). Accept `<n>
