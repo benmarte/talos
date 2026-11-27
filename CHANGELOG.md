@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix: a spec with CRLF line endings now counts as threat-modelled, so `next` no longer dispatches the threat stage again on it, and `pipeline-vcs.sh post-threat-model` accepts a section with CRLF or lone CR line endings and posts the whole comment with LF line endings (#1099)
 - fix: on Azure DevOps a markdown heading in a work-item comment now survives the round trip: `view-issue` turns `<h1>`..`<h6>` back into `#`..`######` lines, so `## Threat model` is seen and a risk-area issue no longer stops `threat-unresolved`, and `post-threat-model` no longer flattens the spec's headings
 
 ## [0.24.0] - 2026-11-27

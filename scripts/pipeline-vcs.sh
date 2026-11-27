@@ -117,8 +117,10 @@
 #                                             keeps), unchanged, from its
 #                                             "**PM spec:**" line, then a blank line
 #                                             and the given section, as one new
-#                                             comment. The threat stage sends only
-#                                             its `## Threat model` section. Exit 1,
+#                                             comment with LF line endings (CRLF
+#                                             and lone CR are converted, #1099).
+#                                             The threat stage sends only its
+#                                             `## Threat model` section. Exit 1,
 #                                             nothing posted, for a section with no
 #                                             `## Threat model` line or an issue
 #                                             with no PM spec comment; the size caps
@@ -11504,9 +11506,10 @@ sys.exit(4 if len(raw) > int(sys.argv[2]) else 0)
 # post-threat-model <n> --body-file <path|-> (#1089): the threat stage sends only
 # its `## Threat model` section and Talos posts the latest PM spec above it, so
 # the model never re-types a spec that does not fit one Bash command. The spec is
-# the one `view-issue --spec` keeps, byte for byte from its "**PM spec:**" line
-# (a stage header above it is left out). The combined body then goes through the
-# provider's own comment-issue.
+# the one `view-issue --spec` keeps, from its "**PM spec:**" line (a stage header
+# above it is left out), unchanged but for its line endings: CRLF and lone CR
+# become LF in it and in the section (#1099). The combined body then goes through
+# the provider's own comment-issue.
 if [ "$VERB" = "post-threat-model" ]; then
   _tm_n="${ARGS[0]-}"
   case "$_tm_n" in ''|*[!0-9]*) _tm_n="" ;; esac
@@ -11527,6 +11530,10 @@ if [ "$VERB" = "post-threat-model" ]; then
   else
     _tm_section="$(cat "${ARGS[2]}")" || { echo "pipeline-vcs: post-threat-model --body-file: cannot read '${ARGS[2]}'" >&2; exit 1; }
   fi
+  _tm_section="$(printf '%s' "$_tm_section" | python3 -I -c '
+import sys
+sys.stdout.buffer.write(sys.stdin.buffer.read().replace(b"\r\n", b"\n").replace(b"\r", b"\n"))
+')" || { echo "pipeline-vcs: post-threat-model: could not read the section; nothing posted." >&2; exit 1; }
   # The line `talos.sh next` looks for (THREAT_MODEL_RE in pipeline-next.py).
   if ! grep -qE '^[[:blank:]]*## Threat model[[:blank:]]*$' <<<"$_tm_section"; then
     echo "pipeline-vcs: post-threat-model: the body has no \`## Threat model\` line; nothing posted." >&2
@@ -11552,8 +11559,8 @@ body = comments[-1].get("body") if comments else None
 at = body.find("**PM spec:**") if isinstance(body, str) else -1
 if at < 0:
     sys.exit(3)
-spec = body[at:]
-gap = "" if spec.endswith("\n\n") else "\n" if spec.endswith("\n") else "\n\n"
+spec = body[at:].replace("\r\n", "\n").replace("\r", "\n")
+gap ="" if spec.endswith("\n\n") else "\n" if spec.endswith("\n") else "\n\n"
 sys.stdout.buffer.write((spec + gap + section).encode("utf-8", "surrogateescape"))
 ')" || _tm_rc=$?
   if [ "$_tm_rc" -eq 3 ]; then
