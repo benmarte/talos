@@ -67,6 +67,9 @@
 #       prints the `report` lines plus one verdict line:
 #         qa-run: verdict PASS ...      the mechanical half passed (prose is yours);
 #             `, <k> same` is named before the prose count when k > 0
+#       A passing run (or one with no usable runner, exit 3) with prose criteria
+#       prints `qa-run: unverifiable prose policy: note|fail ...` before the
+#       verdict line (qa.unverifiable, #1095).
 #       The frozen run (#714): when a Tests file differs between the red commit
 #       and the head, the red commit's version of it runs against the head code
 #       (one more targeted run; none when no file changed or the red proof was
@@ -941,6 +944,17 @@ _qa_restore_frozen() {
 # Exit hook: the restores, each tried.
 _qa_exit() { _qa_restore_frozen; _qa_restore; _qa_restore_home; }
 
+# _qa_unverifiable_line N_PROSE (#1095): beside prose criteria, what
+# qa.unverifiable makes of one QA cannot check. `fail` or the default `note`.
+_qa_unverifiable_line() {
+  [ "$1" -gt 0 ] || return 0
+  if [ "$(cfg qa.unverifiable 2>/dev/null)" = fail ]; then
+    echo "qa-run: unverifiable prose policy: fail (a prose criterion you cannot check is a FAIL)"
+  else
+    echo "qa-run: unverifiable prose policy: note (report one you cannot check as \`AC<n> prose unverified (<why>)\`; it is not a FAIL)"
+  fi
+}
+
 # _qa_verdict_fail REASON -- the closing line of a refused or failed run.
 _qa_fail() {
   _qa_keep_raw
@@ -1649,6 +1663,7 @@ cmd_qa_run() {
   # 5. No Tests: line on a usable spec: every criterion is prose.
   if [ "$found" -eq 0 ]; then
     printf '%s\n' "$table" | awk '{ printf "%s prose hand-checked\n", $1 }'
+    _qa_unverifiable_line "$n_prose"
     printf 'qa-run: verdict PASS (prose only: %s criteria to hand-check; no tests to run)\n' "$n_prose"
     return 0
   fi
@@ -1688,6 +1703,7 @@ EOF
     4) printf 'qa-run: verdict BLOCKED spec: %s\n' "$runner_why"; return 4 ;;
     3)
       echo "qa-run: no tests/run-tests.sh and no test command in verify:"
+      _qa_unverifiable_line "$n_prose"
       printf 'qa-run: verdict FAIL no usable test runner; hand-check the criteria and say so\n'
       return 3 ;;
   esac
@@ -1850,6 +1866,7 @@ EOF
     _qa_fail "work video not attached ($_QA_WALK_REFUSE)"
     return $?
   fi
+  _qa_unverifiable_line "$n_prose"
   printf 'qa-run: verdict PASS (%s test criteria green,%s %s prose to hand-check)%s\n' "$n_test" "$([ "$n_same" -eq 0 ] || printf ' %s same,' "$n_same")" "$n_prose" "$e2e_s"
   return 0
 }

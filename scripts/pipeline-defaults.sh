@@ -122,6 +122,7 @@ verify.commands	list		-	-	repo
 verify.qa_mode	enum	local	-	-	repo
 verify.targeted	bool	true	-	-	any
 verify.ci_scope	enum	full	-	-	repo
+verify.ci_covers	bool	true	-	-	repo
 verify.targeted_commands	list		-	-	repo
 verify.dev_tests	list		-	-	repo
 verify.e2e	str		-	-	repo
@@ -183,6 +184,8 @@ roles.docs_mode	enum	auto	-	-	any
 roles.planner	bool	false	-	-	any
 roles.fix_on_first_findings	bool	false	-	-	any
 roles.required_when.*	list		-	-	repo
+qa.unverifiable	enum	note	-	-	repo
+qa.browser	enum	off	-	-	repo
 docs.paths	list	README.md\ndocs/*\nscripts/pipeline-defaults.sh	-	-	any
 comments.enabled	bool	true	-	-	any
 comments.header	str	**Agent:** {role} (talos)	-	-	any

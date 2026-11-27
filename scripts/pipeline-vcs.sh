@@ -817,6 +817,10 @@
 #                                             --issue <n> tags the calling stage's
 #                                             worktree for issue <n> (best effort; the
 #                                             main checkout is never tagged).
+#                                             A qa body's `AC<n> prose unverified
+#                                             (<why>)` lines are posted under "Needs a
+#                                             human" (#1095); with qa.unverifiable: fail
+#                                             they refuse the approval (exit 1).
 #   post-verdict <pr> qa --fail [--issue n] [--summary s] --body-file <path|->
 #                                             (#814; github, github-api, azure, gitlab)
 #                                             QA's FAIL in one call: renders qa-verdict
@@ -829,7 +833,15 @@
 #                                             that lets QA's later PASS clear that block
 #                                             (post-approval qa, #1063). A `FAIL: ci-pending`
 #                                             summary or first line is a wait: the comment
-#                                             is posted, nothing is blocked. The body is the DETAILS; SUMMARY is
+#                                             is posted, nothing is blocked. Under
+#                                             qa.unverifiable: note (#1095) the
+#                                             unverified prose lines move under "Needs a
+#                                             human", and a body and --summary naming no
+#                                             other failure are refused (exit 1, nothing
+#                                             posted), except for a ci-pending wait. A
+#                                             line outside the known report formats
+#                                             counts as a failure.
+#                                             The body is the DETAILS; SUMMARY is
 #                                             --summary or its first non-blank line. One
 #                                             comment per head: a repeat posts nothing and
 #                                             still ensures the labels. Any other role, no
@@ -12327,6 +12339,103 @@ print('yes' if armed else 'no')
   }
 }
 
+# _qa_needs_human [SUMMARY] (#1095): a QA verdict body on stdin; QA reports a
+# prose criterion it could not check (no harness, tool or permission) as its own
+# line, `AC<n> prose unverified (<why>)`. Detection is broad: any line with an
+# AC id and "prose unverified". Exit 10: no such line, nothing printed.
+# Otherwise the body is printed with those lines listed under a "Needs a human"
+# heading: a line that says only that (markdown around it allowed) is moved
+# there, one with more text is also left in place. The exit status says whether
+# anything else, SUMMARY included, could be a failure: 0 yes; 11 no. "No" is
+# strict, because a defect read as harmless is never blocked: each other line
+# must be blank or, to its end, a code fence, a non-failing line `qa-run`
+# prints, or a report line agents/qa.md and the QA prompt require (the targeted
+# run skip, the candidate gate, the all-green `CI per-job results` table). A new
+# wording of one of those belongs in QUIET.
+_qa_needs_human() {
+  python3 -I -c '
+import re, sys
+AC = re.compile(r"\bAC\d+\b", re.I)
+WORDS = re.compile(r"\bprose[\s-]+unverified\b", re.I)
+BULLET = re.compile(r"^[-*+]\s+(?:\[[ xX]?\]\s+)?")
+ONLY = re.compile(r"(?:[-*+]\s+)?(?:\[[ xX]?\]\s+)?[`*_]*(AC\d+)[`*_]*(?::[`*_]*)?\s+prose unverified\s+"
+                  r"\(((?:[^()]|\([^()]*\))+)\)[`*_]*\.?", re.I)
+HEAD = re.compile(r"(?:#{1,6}\s*|\*\*)Needs a human:?(?:\*\*)?:?", re.I)
+SHA = r"[0-9a-f]{7,64}"
+GREEN = r"green@head(?: frozen@head)?"
+# One path token with a "." or "/"; the first of them splits it one way only.
+PATHS = r"[\w()\[\]-]*[./][\w./()\[\]-]*"
+VIDEO = (r"no e2e spec touched by the PR|no recording found for the touched spec\(s\)"
+         r"|over the \d+ MB cap|upload failed \(exit \d+\)|verify\.e2e_artifacts\.dir and include are not set")
+QUIET = re.compile("|".join([
+    r"",
+    r"```[A-Za-z]*",
+    r"AC\d+ red@" + SHA + " " + GREEN,
+    r"AC\d+ " + GREEN + r" \(red: missing\)",
+    r"AC\d+ guard green@head \(green at red@" + SHA + r"\)",
+    r"AC\d+ prose hand-checked",
+    r"AC\d+ PASS same red@" + SHA + " " + GREEN,
+    r"AC\d+ PASS same " + GREEN + r" \(red: missing\)",
+    r"AC\d+ weakened-ack \(red-commit test fails at head; changed on purpose: [^()]*\)",
+    r"qa-run: issue #\d+ PR #\d+ head " + SHA + r" red (?:none|" + SHA + r") runner [\w-]+ tests (?:none|"
+    + PATHS + r"(?: " + PATHS + r")*)",
+    r"qa-run: verdict PASS \((?:prose only: \d+ criteria to hand-check; no tests to run"
+    r"|\d+ test criteria green,(?: \d+ same,)? \d+ prose to hand-check)\)(?: e2e ok)?",
+    r"qa-run: unverifiable prose policy: note \(report one you cannot check as .AC<n> prose unverified "
+    r"\(<why>\).; it is not a FAIL\)",
+    r"qa-run: e2e ok",
+    r"qa-run: e2e artifacts (?:none found in \S+|upload failed \(exit \d+\)"
+    r"|kept the first \d+ of \d+ files \(max_files \d+\)|skipped \d+ file\(s\) over the \d+ MB total \(max_mb\))",
+    r"qa-run: work video (?:attached \(\d+ file\(s\)\)|skipped \d+ file\(s\) over the \d+ MB cap"
+    r"|not attached \((?:" + VIDEO + r")\))",
+    r"qa-run: targeted_commands from \S+",
+    r"qa-run: PR #\d+.s branch is held by another worktree; running detached at " + SHA,
+    r"note: (?:no test file to run|the head run left tracked files modified"
+    r"|no red commit found after the merge-base with \S+"
+    r"|red commit " + SHA + r" is not tests-only \((?:[^()]|\([^()]*\))*\)"
+    r"|(?:no test file exists at|could not check out) the red commit " + SHA + r"); red proof skipped",
+    r"note: frozen run: \S+ differs from red commit " + SHA,
+    r"[Tt]argeted run skipped: (?:CI is the full run \(merge\.required_checks\)"
+    r"|CI ran the tests this change selects \(merge\.required_checks\)"
+    r"|estimated \d+ ?s over budget; CI is the full run)",
+    r"CI: the merge-queue candidate is the gate \(merge\.queue_ci: candidate\)",
+    r"(?:#{1,6} )?(?:\*\*)?.?CI per-job results.?(?: table)?(?: \(head " + SHA + r"\))?:?(?:\*\*)?:?",
+    r"\|\s*[Jj]ob\s*\|\s*[Rr]esult\s*\|(?:\s*(?:[Kk]nown )?[Ff]lake(?: named)?\s*\|)?",
+    r"\|(?:\s*:?-+:?\s*\|)+",
+    r"\|[^|]*\|\s*(?:pass|passed|success|green|skipping|skipped)\s*\|(?:\s*(?:-|–|—|none|no|n/a)?\s*\|)?",
+]))
+def quiet(line):
+    s = line.strip()
+    if ONLY.fullmatch(s):
+        return True
+    s = re.sub(r"^[-*+]\s+", "", s)
+    s = s[:-1] if s.endswith(".") else s
+    if s.count("`") == 2 and s[:1] == "`" and s[-1:] == "`":
+        s = s[1:-1]
+        s = s[:-1] if s.endswith(".") else s
+    return QUIET.fullmatch(s) is not None
+found, rest = [], []
+for line in sys.stdin.buffer.read().decode("utf-8", "surrogateescape").split("\n"):
+    s = line.strip()
+    m = ONLY.fullmatch(s)
+    if m:
+        found.append("- %s prose unverified (%s)" % (m.group(1).upper(), m.group(2)))
+    elif not HEAD.fullmatch(s):
+        rest.append(line)
+        plain = re.sub(r"[*_`~]", " ", s)
+        if AC.search(plain) and WORDS.search(plain):
+            found.append("- " + BULLET.sub("", s))
+if not found:
+    sys.exit(10)
+parts = ["\n".join(rest).strip(), "### Needs a human\n\n" + "\n".join(found)]
+sys.stdout.buffer.write(("\n\n".join(p for p in parts if p) + "\n").encode("utf-8", "surrogateescape"))
+summary = (sys.argv[1] if len(sys.argv) > 1 else "").split("\n")
+sys.exit(11 if all(quiet(l) for l in rest + summary) else 0)
+' "${1:-}"
+}
+# qa.unverifiable: `fail` or, for every other value, the default `note`.
+_qa_unverifiable() { if [ "$(cfg qa.unverifiable)" = fail ]; then echo fail; else echo note; fi; }
+
 # ── post-approval: atomic marker-post + label (#146) ─────────────────────────
 # github, github-api and azure (and gitlab, #736). For other providers, exit 1.
 #
@@ -12484,6 +12593,34 @@ if [ "$VERB" = "post-approval" ]; then
         exit 1
       fi
     fi
+  fi
+
+  # (#1095) a QA approval lists the prose criteria QA could not check under
+  # "Needs a human"; qa.unverifiable: fail makes any such line a FAIL instead,
+  # so no approval is posted. The caller's body file is left as it is.
+  if [ "$_pa_role" = qa ] && [ "$_pa_recover" -eq 0 ] && [ -n "$_pa_body_file" ]; then
+    _pa_nh_rc=0
+    _pa_nh="$(_qa_needs_human < "$_pa_body_file")" || _pa_nh_rc=$?
+    case "$_pa_nh_rc" in
+      10) ;;
+      0 | 11)
+        if [ "$(_qa_unverifiable)" = fail ]; then
+          echo "pipeline-vcs: post-approval: qa refused: qa.unverifiable is fail and the verdict names an unverified prose criterion; record the FAIL with post-verdict $_pa_n qa --fail" >&2
+          exit 1
+        fi
+        _pa_nh_file="$(mktemp)" && [ -n "$_pa_nh_file" ] || {
+          echo "pipeline-vcs: post-approval: cannot create a temp file for the verdict" >&2
+          exit 1
+        }
+        _talos_on_exit 'rm -f "$_pa_nh_file"'
+        printf '%s\n' "$_pa_nh" > "$_pa_nh_file"
+        _pa_body_file="$_pa_nh_file"
+        ;;
+      *)
+        echo "pipeline-vcs: post-approval: cannot read the verdict body" >&2
+        exit 1
+        ;;
+    esac
   fi
 
   if [ "$DRY_RUN" = "true" ]; then
@@ -12783,6 +12920,27 @@ if [ "$VERB" = "post-verdict" ]; then
   _pv_cip=0
   _pv_first="$(printf '%s\n' "$_pv_details" | grep -m 1 -v '^[[:space:]]*$')" || _pv_first=""
   [[ "$_pv_summary" =~ ^[[:space:]]*FAIL:[[:space:]]+ci-pending([[:space:]]|$) || "$_pv_first" =~ ^[[:space:]]*FAIL:[[:space:]]+ci-pending([[:space:]]|$) ]] && _pv_cip=1
+  # (#1095) Under qa.unverifiable: note an unverified prose criterion is no
+  # failure: beside a real one (in the body or in --summary) it is listed under
+  # "Needs a human"; alone it is not a FAIL at all, so nothing is posted or
+  # blocked. A ci-pending wait always posts. Refusing (never turning it into a
+  # PASS here) leaves the approval to post-approval and its gates.
+  if [ "$(_qa_unverifiable)" = note ]; then
+    _pv_nh_rc=0
+    _pv_nh="$(printf '%s' "$_pv_details" | _qa_needs_human "$_pv_summary")" || _pv_nh_rc=$?
+    case "$_pv_nh_rc" in
+      10) ;;
+      0) _pv_details="$_pv_nh" ;;
+      11)
+        if [ "$_pv_cip" -eq 0 ]; then
+          echo "pipeline-vcs: post-verdict: refused: the body names no failure, only unverified prose criteria, and qa.unverifiable is note. If every test criterion is green and the code has no defect, record the PASS: post-approval $_pv_n qa --body-file - (they are listed under Needs a human). Otherwise name the failing criterion or the defect" >&2
+          exit 1
+        fi
+        _pv_details="$_pv_nh"
+        ;;
+      *) echo "pipeline-vcs: post-verdict: cannot read the verdict body" >&2; exit 1 ;;
+    esac
+  fi
   if [ "$DRY_RUN" = "true" ]; then
     printf '[dry-run] post-verdict: would post the qa-verdict FAIL comment with a talos:qa-verdict marker on PR #%s%s\n' "$_pv_n" \
       "$([ "$_pv_cip" -eq 1 ] && echo ' (ci-pending: no block)' || echo ', add pipeline:blocked, remove pipeline:review')"

@@ -143,6 +143,7 @@ An unknown profile name stops the run instead of silently using another one. See
 ## Documentation
 
 - [docs/reference.md](docs/reference.md): everything else. How a run works, install per harness, configuration and secrets, the generated config key tables, profiles and runners, providers and the board, isolation and multi-user claims, gates, notifications, hooks and events, troubleshooting.
+- [Browser and unverifiable criteria](docs/reference.md#browser-and-unverifiable-criteria): visual checks are optional. A prose criterion QA cannot check is listed under "Needs a human" instead of failing (`qa.unverifiable`), and `qa.browser: playwright` gives the Claude runner's developer and QA stages a headless browser (`install.sh --with-browser` pre-installs Chromium).
 - [Evidence storage](docs/reference.md#evidence-storage): QA's e2e screenshots and videos (`verify.e2e_artifacts`) live on the `talos-evidence` branch of your repository on every provider; how it grows and how to clean it up.
 - [CHANGELOG.md](CHANGELOG.md): one line per change.
 - [skills/pipeline/SKILL.md](skills/pipeline/SKILL.md): the orchestrator playbook; [agents/](agents/): the nine stage role profiles.
