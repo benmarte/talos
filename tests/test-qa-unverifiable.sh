@@ -28,7 +28,8 @@ store_count() { python3 -I -c 'import json,sys; print(len(json.load(open(sys.arg
 store_body() { python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.stdout.write(d[0]["body"] if d else "")' "$CSTORE"; }
 fresh() { printf '[]' > "$CSTORE"; : > "$GH_LOG"; }
 pa() { fresh; printf '%s\n' "$1" | bash "$VCS" post-approval 9 qa --issue 5 --body-file - >"$SANDBOX/out" 2>"$SANDBOX/err"; RC=$?; ERRT="$(cat "$SANDBOX/err")"; }
-pv() { fresh; printf '%s\n' "$1" | bash "$VCS" post-verdict 9 qa --fail --issue 5 --body-file - >"$SANDBOX/out" 2>"$SANDBOX/err"; RC=$?; ERRT="$(cat "$SANDBOX/err")"; }
+# pv <body> [extra post-verdict args...]
+pv() { fresh; local b="$1"; shift; printf '%s\n' "$b" | bash "$VCS" post-verdict 9 qa --fail --issue 5 "$@" --body-file - >"$SANDBOX/out" 2>"$SANDBOX/err"; RC=$?; ERRT="$(cat "$SANDBOX/err")"; }
 count_line() { printf '%s\n' "$2" | grep -cF -- "$1" || true; }
 # section <body>: the lines after the "Needs a human" heading.
 section() { printf '%s\n' "$1" | awk 'on { print } /^### Needs a human$/ { on = 1 }'; }
@@ -83,7 +84,115 @@ $UNVER"
 assert_eq "0" "$RC" "AC1 a ci-pending wait beside unverified prose still posts"
 assert_not_contains "$(cat "$GH_LOG")" "pipeline:blocked" "AC1 the ci-pending wait blocks nothing"
 
+# A defect written like a harmless line still posts the FAIL: only a whole line
+# in a known report format counts as no failure.
+cfg_qa -
+while IFS= read -r defect; do
+  pv "AC1 red@abc12345 green@head
+$defect
+$UNVER"
+  assert_eq "0" "$RC" "AC1 the FAIL posts for: $defect"
+  assert_contains "$(cat "$GH_LOG")" 'issues/9/labels payload={"labels": ["pipeline:blocked"]}' "AC1 the PR is blocked for: $defect"
+  assert_contains "$(store_body)" "$defect" "AC1 the comment keeps the line: $defect"
+done <<'TALOS_h3Vn8cYt5QwZ'
+AC3 prose hand-checked: FAIL, the submit button does nothing
+### AC3 FAIL: button is dead
+## Defect: app crashes on load
+AC1 green@head, but the page now crashes
+note: data is lost on save
+note: data is lost on save; red proof skipped, and the app crashes
+qa-run: verdict FAIL e2e exited 1
+qa-run: missing test file: tests/test-x.sh
+qa-run: e2e ok but the page is blank
+targeted run skipped: CI is the full run (merge.required_checks), yet login fails
+| viewer-tests | fail |
+| viewer-tests | pass | login is broken |
+```the app crashes on load
+AC2 prose unverified (no browser) but the app crashes (see the log)
+TALOS_h3Vn8cYt5QwZ
+
+# The report lines agents/qa.md and the QA prompt require are no failure. The
+# criterion lines are real `report` output, not hand-written ones.
+printf '%s\n' '- [ ] AC1 greet prints (test)' '- [ ] AC2 the page looks right (prose: visual)' > "$SANDBOX/spec.md"
+printf 'FAIL  AC1 greet prints\n' > "$SANDBOX/red.out"
+printf '  ok  AC1 greet prints\n' > "$SANDBOX/head.out"
+REPORT="$(bash "$TALOS_ROOT/scripts/pipeline-criteria.sh" report --spec "$SANDBOX/spec.md" --red "$SANDBOX/red.out" --head "$SANDBOX/head.out" --red-sha abc12345)"
+assert_contains "$REPORT" "AC1 red@abc12345 green@head" "AC1 fixture: report prints the criterion line"
+for skip in 'targeted run skipped: CI is the full run (merge.required_checks)' \
+  'targeted run skipped: CI ran the tests this change selects (merge.required_checks)' \
+  'targeted run skipped: estimated 700 s over budget; CI is the full run' \
+  'CI: the merge-queue candidate is the gate (merge.queue_ci: candidate)'; do
+  pv "qa-run: issue #5 PR #9 head aabb1122 red abc12345 runner talos tests tests/test-greet.sh
+note: frozen run: tests/test-greet.sh differs from red commit abc12345
+$REPORT
+AC3 guard green@head (green at red@abc12345)
+AC4 PASS same green@head frozen@head (red: missing)
+AC5 green@head (red: missing)
+qa-run: e2e ok
+qa-run: e2e artifacts none found in shots
+qa-run: unverifiable prose policy: note (report one you cannot check as \`AC<n> prose unverified (<why>)\`; it is not a FAIL)
+qa-run: verdict PASS (1 test criteria green, 1 prose to hand-check) e2e ok
+
+\`$skip\`.
+
+### CI per-job results
+
+| job | result | known flake |
+|---|---|---|
+| test (ubuntu-latest) | pass | - |
+| lint | skipping |  |
+
+\`\`\`
+$UNVER
+\`\`\`"
+  assert_eq "1" "$RC" "AC1 a realistic verdict body naming only unverified prose is refused: $skip"
+  assert_eq "0" "$(store_count)" "AC1 nothing is posted for the realistic body: $skip"
+done
+
+# --summary and a ci-pending wait are read before the refusal.
+pv "$ONLY_UNVER" --summary 'FAIL: ci-pending build'
+assert_eq "0" "$RC" "AC1 a ci-pending --summary still posts the wait"
+assert_contains "$(store_body)" "**QA:** FAIL — FAIL: ci-pending build" "AC1 the wait comment carries the summary"
+assert_not_contains "$(cat "$GH_LOG")" "pipeline:blocked" "AC1 the ci-pending summary blocks nothing"
+
+pv "$ONLY_UNVER" --summary 'login crashes'
+assert_eq "0" "$RC" "AC1 a failure named only in --summary posts"
+assert_contains "$(store_body)" "**QA:** FAIL — login crashes" "AC1 the summary failure is the verdict line"
+assert_contains "$(cat "$GH_LOG")" 'issues/9/labels payload={"labels": ["pipeline:blocked"]}' "AC1 the summary failure blocks the PR"
+
+pv "$ONLY_UNVER" --summary "$UNVER"
+assert_eq "1" "$RC" "AC1 a --summary that is only the unverified line is still refused"
+
+# Small variants of the line: listed under Needs a human under note, no FAIL.
+for variant in 'AC2: prose unverified (x)' '**AC2** prose unverified (x)' '**AC2:** prose unverified (x)' \
+  '- [ ] AC2 prose unverified (x)' 'AC2 prose unverified (no simctl (refused))'; do
+  pa "AC1 red@abc12345 green@head
+$variant"
+  assert_eq "0" "$RC" "AC1 [variant] a PASS posts: $variant"
+  assert_contains "$(section "$(store_body)")" "- AC2 prose unverified (" "AC1 [variant] listed under Needs a human: $variant"
+  pv "AC1 red@abc12345 green@head
+$variant"
+  assert_eq "1" "$RC" "AC1 [variant] a FAIL naming only it is refused: $variant"
+done
+
+# With trailing text it may say anything: listed, and a FAIL naming it posts.
+TRAIL='AC2 prose unverified (x) - see notes'
+pa "$TRAIL"
+assert_contains "$(section "$(store_body)")" "- $TRAIL" "AC1 [variant] trailing text is listed under Needs a human"
+pv "$TRAIL"
+assert_eq "0" "$RC" "AC1 [variant] a FAIL with trailing text posts"
+assert_contains "$(cat "$GH_LOG")" 'issues/9/labels payload={"labels": ["pipeline:blocked"]}' "AC1 [variant] and blocks"
+
 # ── AC2: fail ────────────────────────────────────────────────────────────────
+cfg_qa fail
+for variant in 'AC2: prose unverified (x)' '**AC2** prose unverified (x)' '- [ ] AC2 prose unverified (x)' \
+  'AC2 prose unverified (x) - see notes' '| AC2 | **prose unverified** | no browser |' 'ac2 Prose Unverified'; do
+  pa "AC1 red@abc12345 green@head
+$variant"
+  assert_eq "1" "$RC" "AC2 [variant] post-approval refuses: $variant"
+  assert_not_contains "$(cat "$GH_LOG")" '"qa:pass"' "AC2 [variant] qa:pass is not added: $variant"
+done
+
 cfg_qa fail
 pv "$ONLY_UNVER"
 body="$(store_body)"
