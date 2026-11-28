@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- test: the `talos.sh run` held-lease tests (AC10 and its siblings) no longer flake under load: their foreign lease and lock holders were `sleep 30` processes that could die before the code under test read the lease, so a dead holder answered `retry_after_s=10`; they now live until their section stops them (`start_live_holder` / `stop_live_holder` in `tests/helpers.sh`). `scripts/` is unchanged (#1106)
 - fix: clearing a stale lock-reclaim gate can no longer leave behind a gate that no process owns (which delayed the next reclaim by up to a minute) or let a second reclaimer in beside a live one: `pipeline-lock.sh` no longer moves the gate aside and links it back, it removes only the exact gate it read, under a claim only one waiter can take (#1105)
 - fix: a spec with CRLF line endings now counts as threat-modelled, so `next` no longer dispatches the threat stage again on it, and `pipeline-vcs.sh post-threat-model` accepts a section with CRLF or lone CR line endings and posts the whole comment with LF line endings (#1099)
 - fix: on Azure DevOps a markdown heading in a work-item comment now survives the round trip: `view-issue` turns `<h1>`..`<h6>` back into `#`..`######` lines, so `## Threat model` is seen and a risk-area issue no longer stops `threat-unresolved`, and `post-threat-model` no longer flattens the spec's headings

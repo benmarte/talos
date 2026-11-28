@@ -273,7 +273,7 @@ TALOS_LEASE_TTL_S=1800 TALOS_NOW=7000 bash "$RUN" next --issue 9 > /dev/null 2>&
 # stamps its own pid, which is a dead process by the time the run's `next`
 # reads the line -- the dead-holder reclaim would answer a dispatch, so the
 # old fixture only stayed green by accident).
-sleep 30 & _f_lpid=$!
+start_live_holder _f_lpid
 printf 'issue=9 held=7000 expires=8800 pid=%s\n' "$_f_lpid" > "$LEASE"
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=7000 rn --issue 9 --max-iterations 1
 case "$OUT" in
@@ -281,7 +281,7 @@ case "$OUT" in
   *) fail "AC9: a run never reclaims a live lease -- the run's next sees it and waits" "got: $OUT" ;;
 esac
 assert_contains "$(cat "$LEASE")" "expires=8800 pid=$_f_lpid" "AC9: the live lease survives the run untouched"
-kill "$_f_lpid" 2>/dev/null
+stop_live_holder "$_f_lpid"
 
 # ── (g) the in-flight fallback (#519) ────────────────────────────────────────
 # A queue-drained wait works the collect's `inflight` list; the journalled
@@ -609,7 +609,7 @@ LEASE_RESET
 draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
 draft_collect ready
 draft_ready
-sleep 30 & _f_lpid=$!
+start_live_holder _f_lpid
 printf 'issue=9 held=7000 expires=8800 pid=%s\n' "$_f_lpid" > "$LEASE"
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=7000 rn --max-iterations 1
 case "$OUT" in
@@ -618,7 +618,7 @@ case "$OUT" in
 esac
 assert_eq "0" "$RC" "AC10: the lease wait exits 0"
 assert_not_contains "$(journal)" "vcs ready-pr 12" "AC10: zero ready-pr on a held lease"
-kill "$_f_lpid" 2>/dev/null
+stop_live_holder "$_f_lpid"
 
 # AC10: a lock that could not be held answers the same shape with the lock's
 # own seconds, never a takeover.
@@ -628,12 +628,12 @@ draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
 draft_collect ready
 draft_ready
 mkdir "$LEASE.lock.d"
-sleep 30 & _lock_lpid=$!
+start_live_holder _lock_lpid
 printf '%s:1\n' "$_lock_lpid" > "$LEASE.lock.d/pid"
 TALOS_LEASE_LOCK_S=1 TALOS_LEASE_TTL_S=1800 TALOS_NOW=7000 rn --max-iterations 1
 assert_contains "$OUT" "stop action=wait reason=lease retry_after_s=1" "AC10: a lock timeout answers the lock's own seconds"
 assert_not_contains "$(journal)" "vcs ready-pr 12" "AC10: zero ready-pr on a lock timeout"
-kill "$_lock_lpid" 2>/dev/null
+stop_live_holder "$_lock_lpid"
 rm -rf "${LEASE:?}.lock.d"
 
 # AC11: no second merge path -- pin structurally: the loop has exactly one
@@ -1136,7 +1136,7 @@ assert_eq "0" "$(rev_count '^agent developer$')" "AC9 (#609) a BLOCKED: inside a
 # issue's lease after the reviewer's `done` freed it: before the batch's next
 # role (the PR label read is the call in between), and before the fix-round
 # developer (the gate's record-attempt is).
-sleep 30 & _l_lpid=$!
+start_live_holder _l_lpid
 rev_fixture true reviewer
 rev_finding reviewer
 rev_foreign_lease view-pr
@@ -1151,7 +1151,7 @@ TALOS_LEASE_TTL_S=1800 TALOS_NOW=15000 rn --max-iterations 9
 assert_eq "0" "$RC" "AC10 (#609) a held lease before the fix-round developer ends the run clean"
 assert_eq "stop action=wait reason=lease retry_after_s=1800" "$(rev_stop)" "AC10 (#609) a held lease before the fix-round developer is the lease wait"
 assert_eq "0" "$(rev_count '^agent developer$')" "AC10 (#609) the developer is not dispatched under another run's lease"
-kill "$_l_lpid" 2>/dev/null
+stop_live_holder "$_l_lpid"
 
 # AC11: the QA round of (i) keeps its stop lines (its pins above are unchanged).
 assert_contains "$QA_BACKSTOP_OUT" "stop reason=qa-fail-unchanged-head pr=12 issue=9" "AC11 (#609) the QA backstop keeps its stop line"
